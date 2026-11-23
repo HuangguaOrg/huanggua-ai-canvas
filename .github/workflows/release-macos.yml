@@ -131,37 +131,41 @@ jobs:
             --platform "${{ matrix.runtime_platform }}" \
             --clean
 
-      - name: Pack and preflight verify desktop runtime archive
+      - name: Pack and preflight verify desktop resources
         shell: bash
         env:
           HUANGGUA_TARGET_PLATFORM: ${{ matrix.runtime_platform }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           set -euo pipefail
+          npm run build:mcp-adapter
           npm run release:pack
           npm run release:preflight
 
-      - name: Build macOS .app and .dmg installer
+      - name: Compile Rust release binary
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target "${{ matrix.rust_target }}" --bins
+
+      - name: Bundle macOS .app, verify signature, and build .dmg installer
+        id: package
         shell: bash
         env:
           CI: 'true'
           APPLE_SIGNING_IDENTITY: '-'
           HUANGGUA_TARGET_PLATFORM: ${{ matrix.runtime_platform }}
-        run: |
-          set -euo pipefail
-          node node_modules/@tauri-apps/cli/tauri.js build \
-            --target "${{ matrix.rust_target }}" \
-            --config scripts/tauri-release-macos.config.json
-
-      - name: Verify ad-hoc signature and stage release assets
-        id: package
-        shell: bash
-        env:
           RELEASE_VERSION: ${{ needs.frontend.outputs.version }}
           ARCH_LABEL: ${{ matrix.arch_label }}
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
+          node node_modules/@tauri-apps/cli/tauri.js build \
+            --target "${RUST_TARGET}" \
+            --bundles app \
+            --config scripts/tauri-release-macos.config.json
+
           bundle_dir="src-tauri/target/${RUST_TARGET}/release/bundle"
           shopt -s nullglob
           apps=("$bundle_dir"/macos/*.app)
@@ -169,19 +173,26 @@ jobs:
             echo "Expected exactly one .app in ${bundle_dir}/macos, found ${#apps[@]}" >&2
             exit 1
           fi
-          codesign --verify --deep --strict --verbose=2 "${apps[0]}"
+          app_path="${apps[0]}"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
 
-          dmgs=("$bundle_dir"/dmg/*.dmg)
-          if [[ "${#dmgs[@]}" -ne 1 ]]; then
-            echo "Expected exactly one .dmg in ${bundle_dir}/dmg, found ${#dmgs[@]}" >&2
-            exit 1
-          fi
-
+          dmg_stage="${RUNNER_TEMP}/dmg-stage"
           out_dir="${RUNNER_TEMP}/macos-release-assets"
-          mkdir -p "$out_dir"
+          rm -rf "$dmg_stage" "$out_dir"
+          mkdir -p "$dmg_stage" "$out_dir"
+
+          ditto "$app_path" "${dmg_stage}/$(basename "$app_path")"
+          ln -s /Applications "${dmg_stage}/Applications"
+
           dmg_name="HuangGuaAI-${RELEASE_VERSION}-macos-${ARCH_LABEL}.dmg"
           dmg_path="${out_dir}/${dmg_name}"
-          cp -f "${dmgs[0]}" "$dmg_path"
+          hdiutil create \
+            -volname "黄瓜 AI 画布" \
+            -srcfolder "$dmg_stage" \
+            -ov \
+            -format UDZO \
+            "$dmg_path"
+
           (cd "$out_dir" && shasum -a 256 "$dmg_name" > "${dmg_name}.sha256")
           ls -lh "$out_dir"
           echo "out_dir=${out_dir}" >> "$GITHUB_OUTPUT"

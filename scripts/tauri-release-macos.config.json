@@ -1,10 +1,10 @@
 {
   "bundle": {
-    "targets": ["dmg", "app"],
+    "targets": ["app"],
     "createUpdaterArtifacts": false
   },
   "build": {
-    "beforeBuildCommand": "npm run release:preflight && npm run build:mcp-adapter"
+    "beforeBuildCommand": "npm run release:preflight"
   },
   "plugins": {
     "updater": {
