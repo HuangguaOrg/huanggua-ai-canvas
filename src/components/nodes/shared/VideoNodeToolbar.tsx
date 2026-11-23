@@ -1,0 +1,191 @@
+﻿/**
+ * VideoNodeToolbar 视频节点浮动工具栏 + 编辑态支持
+ */
+import { useT } from '../../../i18n';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Icon } from '@iconify/react';
+import AnimatedButton from '../../shared/AnimatedButton';
+import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
+import ToolbarEditor from './toolbar/ToolbarEditor';
+import ToolbarZones from './toolbar/ToolbarZones';
+import { useNodePluginToolbar } from './toolbar/NodePluginToolbarButtons';
+import { getHiddenDefaultToolbarButtons } from './toolbar/toolbarRegistry';
+import { executeToolbarPreset, resolvePresetDef } from './toolbar/presetAction';
+import { useAppStore } from '../../../store/useAppStore';
+
+/** 截帧位置：首帧 / 播放头当前帧 / 尾帧 */
+export type CaptureFramePosition = 'first' | 'current' | 'last';
+
+const CAPTURE_FRAME_OPTIONS: { position: CaptureFramePosition; label: string; icon: string }[] = [
+  { position: 'first', label: '导出首帧', icon: 'mdi:page-first' },
+  { position: 'current', label: '导出当前帧', icon: 'mdi:camera-outline' },
+  { position: 'last', label: '导出尾帧', icon: 'mdi:page-last' },
+];
+
+interface VideoNodeToolbarProps {
+  nodeId: string;
+  onCaptureFrame: (position: CaptureFramePosition) => void;
+  onExtractAudio: () => void;
+  isExtractingAudio?: boolean;
+  onFullscreen: () => void;
+  onCopyFile: () => void;
+  onReversePrompt: () => void;
+  onShowPrompt: () => void;
+  isReversingPrompt?: boolean;
+}
+
+function VideoNodeToolbar({
+  nodeId, onCaptureFrame, onExtractAudio, isExtractingAudio, onFullscreen, onCopyFile, onReversePrompt, onShowPrompt, isReversingPrompt,
+}: VideoNodeToolbarProps) {
+  const t = useT();
+  const nodeType = 'ai-video';
+  const edit = useToolbarEdit({ nodeType });
+  const registry = edit.registry;
+  const pluginToolbar = useNodePluginToolbar({ nodeId });
+  const userPresets = useAppStore((s) => s.userPresets);
+
+  // ── 截帧子菜单：与图像节点的宫格菜单同一套结构与样式 ──
+  const [frameMenuOpen, setFrameMenuOpen] = useState(false);
+  const [frameMenuBelow, setFrameMenuBelow] = useState(false);
+  const frameWrapRef = useRef<HTMLDivElement>(null);
+  const frameMenuRef = useRef<HTMLDivElement>(null);
+
+  const toggleFrameMenu = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFrameMenuOpen((open) => !open);
+  }, []);
+
+  // 工具栏贴在节点顶部，上方放不下时翻到按钮下面
+  useEffect(() => {
+    if (!frameMenuOpen) return;
+    const raf = requestAnimationFrame(() => {
+      const anchor = frameWrapRef.current;
+      const menu = frameMenuRef.current;
+      if (!anchor || !menu) return;
+      setFrameMenuBelow(anchor.getBoundingClientRect().top - menu.offsetHeight - 12 < 0);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [frameMenuOpen]);
+
+  useEffect(() => {
+    if (!frameMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (frameWrapRef.current && !frameWrapRef.current.contains(e.target as unknown as globalThis.Node)) {
+        setFrameMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [frameMenuOpen]);
+
+  const pickFrame = useCallback((position: CaptureFramePosition) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFrameMenuOpen(false);
+    onCaptureFrame(position);
+  }, [onCaptureFrame]);
+
+  const handlePresetClick = useCallback(
+    (key: string) => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      executeToolbarPreset(key, nodeType, nodeId);
+    },
+    [nodeId],
+  );
+
+  const actionMap: Record<string, (e: React.MouseEvent) => void> = {
+    copyFile: (e) => { e.stopPropagation(); onCopyFile(); },
+    captureFrame: toggleFrameMenu,
+    extractAudio: (e) => { e.stopPropagation(); if (!isExtractingAudio) onExtractAudio(); },
+    showPrompt: (e) => { e.stopPropagation(); onShowPrompt(); },
+    reversePrompt: (e) => { e.stopPropagation(); if (!isReversingPrompt) onReversePrompt(); },
+    fullscreen: (e) => { e.stopPropagation(); onFullscreen(); },
+  };
+  const hiddenDefaultButtons = getHiddenDefaultToolbarButtons(registry, edit.activeButtonKeys);
+
+  const renderActionButton = (key: string) => {
+    const pluginButton = pluginToolbar.renderButton(key);
+    if (pluginButton) return pluginButton;
+    const def = registry.find((button) => button.key === key);
+    const handler = actionMap[key];
+    const isPreset = !def;
+
+    const presetDef = !def ? resolvePresetDef(key, nodeType, userPresets) : null;
+    if (!def && !presetDef) return null;
+
+    const resolvedDef = def ?? { key, label: presetDef!.label, icon: presetDef!.icon, defaultZone: '' };
+    const clickHandler = handler ?? handlePresetClick(key);
+
+    if (key === 'captureFrame') {
+      return (
+        <div key={key} className="multigrid-wrap" ref={frameWrapRef}>
+          <AnimatedButton
+            className="ftb-btn icon-only act-captureFrame"
+            data-tooltip={resolvedDef.label}
+            aria-label={resolvedDef.label}
+            onClick={clickHandler}
+          >
+            <Icon icon={resolvedDef.icon} width={14} height={14} />
+          </AnimatedButton>
+          {frameMenuOpen && (
+            <div
+              ref={frameMenuRef}
+              className={`multigrid-menu nodrag${frameMenuBelow ? ' multigrid-menu--below' : ''}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="multigrid-menu-title">{t('截取哪一帧')}</div>
+              {CAPTURE_FRAME_OPTIONS.map((option) => (
+                <button
+                  key={option.position}
+                  type="button"
+                  className="multigrid-menu-item"
+                  onClick={pickFrame(option.position)}
+                >
+                  <Icon icon={option.icon} width={15} height={15} />
+                  <span>{t(option.label)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const isReversing = key === 'reversePrompt' && isReversingPrompt;
+    const isExtracting = key === 'extractAudio' && isExtractingAudio;
+    const tooltip = isExtracting ? t('正在提取音频...') : isReversing ? t('反推中...') : resolvedDef.label;
+    return (
+      <AnimatedButton
+        key={key}
+        className={`ftb-btn icon-only ${isPreset ? 'act-preset' : `act-${key}`}`}
+        data-tooltip={tooltip}
+        aria-label={tooltip}
+        disabled={isReversing || isExtracting}
+        onClick={clickHandler}
+      >
+        <Icon icon={isExtracting ? 'mdi:loading' : resolvedDef.icon}
+          className={isExtracting ? 'motion-safe:animate-spin' : undefined} width={14} height={14} />
+      </AnimatedButton>
+    );
+  };
+
+  if (edit.isEditing) {
+    return <ToolbarEditor edit={edit} nodeType={nodeType} />;
+  }
+
+  return (
+    <>
+      <div className="node-floating-toolbar img-toolbar nodrag" {...edit.longPressHandlers}>
+        <div className="img-toolbar-main nodrag">
+          <ToolbarZones
+            zones={edit.layout.zones}
+            hiddenButtons={hiddenDefaultButtons}
+            renderButton={renderActionButton}
+          />
+        </div>
+      </div>
+      {pluginToolbar.dialog}
+    </>
+  );
+}
+
+export default memo(VideoNodeToolbar);

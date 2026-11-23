@@ -1,0 +1,335 @@
+/**
+ * 短剧资产 → 生图提示词（定妆 / 场景板 / 道具参考）
+ * 纯模板拼装，不依赖模型调用，保证可测、可离线。
+ */
+import type {
+  DramaAsset,
+  DramaAssetKind,
+  DramaAssetLibrary,
+  DramaCharacter,
+  DramaProp,
+  DramaScene,
+} from '../types/dramaAssets';
+import { buildDramaMentionId, DRAMA_ASSET_CATEGORY_LABEL, formatDramaMention, parseDramaMentionId } from '../types/dramaAssets';
+import { getDramaAssetCategory } from './dramaAssetSearch';
+
+export type DramaAssetPromptPurpose = 'lookbook' | 'scene_plate' | 'prop_ref';
+
+export function defaultPurposeForKind(kind: DramaAssetKind): DramaAssetPromptPurpose {
+  if (kind === 'character') return 'lookbook';
+  if (kind === 'scene') return 'scene_plate';
+  return 'prop_ref';
+}
+
+export function listDramaAssetsFlat(library: DramaAssetLibrary): DramaAsset[] {
+  return [...library.characters, ...library.scenes, ...library.props];
+}
+
+/** 全局三类资产复用同一份卡片记录；文件位置不参与业务身份。 */
+export function listGlobalDramaAssets(source: {
+  globalCharacters?: readonly DramaCharacter[];
+  globalScenes?: readonly DramaScene[];
+  globalProps?: readonly DramaProp[];
+}): DramaAsset[] {
+  return [...(source.globalCharacters ?? []), ...(source.globalScenes ?? []), ...(source.globalProps ?? [])];
+}
+
+/** 已在内存中的卡片直接复用；冷引用只读加载，不要求先打开资源库。 */
+export async function loadGlobalDramaAssetsForPrompt(
+  prompt: string,
+  source: Parameters<typeof listGlobalDramaAssets>[0],
+): Promise<DramaAsset[]> {
+  const assets = listGlobalDramaAssets(source);
+  const missing = [...prompt.matchAll(/@drama\{(global\/[^:}]+):[^}]*\}/g)].some((match) => {
+    const id = parseDramaMentionId(match[1]).assetId.slice('global/'.length);
+    return !assets.some((asset) => asset.id === id);
+  });
+  return missing ? (await import('./globalDramaAssetService')).loadGlobalDramaAssetCards() : assets;
+}
+
+export function findDramaAsset(
+  library: DramaAssetLibrary,
+  id: string,
+  globalAssets: readonly DramaAsset[] = [],
+): DramaAsset | undefined {
+  if (id.startsWith('global/')) {
+    const asset = globalAssets.find((entry) => entry.id === id.slice('global/'.length));
+    return asset ? { ...asset, id } : undefined;
+  }
+  return listDramaAssetsFlat(library).find((a) => a.id === id);
+}
+
+export function findDramaAssetByKind(
+  library: DramaAssetLibrary,
+  kind: DramaAssetKind,
+  id: string,
+): DramaAsset | undefined {
+  if (kind === 'character') return library.characters.find((a) => a.id === id);
+  if (kind === 'scene') return library.scenes.find((a) => a.id === id);
+  return library.props.find((a) => a.id === id);
+}
+
+/**
+ * 无图时 @ 资产插入的单条简介（对齐提取节点输出的条目格式）。
+ * 只含这一条，不带整表其它人/场景/道具。
+ */
+export function formatDramaAssetTextBrief(asset: DramaAsset): string {
+  const imp =
+    asset.importance === 'main' ? '（主要）'
+      : asset.importance === 'supporting' ? '（次要）'
+        : '';
+  const lines: string[] = [
+    `## ${DRAMA_ASSET_CATEGORY_LABEL[getDramaAssetCategory(asset)]}：${asset.name}${imp}`,
+  ];
+
+  if (asset.kind === 'character') {
+    const c = asset as DramaCharacter;
+    if (c.identity) lines.push(`- 身份：${c.identity}`);
+    if (c.aliases?.length) lines.push(`- 别名：${c.aliases.join('、')}`);
+    if (c.ageBand) lines.push(`- 年龄段：${c.ageBand}`);
+    if (c.gender) lines.push(`- 性别呈现：${c.gender}`);
+    if (c.personality) lines.push(`- 性格：${c.personality}`);
+    if (c.summary) lines.push(`- 简介：${c.summary}`);
+    if (c.visualNotes) lines.push(`- 外形要点：${c.visualNotes}`);
+    if (c.wardrobeDefault) lines.push(`- 默认造型：${c.wardrobeDefault}`);
+    if (c.voiceNotes) lines.push(`- 声音：${c.voiceNotes}`);
+    if (c.storyRole) lines.push(`- 剧情功能：${c.storyRole}`);
+    if (c.relationships?.length) {
+      lines.push(
+        `- 关系：${c.relationships.map((r) => `${r.targetName}（${r.relation}）`).join('；')}`,
+      );
+    }
+  } else if (asset.kind === 'scene') {
+    const s = asset as DramaScene;
+    if (s.summary) lines.push(`- 简介：${s.summary}`);
+    if (s.placeType) lines.push(`- 类型：${s.placeType}`);
+    if (s.timeOfDay) lines.push(`- 时段：${s.timeOfDay}`);
+    if (s.atmosphere) lines.push(`- 氛围：${s.atmosphere}`);
+    if (s.visualNotes) lines.push(`- 视觉要点：${s.visualNotes}`);
+    if (s.spatialNotes) lines.push(`- 空间：${s.spatialNotes}`);
+    if (s.storyRole) lines.push(`- 剧情功能：${s.storyRole}`);
+  } else {
+    const p = asset as DramaProp;
+    if (p.summary) lines.push(`- 简介：${p.summary}`);
+    if (p.ownerName) lines.push(`- 归属：${p.ownerName}`);
+    if (p.category) lines.push(`- 分类：${p.category}`);
+    if (p.visualNotes) lines.push(`- 外观要点：${p.visualNotes}`);
+    if (p.significance) lines.push(`- 为何重要：${p.significance}`);
+    if (p.storyRole) lines.push(`- 剧情功能：${p.storyRole}`);
+  }
+
+  return lines.join('\n');
+}
+
+/** 动作素材使用库内保存的内容，来源节点隐藏、删除或重新生成不改变已选素材。 */
+export function resolveDramaActionMediaRef(asset: DramaAsset | undefined, actionId: string, mediaId?: string) {
+  if (asset?.kind !== 'character' || !actionId || !mediaId) return null;
+  const action = asset.actions?.find((item) => item.id === actionId);
+  const media = action?.media?.find((item) => item.id === mediaId);
+  const url = media?.url?.trim();
+  if (!action || !media || !url) return null;
+  return {
+    ...media,
+    url,
+    label: `${asset.name} · ${action.name} · ${media.name}`,
+  };
+}
+
+/** 声音引用读取库内音频；默认优先主音色，指定片段失效时不替换为其他声音。 */
+export function resolveDramaVoiceRef(asset: DramaAsset | undefined, clipId?: string) {
+  if (asset?.kind !== 'character') return null;
+  const clips = asset.voiceClips ?? [];
+  const clip = clipId !== undefined
+    ? clips.find((item) => item.id === clipId)
+    : clips.find((item) => item.id === asset.primaryVoiceClipId && item.audioUrl?.trim())
+      ?? clips.find((item) => item.audioUrl?.trim());
+  const url = clip?.audioUrl?.trim();
+  if (!clip || !clip.id || !url) return null;
+  return { ...clip, url, label: `${asset.name} · ${clip.label?.trim() || '音频'}` };
+}
+
+/** 指定 referenceImageId 时只解析人物 / 场景 / 道具的那张图，失效时绝不替换为主图。 */
+export function resolveDramaAssetImageRef(
+  asset: DramaAsset,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+  referenceImageId?: string,
+): { imageNodeId?: string; imageUrl: string } | null {
+  const reference = referenceImageId !== undefined
+      ? asset.referenceImages?.find((item) => item.id === referenceImageId)
+      : asset.referenceImages?.find((item) => item.id === asset.primaryReferenceImageId)
+        || asset.referenceImages?.[0];
+  if (referenceImageId !== undefined && !reference) return null;
+  const imageNodeId = asset.id.startsWith('global/') ? undefined
+    : referenceImageId !== undefined ? reference?.sourceNodeId : reference?.sourceNodeId || asset.imageNodeId;
+  const node = imageNodeId ? nodes.find((item) => item.id === imageNodeId) : undefined;
+  const imageUrl =
+    (node?.data?.imageUrl as string | undefined)
+    || (node?.data?.thumbnailUrl as string | undefined)
+    || reference?.imageUrl
+    || (referenceImageId === undefined ? asset.imageUrl : undefined);
+  if (!imageUrl || !String(imageUrl).trim()) return null;
+  return { imageNodeId, imageUrl };
+}
+
+/** 仅同一张可用图片且库内归属唯一时推荐库引用；不按名称猜测，也不替换分镜单格。 */
+export function preferredDramaMentionForNode(
+  nodeId: string,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+  library: DramaAssetLibrary,
+  globalAssets: readonly DramaAsset[] = [],
+): string | undefined {
+  const node = nodes.find((item) => item.id === nodeId);
+  if (!node || !['ai-image', 'source-image', 'ai-panorama', 'ai-animation', 'ai-storyboard'].includes(String(node.data?.type))) return undefined;
+  const imageUrl = node.data?.imageUrl || node.data?.thumbnailUrl;
+  if (typeof imageUrl !== 'string' || !imageUrl.trim()) return undefined;
+  const candidates = (assets: readonly DramaAsset[], global: boolean) => {
+    const mentions = new Set<string>();
+    for (const asset of assets) {
+      if (/[:#{}\r\n]/.test(asset.id) || /[{}\r\n]/.test(asset.name)) continue;
+      const references = asset.referenceImages?.length
+        ? asset.referenceImages.map((reference) => reference.id) : [undefined];
+      for (const referenceId of references) {
+        if (referenceId && /[:{}\r\n]/.test(referenceId)) continue;
+        if (resolveDramaAssetImageRef(asset, global ? [] : nodes, referenceId)?.imageUrl !== imageUrl) continue;
+        const id = global ? `global/${asset.id}` : asset.id;
+        mentions.add(formatDramaMention(buildDramaMentionId(id, referenceId), asset.name));
+      }
+    }
+    return [...mentions];
+  };
+  const projectMentions = candidates(listDramaAssetsFlat(library), false);
+  if (projectMentions.length) return projectMentions.length === 1 ? projectMentions[0] : undefined;
+  const globalMentions = candidates(globalAssets, true);
+  return globalMentions.length === 1 ? globalMentions[0] : undefined;
+}
+
+/** 保留 Picture 顺序和正文；无法精确映射的节点引用继续走原协议。 */
+export function preferDramaLibraryReferences(
+  prompt: string,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+  library: DramaAssetLibrary,
+  globalAssets: readonly DramaAsset[] = [],
+): string {
+  const cache = new Map<string, string | undefined>();
+  return prompt.replace(/@\{([^:}\r\n]+):[^}\r\n]+\}/g, (token, nodeId: string) => {
+    if (!cache.has(nodeId)) cache.set(nodeId, preferredDramaMentionForNode(nodeId, nodes, library, globalAssets));
+    return cache.get(nodeId) ?? token;
+  });
+}
+
+/** 角色的全部参考图地址（按库内顺序），用于 @drama{id#all} 拼成一张 */
+export function collectCharacterReferenceUrls(
+  asset: DramaAsset,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+): string[] {
+  if (asset.kind !== 'character') return [];
+  return (asset.referenceImages ?? [])
+    .map((reference) => {
+      const node = !asset.id.startsWith('global/') && reference.sourceNodeId
+        ? nodes.find((item) => item.id === reference.sourceNodeId)
+        : undefined;
+      return (node?.data?.imageUrl as string | undefined)
+        || (node?.data?.thumbnailUrl as string | undefined)
+        || reference.imageUrl;
+    })
+    .filter((url): url is string => !!url && !!url.trim());
+}
+
+function joinParts(parts: Array<string | undefined | false>): string {
+  return parts
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter(Boolean)
+    .join('，');
+}
+
+/** 人物定妆 lookbook prompt */
+export function buildCharacterLookbookPrompt(c: DramaCharacter, styleHint?: string): string {
+  const subject = joinParts([
+    c.identity || c.summary,
+    c.gender,
+    c.ageBand,
+    c.personality ? `${c.personality}气质` : undefined,
+  ]);
+  const look = joinParts([
+    c.visualNotes,
+    c.wardrobeDefault ? `服装：${c.wardrobeDefault}` : undefined,
+  ]);
+  const style = styleHint?.trim() || '电影感写实人像，柔和棚拍光';
+  return [
+    `角色定妆参考图（lookbook），单人全身，白色或浅灰干净背景，无文字无水印。`,
+    `角色名：${c.name}。`,
+    subject ? `人物：${subject}。` : '',
+    look ? `外形与着装：${look}。` : '',
+    `姿态自然站立，正对镜头或微侧，表情中性克制。`,
+    `画面清晰、五官与服装细节可辨，适合作为后续分镜一致性参考。`,
+    `风格：${style}。`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** 场景概念板 prompt */
+export function buildScenePlatePrompt(s: DramaScene, styleHint?: string): string {
+  const env = joinParts([
+    s.placeType,
+    s.timeOfDay,
+    s.atmosphere,
+    s.spatialNotes,
+  ]);
+  const style = styleHint?.trim() || '电影感场景概念图，写实光影';
+  return [
+    `空镜场景概念图（scene plate），无人或仅远景剪影，无文字无水印。`,
+    `场景名：${s.name}。`,
+    s.summary ? `场景简介：${s.summary}。` : '',
+    s.visualNotes ? `视觉要点：${s.visualNotes}。` : '',
+    env ? `环境：${env}。` : '',
+    `构图强调空间层次与光影氛围，适合作为分镜环境参考。`,
+    `风格：${style}。`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** 道具参考图 prompt */
+export function buildPropRefPrompt(p: DramaProp, styleHint?: string): string {
+  const meta = joinParts([
+    p.category,
+    p.ownerName ? `归属${p.ownerName}` : undefined,
+    p.significance,
+  ]);
+  const style = styleHint?.trim() || '产品摄影质感，柔和棚光';
+  return [
+    `关键道具参考图（prop reference），静物特写，干净背景，无文字无水印。`,
+    `道具名：${p.name}。`,
+    p.summary ? `简介：${p.summary}。` : '',
+    p.visualNotes ? `外观：${p.visualNotes}。` : '',
+    meta ? `补充：${meta}。` : '',
+    `材质与磨损细节清晰，适合作为戏用道具一致性参考。`,
+    `风格：${style}。`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function buildDramaAssetImagePrompt(
+  asset: DramaAsset,
+  _purpose?: DramaAssetPromptPurpose,
+  styleHint?: string,
+): string {
+  // purpose 预留；一期按资产 kind 映射 lookbook / scene_plate / prop_ref
+  if (asset.kind === 'character') return buildCharacterLookbookPrompt(asset, styleHint);
+  if (asset.kind === 'scene') return buildScenePlatePrompt(asset, styleHint);
+  return buildPropRefPrompt(asset, styleHint);
+}
+
+export function defaultAspectRatioForAsset(kind: DramaAssetKind): string {
+  if (kind === 'character') return '3:4';
+  if (kind === 'scene') return '16:9';
+  return '1:1';
+}
+
+export function purposeLabel(purpose: DramaAssetPromptPurpose): string {
+  if (purpose === 'lookbook') return '定妆图';
+  if (purpose === 'scene_plate') return '场景板';
+  return '道具参考';
+}

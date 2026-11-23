@@ -1,0 +1,52 @@
+/* ============================================
+   AI Canvas — Styles Entry Point
+   All partials imported here; main.tsx imports this file.
+   ============================================ */
+
+@import './styles/base.css';
+@import './styles/ui-kit.css';
+@import './styles/cursors.css';
+@import './styles/reactflow.css';
+@import './styles/nodes.css';
+@import './styles/nodes-text.css';
+@import './styles/nodes-image.css';
+@import './styles/nodes-audio.css';
+@import './styles/nodes-animation.css';
+@import './styles/panorama-core.css';
+@import './styles/panorama-viewer.css';
+@import './styles/nodes-panorama.css';
+@import './styles/nodes-storyboard.css';
+@import './styles/nodes-shotlist.css';
+@import './styles/nodes-director.css';
+@import './styles/nodes-group.css';
+@import './styles/prompt.css';
+@import './styles/mention-picker.css';
+@import './styles/preset-manager.css';
+@import './styles/model-selector.css';
+@import './styles/sidebar.css';
+@import './styles/panels.css';
+@import './styles/script-workbench.css';
+@import './styles/story-graph.css';
+@import './styles/assistant.css';
+@import './styles/settings.css';
+@import './styles/appearance-layout.css';
+@import './styles/mcp-rooftop-tribute.css';
+@import './styles/quality-ratio.css';
+@import './styles/cloud-workflow-params.css';
+@import './styles/canvas-context.css';
+@import './styles/canvas-radial-menu.css';
+@import './styles/tooltip.css';
+@import './styles/crop.css';
+@import './styles/composer.css';
+@import './styles/backgrounds.css';
+@import './styles/toolbar-editor.css';
+@import './styles/separators.css';
+@import './styles/character-library.css';
+@import './styles/canvas-drawing.css';
+@import './styles/canvas-viewport.css';
+@import './styles/video-editor.css';
+@import './styles/range-controls.css';
+@import './styles/minimap-stats.css';
+@import './styles/appearance-glass.css';
+@import './styles/canvas-onboarding.css';
+@import './styles/overlay-scrollbar.css';

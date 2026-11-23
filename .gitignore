@@ -1,0 +1,73 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# 官网内嵌的 Web 构建产物，由 Pages workflow 生成，不入库
+site/app
+
+.agents/*
+.codebuddy/
+.codegraph/
+.codebuddy/skills/*
+.codebuddy/commands/*
+.workbuddy/*
+.codegraph/*
+.claude/*
+doc/测试报告.md
+.planning
+.cargo
+.enola/*
+
+generated-images/*
+
+# Rust build output
+src-tauri/target/
+
+# Tauri update signing private key & credentials (DO NOT COMMIT)
+src-tauri/update-key.key
+*.key
+!src-tauri/update-key.key.pub
+*.token
+.env
+.env.*
+servers*.txt
+*.pyc
+src-tauri/resources/huanggua-studio/
+src-tauri/resources/huanggua-studio.zip
+src-tauri/resources/huanggua-studio.zip.tmp
+src-tauri/resources/huanggua-studio.json
+__pycache__/
+.local-*.log
+.secrets/
+
+promo-video
+
+# 临时诊断文件（勿提交）
+release_list.json
+graphql_result.json
+rest_releases.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Reviewed offline director dependency
+src-tauri/resources/director-desk.tar.gz
+src-tauri/resources/windows-runtime/

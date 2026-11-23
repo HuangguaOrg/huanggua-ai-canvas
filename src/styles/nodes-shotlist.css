@@ -1,0 +1,555 @@
+/* ============================================
+   Shotlist Node — 分镜表（一行一镜；画面格引用画布节点，整表可推时间轴）
+   ============================================ */
+
+.shotlist-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+/* 全屏沿用同一张编辑表；层级低于制作、补图等宿主弹窗。 */
+.fullscreen-overlay.shotlist-fullscreen {
+  z-index: 200;
+}
+
+.shotlist-fullscreen .fullscreen-panel {
+  height: 92vh;
+}
+
+.fullscreen-body.shotlist-fullscreen-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.shotlist-fullscreen .shotlist-table {
+  font-size: var(--ui-font-input);
+}
+
+.shotlist-fullscreen .shot-input {
+  font-size: var(--ui-font-input);
+}
+
+.shotlist-fullscreen .shotlist-toolbar,
+.shotlist-fullscreen .shotlist-table th {
+  cursor: var(--cursor-default, default);
+}
+
+/* ── 顶部工具条 ── */
+/* 表体被输入框占满，拖不动节点，因此这条工具带兼作拖拽手柄 */
+.shotlist-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  flex-shrink: 0;
+  cursor: grab;
+}
+
+.shotlist-toolbar:active {
+  cursor: grabbing;
+}
+
+.shotlist-stat {
+  font-size: 11px;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.6));
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.shotlist-toolbar-actions {
+  position: relative;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 按钮区自己接管指针，其余部分留给拖拽 */
+.shotlist-toolbar-actions {
+  cursor: var(--cursor-default, default);
+}
+
+.shotlist-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--theme-text, rgba(255, 255, 255, 0.85));
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.shotlist-btn:hover {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.shotlist-btn:disabled {
+  opacity: 0.6;
+  cursor: var(--cursor-default, default);
+}
+
+.shotlist-btn:disabled:hover {
+  background: transparent;
+  border-color: var(--theme-border, rgba(255, 255, 255, 0.12));
+}
+
+.shotlist-btn--primary {
+  border-color: rgba(251, 191, 36, 0.45);
+  color: #fbbf24;
+}
+
+/* ── 列显隐菜单 ── */
+.shotlist-column-menu {
+  max-height: min(70vh, 480px);
+}
+
+/* ── 表体 ── */
+.shotlist-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.shotlist-table {
+  display: block;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.shotlist-table thead,
+.shotlist-table tbody {
+  display: block;
+}
+
+.shotlist-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.shotlist-table tr {
+  display: grid;
+  grid-template-columns: var(--shotlist-columns);
+}
+
+.shotlist-table th,
+.shotlist-table td {
+  min-width: 0;
+}
+
+.shotlist-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 5px 6px;
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.6));
+  background: var(--theme-surface, #14141c);
+  border-bottom: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  /* 表头没有输入控件，和工具带一样可以直接拖动节点 */
+  cursor: grab;
+  user-select: none;
+}
+
+.shotlist-column-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.shotlist-column-resize::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  right: 2px;
+  width: 2px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--theme-border);
+}
+
+.shotlist-column-resize:hover::after,
+.shotlist-column-resize:focus-visible::after {
+  background: var(--brand);
+}
+
+.shotlist-table thead:active th {
+  cursor: grabbing;
+}
+
+.shotlist-table td {
+  display: flex;
+  align-items: center;
+  padding: 3px 5px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--theme-border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+.shotlist-table td > * {
+  width: 100%;
+  min-width: 0;
+}
+
+.shotlist-table td.shot-col-grip,
+.shotlist-table td.shot-col-actions {
+  padding: 3px 2px;
+}
+
+.shot-row--dragging {
+  opacity: 0.45;
+}
+
+/* 排序、时长与操作固定宽度，其他列按比例分配剩余空间。 */
+.shot-col-grip { width: 26px; }
+.shot-col-actions { width: 106px; }
+.shotlist-table th.shot-col-actions { text-align: center; }
+.shotlist-table .shot-col-shotNo { width: 48px; text-align: center; }
+.shot-col-duration { width: 84px; }
+
+.shot-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.45));
+  cursor: grab;
+}
+
+.shot-grip:active { cursor: grabbing; }
+
+/* 单元格视觉由 UI Kit 管理，这里只保留表格布局。 */
+.shot-input--text {
+  min-height: 52px;
+  resize: none;
+}
+
+.shot-content-editor {
+  font-size: var(--ui-font-input);
+}
+
+.shot-content-editor .prompt-editor {
+  min-height: 52px;
+  max-height: 52px;
+  padding: 8px 10px;
+  font-size: inherit;
+}
+
+/* ── 画面格 ── */
+.shot-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--theme-bg, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shot-frame--empty {
+  flex-direction: column;
+  gap: 1px;
+  border-style: dashed;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+}
+
+/* 空格子本身就是「挑画面」按钮 */
+button.shot-frame {
+  padding: 0;
+  font: inherit;
+  cursor: var(--cursor-pointer, pointer);
+}
+
+button.shot-frame:hover {
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+.shot-frame-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(251, 191, 36, 0.25);
+  border-top-color: #fbbf24;
+  border-radius: 50%;
+  animation: shot-frame-spin 0.7s linear infinite;
+}
+
+@keyframes shot-frame-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 源节点已不在画布上：显示的是绑定时的快照 */
+.shot-frame--dangling {
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+.shot-frame--dangling .shot-frame-img {
+  opacity: 0.55;
+}
+
+/* 拖着素材节点悬停在格子上 */
+.shot-frame--drop-target {
+  border-color: #fbbf24;
+  border-style: solid;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.3);
+}
+
+.shot-frame-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  cursor: var(--cursor-pointer, pointer);
+  user-select: none;
+}
+
+.shot-frame-hint {
+  font-size: 9px;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+}
+
+.shot-frame-badge {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  color: rgba(255, 255, 255, 0.9);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+  pointer-events: none;
+}
+
+.shot-frame-unbind,
+.shot-frame-pick {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: var(--cursor-pointer, pointer);
+}
+
+.shot-frame-pick {
+  right: auto;
+  left: 2px;
+}
+
+.shot-frame:hover .shot-frame-unbind,
+.shot-frame:hover .shot-frame-pick {
+  display: flex;
+}
+
+.shot-video > .resource-video-preview {
+  height: 100%;
+  min-height: 0;
+  aspect-ratio: auto;
+  border-radius: inherit;
+}
+.shot-video .resource-video-play,
+.shot-video .shot-frame-unbind {
+  width: var(--ui-control-h-sm);
+  height: var(--ui-control-h-sm);
+  background: transparent;
+  color: var(--theme-text);
+  border: 0;
+  box-shadow: none;
+}
+.shot-video .resource-video-play svg,
+.shot-video .shot-frame-unbind svg {
+  width: 14px;
+  height: 14px;
+}
+.shot-video .shot-frame-unbind {
+  z-index: 2;
+  display: flex;
+  top: 0;
+  right: 0;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 2px;
+  color: var(--danger-light);
+}
+.shot-video .shot-frame-unbind:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+
+/* ── 画面挑选浮层（Portal 到 body，固定定位）── */
+.shot-picker {
+  position: fixed;
+  z-index: 9999;
+  width: 360px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  background: var(--theme-surface, #14141c);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.shot-picker-title {
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.5));
+}
+
+.shot-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  max-height: 176px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.shot-picker-item {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  background: var(--theme-bg, rgba(0, 0, 0, 0.25));
+  overflow: hidden;
+  cursor: var(--cursor-pointer, pointer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shot-picker-item:hover {
+  border-color: #fbbf24;
+}
+
+.shot-picker-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.shot-picker-empty {
+  margin-bottom: 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+}
+
+/*
+ * @提及编辑器外壳：给它一个和原输入框一致的边框与最小高度。
+ *
+ * 这里绝不能加 overflow —— @候选面板是 absolute + bottom-full，
+ * 定位在外壳「上方」的框外，外壳一旦裁剪就整个看不见了。
+ * 需要滚动的是内层编辑区，见下面的 .prompt-editor。
+ */
+.shot-picker-input {
+  width: 100%;
+  min-height: 74px;
+  padding: 6px 8px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.5;
+  border-radius: 6px;
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--theme-text, rgba(255, 255, 255, 0.9));
+  outline: none;
+  resize: none;
+}
+
+/* 编辑区在壳内部，焦点要靠 focus-within 才接得住 */
+.shot-picker-input:focus,
+.shot-picker-input:focus-within {
+  border-color: rgba(251, 191, 36, 0.55);
+}
+
+/* MentionEditor 自带 padding 与最小高度，在这个小壳里要让位；长文在这里滚，不在外壳 */
+.shot-picker-input .prompt-editor {
+  min-height: 58px;
+  max-height: 148px;
+  overflow-y: auto;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/*
+ * @ 候选面板贴着壳左边展开，别被 12px 内边距推歪；压过浮层里的其他内容。
+ *
+ * 面板自身没有高度上限，是向上（bottom-full）展开的，连线节点加角色一多就会
+ * 顶出视口上沿。上限不能写死：浮层贴着屏幕上边打开时头顶根本没有 200px。
+ * 因此由 openPicker 按当时的可用空间算出 --shot-drop-max 写进来，够高才给满。
+ */
+.shot-picker-input .mention-dropdown {
+  left: 0;
+  width: 100%;
+  z-index: 20;
+}
+
+/* Tab / 芯片行常驻，把可用高度让给卡片网格自己滚 */
+.shot-picker-input .mention-dropdown .mention-picker-grid {
+  max-height: max(120px, calc(var(--shot-drop-max, 200px) - 112px));
+}
+
+.shot-picker-go {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ── 空表与加行 ── */
+.shotlist-empty {
+  padding: 18px 8px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.45));
+}
+
+.shotlist-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  padding: 5px;
+  flex-shrink: 0;
+  font-size: 11px;
+  border: none;
+  border-top: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.6));
+  cursor: var(--cursor-pointer, pointer);
+}
+
+.shotlist-add:hover {
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+}

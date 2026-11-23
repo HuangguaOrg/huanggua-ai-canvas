@@ -1,0 +1,790 @@
+/**
+ * videoNodePreviewLifecycle — 回归测试：video node demand loading。
+ */
+vi.mock('../../src/services/comfyMediaSource', () => ({ acquireComfyMediaSource: async (src: string) => ({ src, release: () => {} }) }));
+vi.mock('../../src/components/shared/ViewportImage', () => ({ default: 'img' }));
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+interface Element { type: unknown; props: Record<string, unknown> & { children?: unknown } }
+type EditorSubscriber = Parameters<typeof import('../../src/services/videoEditorWindowService').subscribeVideoEditorWindow>[1];
+const driver = vi.hoisted(() => ({
+  states: [] as unknown[], refs: [] as Array<{ current: unknown }>,
+  effects: [] as Array<{ deps?: readonly unknown[]; cleanup?: () => void }>,
+  pending: [] as Array<() => void>, stateIndex: 0, refIndex: 0, effectIndex: 0,
+  callbacks: [] as Array<{ callback: unknown; deps?: readonly unknown[] }>, upload: vi.fn(),
+  acquire: vi.fn(), ready: vi.fn(), seek: vi.fn(), rerender: undefined as (() => void) | undefined,
+  editorSubscriber: undefined as EditorSubscriber | undefined, editorBindingCurrent: false,
+  transitionImports: 0, transitionLoadStarted: undefined as (() => void) | undefined,
+  transitionLoadGate: undefined as Promise<void> | undefined,
+  listEditorModels: vi.fn(), runTransition: vi.fn(), postEditorModels: vi.fn(), postTransitionResult: vi.fn(),
+  gesture: false,
+  extractAudio: vi.fn(), saveAudio: vi.fn(),
+}));
+
+vi.mock('react', async () => {
+  const actual = await vi.importActual<typeof import('react')>('react');
+  return { ...actual, memo: <T,>(value: T) => value, useCallback: <T,>(value: T, deps?: readonly unknown[]) => {
+    driver.callbacks.push({ callback: value, deps });
+    return value;
+  },
+    useState: <T,>(initial: T | (() => T)) => {
+      const index = driver.stateIndex++;
+      if (!(index in driver.states)) driver.states[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
+      return [driver.states[index], (value: T | ((previous: T) => T)) => {
+        driver.states[index] = typeof value === 'function' ? (value as (previous: T) => T)(driver.states[index] as T) : value;
+      }];
+    },
+    useRef: <T,>(initial: T) => {
+      const index = driver.refIndex++;
+      driver.refs[index] ??= { current: initial };
+      return driver.refs[index];
+    },
+    useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
+      const index = driver.effectIndex++;
+      const previous = driver.effects[index];
+      if (previous && deps?.length === previous.deps?.length && deps?.every((dep, i) => Object.is(dep, previous.deps?.[i]))) return;
+      driver.pending.push(() => {
+        previous?.cleanup?.();
+        driver.effects[index] = { deps, cleanup: effect() ?? undefined };
+      });
+    },
+  };
+});
+vi.mock('react-dom', () => ({ flushSync: (callback: () => void) => { callback(); driver.rerender?.(); } }));
+vi.mock('@xyflow/react', () => ({ Handle: 'handle', Position: { Left: 'left', Right: 'right' } }));
+vi.mock('../../src/components/nodes/shared/video/canvasVideoPreviewCache', () => ({
+  acquireCanvasVideoPoster: driver.acquire,
+  waitForCanvasVideoReady: driver.ready,
+  releaseCanvasVideo: (video: FakeVideo | null) => { video?.pause(); video?.removeAttribute('src'); video?.load(); },
+}));
+vi.mock('../../src/i18n', () => ({ useT: () => (message: string) => message }));
+vi.mock('../../src/hooks/useCompletionFlash', () => ({ useCompletionFlash: () => false }));
+vi.mock('../../src/hooks/useCanvasNodeLod', () => ({ useCanvasNodeLodProtection: vi.fn() }));
+vi.mock('../../src/components/nodes/shared/useNodeRename', () => ({ useNodeRename: () => ({ displayLabel: 'Video', handleRename: vi.fn() }) }));
+vi.mock('../../src/components/nodes/shared/useSourceFileUpload', () => ({ useSourceFileUpload: () => ({ isUploading: false, handleUpload: driver.upload }) }));
+vi.mock('../../src/services/fileService', () => ({
+  downloadUrlAndSave: vi.fn(), saveDataUrlToProjectData: vi.fn(), buildNodeFileName: () => 'frame.jpg',
+  isTauriEnv: () => true, saveBinaryToProjectData: driver.saveAudio,
+}));
+vi.mock('../../src/services/clipboardService', () => ({ copyFile: vi.fn() }));
+vi.mock('../../src/services/indexedDbService', () => ({ buildVideoEditorProjectId: () => 'editor' }));
+vi.mock('../../src/services/videoEditorWindowService', async (original) => ({
+  // 普通预览默认没有活动剪辑会话，只有交接测试显式启用绑定。
+  ...await original<typeof import('../../src/services/videoEditorWindowService')>(),
+  postVideoEditorAiTransitionResult: driver.postTransitionResult,
+  postVideoEditorModels: driver.postEditorModels,
+  isVideoEditorWindowBindingCurrent: () => driver.editorBindingCurrent,
+  subscribeVideoEditorWindow: (_instanceId: string, subscriber: EditorSubscriber) => {
+    driver.editorSubscriber = subscriber;
+    return () => { if (driver.editorSubscriber === subscriber) driver.editorSubscriber = undefined; };
+  },
+}));
+vi.mock('../../src/store/store.utils', () => ({ blobToDataUrl: async () => 'data:image/jpeg;base64,frame', derivedNodePlacement: () => ({ position: { x: 0, y: 0 } }) }));
+vi.mock('../../src/utils/videoSeek', () => ({ seekVideoTo: driver.seek }));
+vi.mock('../../src/components/shared/VideoPlayer', () => ({ default: 'VideoPlayer' }));
+
+class FakeVideo {
+  readyState = 2; videoWidth = 1920; videoHeight = 1080; duration = 10;
+  currentTime = 0; paused = true; ended = false; src = 'asset://video.mp4';
+  volume = 1; muted = false;
+  play = vi.fn(() => { this.paused = false; return Promise.resolve(); });
+  pause = vi.fn(() => { this.paused = true; });
+  load = vi.fn();
+  getAttribute = () => this.src;
+  removeAttribute = vi.fn((_name: string) => { this.src = ''; this.readyState = 0; });
+}
+
+let Node: (props: { id: string; data: Record<string, unknown>; selected: boolean }) => unknown;
+let tree: unknown;
+let selected: boolean;
+let compact: FakeVideo | undefined;
+let fullscreen: FakeVideo | undefined;
+let compactMediaRef: ((video: FakeVideo | null) => void) | undefined;
+let revision: number;
+let store: {
+  currentProjectId: string; nodes: Array<{ id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> }>;
+  selectedNodeIds: string[]; getCurrentRevision: () => number;
+  updateNodeData: ReturnType<typeof vi.fn>; updateNodeDataTransient: ReturnType<typeof vi.fn>;
+  commitToHistory: ReturnType<typeof vi.fn>; openNodeDialog: ReturnType<typeof vi.fn>; showToast: ReturnType<typeof vi.fn>;
+  addNode: ReturnType<typeof vi.fn>; setReversePromptRequest: ReturnType<typeof vi.fn>;
+};
+
+function all(root: unknown, predicate: (element: Element) => boolean): Element[] {
+  if (Array.isArray(root)) return root.flatMap((child) => all(child, predicate));
+  if (!root || typeof root !== 'object' || !('props' in root)) return [];
+  const element = root as Element;
+  return [...(predicate(element) ? [element] : []), ...all(element.props.children, predicate)];
+}
+function find(predicate: (element: Element) => boolean) {
+  const found = all(tree, predicate)[0];
+  if (!found) throw new Error('Missing element');
+  return found;
+}
+function named(name: string) { return find((element) => element.type === name); }
+// 本夹具将 VideoPlayer 替为字符串；模拟其在宿主同步挂载后接续的用户播放手势。
+function requestPlayback() {
+  (named('VideoPlayer').props.onRequestPlayback as () => void)();
+  if (compact) void compact.play();
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+function render() {
+  driver.stateIndex = driver.refIndex = driver.effectIndex = 0;
+  driver.callbacks = [];
+  tree = Node({ id: 'video', data: store.nodes[0].data, selected });
+  const videos = all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false);
+  const player = videos.find((element) => element.props.compact === true);
+  if (compact && (!player || compact.src !== player.props.src)) {
+    compactMediaRef?.(null);
+    compact = undefined;
+  }
+  if (player) {
+    compact ??= new FakeVideo();
+    compact.src = player.props.src as string;
+    compactMediaRef = player.props.mediaRef as (video: FakeVideo | null) => void;
+    compactMediaRef(compact);
+  }
+  const full = videos.find((element) => !element.props.compact);
+  if (full) {
+    fullscreen ??= new FakeVideo();
+    (full.props.mediaRef as (video: FakeVideo) => void)(fullscreen);
+  } else fullscreen = undefined;
+  driver.pending.splice(0).forEach((effect) => effect());
+  return tree;
+}
+
+beforeEach(async () => {
+  vi.resetModules();
+  driver.states = []; driver.refs = []; driver.effects = []; driver.pending = [];
+  driver.acquire.mockReset().mockReturnValue(new Promise(() => {}));
+  driver.ready.mockReset().mockResolvedValue(undefined);
+  driver.seek.mockReset().mockImplementation(async (video: FakeVideo, time: number) => { video.currentTime = time; });
+  driver.upload.mockReset().mockResolvedValue(null);
+  driver.extractAudio.mockReset();
+  driver.saveAudio.mockReset().mockResolvedValue({ assetUrl: 'asset://extracted.m4a', filePath: 'extracted.m4a' });
+  vi.doMock('../../src/services/videoAudioExtractionService', () => ({ extractVideoAudio: driver.extractAudio }));
+  driver.editorSubscriber = undefined; driver.editorBindingCurrent = false;
+  driver.transitionImports = 0; driver.transitionLoadStarted = undefined; driver.transitionLoadGate = undefined;
+  driver.listEditorModels.mockReset().mockReturnValue([{ value: 'video/model', label: 'Video model', provider: 'video', groupName: 'Video' }]);
+  driver.runTransition.mockReset().mockResolvedValue({ videoUrl: 'asset://transition.mp4', fileName: 'transition.mp4' });
+  driver.postEditorModels.mockReset().mockResolvedValue(undefined);
+  driver.postTransitionResult.mockReset().mockResolvedValue(undefined);
+  vi.doMock('../../src/services/videoEditorAiTransitionService', async () => {
+    driver.transitionImports++;
+    driver.transitionLoadStarted?.();
+    await driver.transitionLoadGate;
+    return { listVideoEditorVideoModels: driver.listEditorModels, runVideoEditorAiTransition: driver.runTransition };
+  });
+  driver.rerender = () => { render(); };
+  selected = false; compact = undefined; fullscreen = undefined; compactMediaRef = undefined; revision = 1;
+  store = {
+    currentProjectId: 'project-a',
+    nodes: [{ id: 'video', type: 'ai-video', position: { x: 0, y: 0 }, data: { type: 'ai-video', label: 'Video', videoUrl: 'asset://video.mp4' } }],
+    selectedNodeIds: ['video'], getCurrentRevision: () => revision,
+    updateNodeData: vi.fn(), updateNodeDataTransient: vi.fn(), commitToHistory: vi.fn(), openNodeDialog: vi.fn(), showToast: vi.fn(),
+    addNode: vi.fn(), setReversePromptRequest: vi.fn(),
+  };
+  const useAppStore = Object.assign(<T,>(selector: (state: typeof store) => T) => selector(store), { getState: () => store });
+  vi.doMock('../../src/store/useAppStore', () => ({ useAppStore, generateId: () => 'frame', computeImageNodeDimensions: async () => ({ nodeWidth: 280, nodeHeight: 158 }) }));
+  for (const name of ['NodeLabel', 'NodeError', 'GooeyBtn', 'ResizeHandle', 'VideoNodeToolbar', 'NodeToolbarShell', 'NodeGenerationProgress']) {
+    vi.doMock(`../../src/components/nodes/shared/${name}`, () => ({ default: name }));
+  }
+  vi.doMock('../../src/components/shared/FullscreenOverlay', () => ({ default: 'FullscreenOverlay' }));
+  vi.stubGlobal('document', { createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage: vi.fn() }),
+    toBlob: (callback: (blob: Blob) => void) => callback(new Blob(['frame'])) }) });
+  Node = (await import('../../src/components/nodes/VideoNode')).default as unknown as typeof Node;
+});
+
+afterEach(() => {
+  driver.effects.forEach((effect) => effect.cleanup?.());
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('video node demand loading', () => {
+  it('extracts audio once while deselection unloads the player', async () => {
+    const started = deferred<void>();
+    const extracted = deferred<{ bytes: Uint8Array; extension: string; mimeType: string }>();
+    driver.extractAudio.mockImplementation(() => { started.resolve(); return extracted.promise; });
+    selected = true;
+    render();
+    const extract = named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>;
+    const completion = extract();
+    await started.promise;
+    await extract();
+    render();
+    expect(named('VideoNodeToolbar').props.isExtractingAudio).toBe(true);
+    expect(driver.extractAudio).toHaveBeenCalledOnce();
+    selected = false;
+    store.selectedNodeIds = [];
+    render();
+    expect((driver.extractAudio.mock.calls[0][1] as AbortSignal).aborted).toBe(false);
+    extracted.resolve({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    await completion;
+    expect(store.addNode).toHaveBeenCalledOnce();
+    expect(store.addNode.mock.calls[0][0]).toMatchObject({
+      type: 'ai-audio', data: { audioUrl: 'asset://extracted.m4a', role: 'source', status: 'success' },
+    });
+  });
+
+  it.each(['project', 'source', 'revision', 'deleted'])('discards audio after the %s changes during extraction', async (change) => {
+    const started = deferred<void>();
+    const extracted = deferred<{ bytes: Uint8Array; extension: string; mimeType: string }>();
+    driver.extractAudio.mockImplementation(() => { started.resolve(); return extracted.promise; });
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>)();
+    await started.promise;
+    if (change === 'project') store.currentProjectId = 'project-b';
+    if (change === 'source') store.nodes[0].data.videoUrl = 'asset://replacement.mp4';
+    if (change === 'revision') revision++;
+    if (change === 'deleted') store.nodes = [];
+    if (change === 'project' || change === 'source') render();
+    extracted.resolve({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    await completion;
+    expect(driver.saveAudio).not.toHaveBeenCalled();
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('discards saved audio if the canvas changes while the file is being written', async () => {
+    const started = deferred<void>();
+    const saved = deferred<{ assetUrl: string; filePath: string }>();
+    driver.extractAudio.mockResolvedValue({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    driver.saveAudio.mockImplementation(() => { started.resolve(); return saved.promise; });
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>)();
+    await started.promise;
+    revision++;
+    saved.resolve({ assetUrl: 'asset://extracted.m4a', filePath: 'extracted.m4a' });
+    await completion;
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('does not create an audio node when saving fails', async () => {
+    driver.extractAudio.mockResolvedValue({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    driver.saveAudio.mockRejectedValue(new Error('磁盘写入失败'));
+    selected = true;
+    render();
+    await (named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>)();
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).toHaveBeenCalledWith('提取音频失败：{message}', 'error');
+    render();
+    expect(named('VideoNodeToolbar').props.isExtractingAudio).toBe(false);
+  });
+
+  it('does not import the transition runtime while rendering an ordinary video node', () => {
+    render();
+    expect(driver.editorSubscriber).toBeDefined();
+    expect(driver.transitionImports).toBe(0);
+    expect(driver.listEditorModels).not.toHaveBeenCalled();
+    expect(driver.runTransition).not.toHaveBeenCalled();
+  });
+
+  it('loads the transition runtime only after an editor requests video models', async () => {
+    const posted = deferred<void>();
+    driver.postEditorModels.mockImplementation(async () => { posted.resolve(); });
+    render();
+    driver.editorBindingCurrent = true;
+    driver.editorSubscriber!({ type: 'storyai:video-editor-models-request' }, {
+      sessionId: 'editor-session', expectedContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 0,
+        projectId: 'project-a', projectEpoch: 0, canvasId: 'project-a', episodeId: null, canvasEpoch: 0, canvasRevision: 1 },
+    });
+    await posted.promise;
+    expect(driver.transitionImports).toBe(1);
+    expect(driver.listEditorModels).toHaveBeenCalledOnce();
+    expect(driver.postEditorModels).toHaveBeenCalledExactlyOnceWith('editor', driver.listEditorModels.mock.results[0].value);
+    expect(driver.runTransition).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { type: 'storyai:video-editor-models-request', log: '[videoEditor] 下发视频模型列表失败:' },
+    { type: 'storyai:video-editor-ai-transition-request', log: '[videoEditor] AI 转场生成失败:' },
+  ])('rejects a revoked editor binding while $type is loading its runtime', async ({ type, log }) => {
+    const loading = deferred<void>();
+    const release = deferred<void>();
+    const reported = deferred<void>();
+    driver.transitionLoadStarted = () => { loading.resolve(); };
+    driver.transitionLoadGate = release.promise;
+    const originalError = console.error.bind(console);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      if (args.length === 2 && args[0] === log && args[1] instanceof Error
+        && args[1].message === '剪辑窗口原画布上下文已撤销') reported.resolve();
+      else originalError(...args);
+    });
+    try {
+      render();
+      driver.editorBindingCurrent = true;
+      driver.editorSubscriber!({ type, payload: { requestId: 'transition-request' } }, {
+        sessionId: 'editor-session', expectedContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 0,
+          projectId: 'project-a', projectEpoch: 0, canvasId: 'project-a', episodeId: null, canvasEpoch: 0, canvasRevision: 1 },
+      });
+      await loading.promise;
+      driver.editorBindingCurrent = false;
+      release.resolve();
+      await reported.promise;
+      expect(driver.transitionImports).toBe(1);
+      expect(driver.listEditorModels).not.toHaveBeenCalled();
+      expect(driver.runTransition).not.toHaveBeenCalled();
+      expect(driver.postEditorModels).not.toHaveBeenCalled();
+      expect(driver.postTransitionResult).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledExactlyOnceWith(log,
+        expect.objectContaining({ message: '剪辑窗口原画布上下文已撤销' }));
+    } finally { release.resolve(); errorSpy.mockRestore(); }
+  });
+
+  it('旧空节点的比例和保存尺寸不一致时按当前比例显示，切换后即时更新', () => {
+    store.nodes[0].data = { type: 'ai-video', role: 'generator', seedanceRatio: '9:16', nodeWidth: 280, nodeHeight: 158 };
+    render();
+    const dimensions = () => ({
+      width: named('ResizeHandle').props.currentWidth,
+      height: named('ResizeHandle').props.currentHeight,
+    });
+    expect(dimensions()).toEqual({ width: 280, height: 498 });
+    store.nodes[0].data.seedanceRatio = '16:9';
+    render();
+    expect(dimensions()).toEqual({ width: 280, height: 158 });
+    expect(driver.acquire).not.toHaveBeenCalled();
+  });
+
+  it.each(['source', 'generator'])('保留 %s 已有视频的真实框尺寸，不按下次生成比例拉伸', (role) => {
+    store.nodes[0].data = { ...store.nodes[0].data, role, seedanceRatio: '9:16', nodeWidth: 480, nodeHeight: 270 };
+    render();
+    expect(named('ResizeHandle').props.currentWidth).toBe(480);
+    expect(named('ResizeHandle').props.currentHeight).toBe(270);
+  });
+
+  it.each([
+    { path: 'poster', videoWidth: 832, videoHeight: 1472, nodeWidth: 540, nodeHeight: 955 },
+    { path: 'player', videoWidth: 1920, videoHeight: 800, nodeWidth: 730, nodeHeight: 304 },
+  ])('fits the $path result to the enlarged short side without empty bands', async (
+    { path, videoWidth, videoHeight, nodeWidth, nodeHeight },
+  ) => {
+    const pending = deferred<unknown>();
+    driver.acquire.mockReturnValue(pending.promise);
+    selected = path === 'player';
+    render();
+    if (path === 'player') requestPlayback();
+    // 拖拽已更新 Store，但媒体回调仍来自上一轮渲染。
+    (named('ResizeHandle').props.onResize as (width: number, height: number) => void)(540, 304);
+    store.nodes[0].data = { ...store.nodes[0].data, ...store.updateNodeDataTransient.mock.calls[0][1] };
+    store.updateNodeDataTransient.mockClear();
+    if (path === 'poster') {
+      pending.resolve({ src: 'blob:cover', release: vi.fn(), width: 360, height: 640,
+        videoWidth, videoHeight, duration: 5 });
+      await pending.promise;
+    } else {
+      compact!.videoWidth = videoWidth;
+      compact!.videoHeight = videoHeight;
+      (find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+    }
+    expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
+      videoWidth, videoHeight, nodeWidth, nodeHeight,
+    });
+  });
+
+  it.each(['poster', 'player'])('initializes missing node dimensions from %s metadata', async (path) => {
+    const pending = deferred<unknown>();
+    driver.acquire.mockReturnValue(pending.promise);
+    selected = path === 'player';
+    render();
+    if (path === 'player') requestPlayback();
+    if (path === 'poster') {
+      pending.resolve({ src: 'blob:cover', release: vi.fn(), width: 640, height: 360,
+        videoWidth: 1920, videoHeight: 1080, duration: 10 });
+      await pending.promise;
+    } else {
+      (find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+    }
+    expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
+      videoWidth: 1920, videoHeight: 1080, nodeWidth: 320, nodeHeight: 180,
+    });
+  });
+
+  it('corrects an existing portrait frame even when video metadata was already stored', () => {
+    selected = true;
+    store.nodes[0].data = {
+      ...store.nodes[0].data, videoWidth: 832, videoHeight: 1472, nodeWidth: 400, nodeHeight: 225,
+    };
+    render();
+    requestPlayback();
+    compact!.videoWidth = 832;
+    compact!.videoHeight = 1472;
+    const onLoadedMetadata = find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.onLoadedMetadata as (event: unknown) => void;
+    onLoadedMetadata({ currentTarget: compact });
+    expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
+      videoWidth: 832, videoHeight: 1472, nodeWidth: 400, nodeHeight: 708,
+    });
+    store.nodes[0].data = { ...store.nodes[0].data, ...store.updateNodeDataTransient.mock.calls[0][1] };
+    store.updateNodeDataTransient.mockClear();
+    onLoadedMetadata({ currentTarget: compact });
+    expect(store.updateNodeDataTransient).not.toHaveBeenCalled();
+  });
+
+  it('keeps idle nodes free of video players and ignores thumbnailUrl values that actually point at the video', () => {
+    store.nodes[0].data.thumbnailUrl = 'asset://video.mp4';
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(driver.acquire).toHaveBeenCalledWith('asset://video.mp4', expect.any(AbortSignal));
+    expect(named('VideoPlayer').props.active).toBe(false);
+    expect(all(tree, (element) => 'onMouseEnter' in element.props || 'onPointerEnter' in element.props)).toHaveLength(0);
+  });
+
+  it('uses a supplied image cover without decoding video and retries generation only if that image fails', () => {
+    store.nodes[0].data.thumbnailUrl = 'asset://cover.jpg';
+    render();
+    expect(driver.acquire).not.toHaveBeenCalled();
+    const image = named('VideoPlayer');
+    expect(image.props.poster).toBe('asset://cover.jpg');
+    (image.props.onPosterError as () => void)();
+    render();
+    expect(driver.acquire).toHaveBeenCalledTimes(1);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+  });
+
+  it('retries a missing poster after the shared failure cooldown and stops once it succeeds', async () => {
+    vi.useFakeTimers();
+    const poster = { src: 'blob:recovered', release: vi.fn(), width: 640, height: 360,
+      videoWidth: 1920, videoHeight: 1080, duration: 10 };
+    driver.acquire.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(poster);
+    render();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(30_049);
+    expect(driver.acquire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(driver.acquire).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_050);
+    render();
+    expect(named('VideoPlayer').props.poster).toBe('blob:recovered');
+    await vi.advanceTimersByTimeAsync(90_150);
+    expect(driver.acquire).toHaveBeenCalledTimes(3);
+  });
+
+  it('limits automatic poster retries when the source remains unreadable', async () => {
+    vi.useFakeTimers();
+    driver.acquire.mockResolvedValue(null);
+    render();
+    await vi.advanceTimersByTimeAsync(150_250);
+    render();
+    expect(driver.acquire).toHaveBeenCalledTimes(3);
+    expect(named('VideoPlayer').props.poster).toBeUndefined();
+    expect(named('VideoPlayer').props.active).toBe(false);
+  });
+
+  it.each(['source', 'project', 'playback', 'fullscreen', 'unmount'])('cancels a scheduled poster retry on %s change', async (change) => {
+    vi.useFakeTimers();
+    driver.acquire.mockResolvedValue(null);
+    render();
+    await vi.advanceTimersByTimeAsync(0);
+    const originalSignal = driver.acquire.mock.calls[0][1] as AbortSignal;
+    if (change === 'source') store.nodes[0].data.videoUrl = 'asset://new.mp4';
+    else if (change === 'project') store.currentProjectId = 'project-b';
+    else if (change === 'playback') (named('VideoPlayer').props.onRequestPlayback as () => void)();
+    else if (change === 'fullscreen') (named('VideoPlayer').props.onFullscreen as () => void)();
+    else driver.effects.forEach((effect) => effect.cleanup?.());
+    // 新项目／来源的请求保持在途，以便明确检测旧计时器有没有错误重试。
+    driver.acquire.mockReturnValue(new Promise(() => {}));
+    if (change !== 'unmount') render();
+    expect(originalSignal.aborted).toBe(true);
+    if (change === 'unmount') expect(vi.getTimerCount()).toBe(0);
+    const count = driver.acquire.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(90_150);
+    expect(driver.acquire).toHaveBeenCalledTimes(count);
+  });
+
+  it('only mounts on the host playback request and leaves play failures to VideoPlayer', () => {
+    render();
+    (named('VideoPlayer').props.onRequestPlayback as () => void)();
+    expect(named('VideoPlayer').props.active).toBe(true);
+    expect(compact).toBeDefined();
+    expect(compact!.play).not.toHaveBeenCalled();
+  });
+
+  it('reveals a first-play error instead of leaving it beneath the initial cover', () => {
+    store.nodes[0].data.thumbnailUrl = 'asset://cover.jpg';
+    render();
+    requestPlayback();
+    const covers = () => all(tree, (element) => element.props.className === 'video-node-initial-cover');
+    expect(covers()).toHaveLength(1);
+    (named('VideoPlayer').props.onError as () => void)();
+    render();
+    expect(covers()).toHaveLength(0);
+    expect(named('VideoPlayer').props.active).toBe(true);
+  });
+
+  it('clears the old cover and remote provenance when the upload handler replaces a video source', async () => {
+    store.nodes[0].data.thumbnailUrl = 'asset://old-cover.jpg';
+    store.nodes[0].data.sourceUrl = 'https://old.example/old-video.mp4';
+    driver.upload.mockResolvedValue({ dataUrl: 'asset://new-video.mp4', filePath: 'project/new-video.mp4', fileName: 'new-video.mp4' });
+    render();
+    // 此回归调用真实上传处理器；当前已有视频的工具栏尚无独立替换入口。
+    const upload = driver.callbacks.find(({ deps }) => deps?.includes(driver.upload))?.callback as () => Promise<void>;
+    await upload();
+    expect(store.updateNodeData).toHaveBeenCalledWith('video', expect.objectContaining({
+      videoUrl: 'asset://new-video.mp4', thumbnailUrl: undefined, sourceUrl: undefined,
+    }));
+    store.nodes[0].data = { ...store.nodes[0].data, ...store.updateNodeData.mock.calls[0][1] };
+    render();
+    expect(driver.acquire).toHaveBeenCalledWith('asset://new-video.mp4', expect.any(AbortSignal));
+    expect(named('VideoPlayer').props.poster).not.toBe('asset://old-cover.jpg');
+  });
+
+  it('synchronously mounts the player before the original playback gesture, then unloads it after pause', () => {
+    render();
+    requestPlayback();
+    expect(compact?.play).toHaveBeenCalledOnce();
+    expect(named('VideoPlayer').props.active).toBe(true);
+    const video = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    (video.props.onPlay as () => void)();
+    render();
+    const oldVideo = compact!;
+    oldVideo.currentTime = 4.5;
+    oldVideo.volume = 0.3;
+    oldVideo.muted = true;
+    (video.props.onPause as () => void)();
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(oldVideo.removeAttribute).toHaveBeenCalledWith('src');
+    requestPlayback();
+    const next = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    (next.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+    expect(compact?.currentTime).toBe(4.5);
+    expect(compact?.volume).toBe(0.3);
+    expect(compact?.muted).toBe(true);
+  });
+
+  it('keeps a single selected node on its cover until playback is explicitly requested', () => {
+    selected = true;
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(compact).toBeUndefined();
+    selected = false;
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(compact).toBeUndefined();
+  });
+
+  it('does not activate players merely because many nodes are selected, but preserves explicit playback', () => {
+    selected = true;
+    store.selectedNodeIds = ['video', 'other-video'];
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(named('VideoPlayer').props.active).toBe(false);
+    requestPlayback();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
+    expect(compact?.play).toHaveBeenCalledOnce();
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    (player.props.onPlay as () => void)();
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
+    (player.props.onPause as () => void)();
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+  });
+
+  it('keeps paused playback unloaded when selection changes and restores it only after another play request', () => {
+    selected = true;
+    store.selectedNodeIds = ['video'];
+    render();
+    requestPlayback();
+    const oldVideo = compact!;
+    oldVideo.currentTime = 5;
+    (named('VideoPlayer').props.onPause as () => void)();
+    render();
+    store.selectedNodeIds = ['video', 'other-video'];
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(oldVideo.removeAttribute).toHaveBeenCalledWith('src');
+    store.selectedNodeIds = ['video'];
+    render();
+    expect(compact).toBeUndefined();
+    requestPlayback();
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    (player.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+    expect(compact?.currentTime).toBe(5);
+  });
+
+  it.each([{ ids: [] }, { ids: ['previous-node'] }])('does not activate a stale React Flow selected flag while app selection is $ids', ({ ids }) => {
+    selected = true;
+    store.selectedNodeIds = ids;
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(named('VideoPlayer').props.active).toBe(false);
+  });
+
+  it('cancels an obsolete poster and fits the latest resize made while the new poster loads', async () => {
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    driver.acquire.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    render();
+    const firstSignal = driver.acquire.mock.calls[0][1] as AbortSignal;
+    store.nodes[0].data = { ...store.nodes[0].data, videoUrl: 'asset://new.mp4' };
+    render();
+    expect(firstSignal.aborted).toBe(true);
+    const stale = { src: 'blob:old', release: vi.fn() };
+    first.resolve(stale);
+    await first.promise;
+    expect(stale.release).toHaveBeenCalled();
+    store.nodes[0].data = { ...store.nodes[0].data, nodeWidth: 540, nodeHeight: 304 };
+    revision++;
+    second.resolve({ src: 'blob:new', release: vi.fn(), width: 360, height: 640, videoWidth: 832, videoHeight: 1472, duration: 10 });
+    await second.promise;
+    render();
+    expect(named('VideoPlayer').props.poster).toBe('blob:new');
+    expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
+      videoWidth: 832, videoHeight: 1472, nodeWidth: 540, nodeHeight: 955,
+    });
+  });
+
+  it('waits for a newly selected video before capturing and rejects a project switch during that wait', async () => {
+    const ready = deferred<void>();
+    driver.ready.mockReturnValue(ready.promise);
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onCaptureFrame as () => Promise<void>)();
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+    store.currentProjectId = 'project-b';
+    render();
+    expect((driver.ready.mock.calls[0][1] as AbortSignal).aborted).toBe(true);
+    ready.resolve();
+    await completion;
+    expect(store.addNode).not.toHaveBeenCalled();
+  });
+
+  it('releases the old poster when a source changes to an already supplied cover', async () => {
+    const result = deferred<unknown>();
+    driver.acquire.mockReturnValue(result.promise);
+    render();
+    const release = vi.fn();
+    result.resolve({ src: 'blob:old', release, width: 640, height: 360, videoWidth: 1920, videoHeight: 1080, duration: 10 });
+    await result.promise;
+    render();
+    store.nodes[0].data = { ...store.nodes[0].data, videoUrl: 'asset://other.mp4', thumbnailUrl: 'asset://other.jpg' };
+    render();
+    render();
+    expect(release).toHaveBeenCalledOnce();
+    expect(named('VideoPlayer').props.poster).toBe('asset://other.jpg');
+  });
+
+  it('completes a requested frame capture once delayed video pixels become ready', async () => {
+    const ready = deferred<void>();
+    driver.ready.mockReturnValue(ready.promise);
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onCaptureFrame as () => Promise<void>)();
+    expect(store.addNode).not.toHaveBeenCalled();
+    ready.resolve();
+    await completion;
+    expect(store.addNode).toHaveBeenCalledOnce();
+    expect(store.addNode.mock.calls[0][0].data.imageUrl).toBe('data:image/jpeg;base64,frame');
+  });
+
+  it('continues tracking a capture after readiness and discards its frame when the player is paused and unloaded', async () => {
+    const seek = deferred<void>();
+    driver.seek.mockReturnValue(seek.promise);
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onCaptureFrame as () => Promise<void>)();
+    await Promise.resolve();
+    expect(driver.seek).toHaveBeenCalled();
+    const signal = driver.ready.mock.calls[0][1] as AbortSignal;
+    (named('VideoPlayer').props.onPause as () => void)();
+    selected = false;
+    store.selectedNodeIds = [];
+    render();
+    expect(signal.aborted).toBe(true);
+    seek.resolve();
+    await completion;
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a late seek error after source replacement and does not restore the new video to the old time', async () => {
+    const seek = deferred<void>();
+    driver.seek.mockReturnValue(seek.promise);
+    selected = true;
+    render();
+    requestPlayback();
+    compact!.currentTime = 4;
+    const completion = (named('VideoNodeToolbar').props.onCaptureFrame as () => Promise<void>)();
+    await Promise.resolve();
+    expect(driver.seek).toHaveBeenCalled();
+    store.nodes[0].data = { ...store.nodes[0].data, videoUrl: 'asset://new.mp4' };
+    render();
+    requestPlayback();
+    compact!.currentTime = 1;
+    compact!.readyState = 2;
+    seek.reject(new Error('视频定位超时'));
+    await completion;
+    expect(compact!.currentTime).toBe(1);
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('does not emit reverse-prompt frames after the source revision changes while loading', async () => {
+    const ready = deferred<void>();
+    driver.ready.mockReturnValue(ready.promise);
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onReversePrompt as () => Promise<void>)();
+    revision++;
+    ready.resolve();
+    await completion;
+    expect(store.setReversePromptRequest).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('keeps only one attached player through fullscreen and restores prior playback time', () => {
+    selected = true;
+    render();
+    requestPlayback();
+    compact!.currentTime = 3;
+    compact!.paused = false;
+    (named('VideoNodeToolbar').props.onFullscreen as () => void)();
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
+    expect(find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.compact).toBeUndefined();
+    fullscreen!.currentTime = 7;
+    (named('FullscreenOverlay').props.onClose as () => void)();
+    render();
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    expect(player.props.compact).toBe(true);
+    (player.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+    expect(compact!.currentTime).toBe(7);
+    expect(compact!.play).toHaveBeenCalled();
+  });
+
+  it('opens fullscreen at the remembered position after a paused compact player has been unloaded', () => {
+    render();
+    requestPlayback();
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    compact!.currentTime = 4.5;
+    (player.props.onPause as () => void)();
+    render();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    (named('VideoNodeToolbar').props.onFullscreen as () => void)();
+    render();
+    const full = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    expect(full.props.compact).toBeUndefined();
+    (full.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: fullscreen });
+    expect(fullscreen?.currentTime).toBe(4.5);
+  });
+
+  it('keeps thumbnail-only fullscreen usable without a video or saved playback record', () => {
+    store.nodes[0].data = { type: 'ai-video', thumbnailUrl: 'asset://cover-only.jpg' };
+    render();
+    const preview = find((element) => typeof element.props.className === 'string' && element.props.className.startsWith('node-preview compact'));
+    (preview.props.onDoubleClick as (event: unknown) => void)({ stopPropagation: vi.fn() });
+    render();
+    expect(named('FullscreenOverlay').props.isOpen).toBe(true);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+  });
+});

@@ -1,0 +1,62 @@
+/**
+ * 根据窗口查询参数懒加载主应用、资产搜索或独立聊天根视图，并提供统一错误边界。
+ */
+import { lazy, Suspense } from 'react';
+import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
+import OverlayScrollbarLayer from './components/shared/OverlayScrollbarLayer';
+import ReferencePreviewHost from './components/shared/ReferencePreviewHost';
+import HuangguaAccountDialog from './components/account/HuangguaAccountDialog';
+
+const App = lazy(() => import('./App'));
+const AssetSearchWindow = lazy(() => import('./components/AssetSearchWindow'));
+const ChatWindow = lazy(() => import('./components/chat/ChatWindow'));
+const ScriptWorkbenchWindow = lazy(() => import('./components/ScriptWorkbenchWindow'));
+// 懒加载：视频编辑器引入 mediabunny（体积大户），只有编辑器窗口才加载
+const VideoEditorWindow = lazy(() => import('./components/videoEditor/VideoEditorWindow'));
+// 懒加载：样式预览只在开发者/设计手动唤起时用到，不进主窗口首屏
+const StyleGuideWindow = lazy(() => import('./components/styleGuide/StyleGuideWindow'));
+const ComfyManagementWindow = lazy(() => import('./components/comfyui/ComfyManagementWindow'));
+
+interface RootViewProps {
+  view: string | null;
+}
+
+const VIEW_LABELS: Record<string, string> = {
+  assets: '资产搜索窗口',
+  chat: '独立聊天窗口',
+  'script-workbench': '独立剧本工作台',
+  'video-editor': '视频编辑器窗口',
+  'style-guide': '样式预览窗口',
+  'comfyui-settings': 'ComfyUI 管理窗口',
+};
+
+export default function RootView({ view }: RootViewProps) {
+  const viewLabel = (view && VIEW_LABELS[view]) || '黄瓜 AI 画布';
+
+  return (
+    <>
+      <LazyLoadBoundary label={viewLabel} variant="root">
+        <Suspense fallback={<LazyLoadFallback label={viewLabel} variant="root" />}>
+          {view === 'assets'
+            ? <AssetSearchWindow />
+            : view === 'chat'
+              ? <ChatWindow />
+              : view === 'script-workbench'
+                ? <ScriptWorkbenchWindow />
+              : view === 'video-editor'
+                ? <VideoEditorWindow />
+                : view === 'style-guide'
+                  ? <StyleGuideWindow />
+                  : view === 'comfyui-settings'
+                    ? <ComfyManagementWindow />
+                    : <App />}
+        </Suspense>
+      </LazyLoadBoundary>
+      <OverlayScrollbarLayer />
+      {!view && <HuangguaAccountDialog />}
+      {view !== 'script-workbench' && <LazyLoadBoundary label="引用内容预览">
+        <ReferencePreviewHost detached={view === 'chat'} />
+      </LazyLoadBoundary>}
+    </>
+  );
+}

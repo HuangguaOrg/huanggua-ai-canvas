@@ -1,0 +1,227 @@
+/**
+ * useCanvasContextMenu 画布右键菜单 Hook — 管理画布空白区域右键菜单的显示/隐藏、子菜单展开、节点添加操作
+ */
+import { t } from '../i18n';
+
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { useReactFlow } from '@xyflow/react';
+import type { Node as RFNode } from '@xyflow/react';
+import { useAppStore, generateId } from '../store/useAppStore';
+import type { BaseNodeData, NodeType } from '../types';
+import * as fileService from '../services/fileService';
+import { copyFiles as copyFilesToClipboard } from '../services/clipboardService';
+import { createPluginNode, getAvailablePluginNodes } from '../services/plugins/pluginRuntime';
+import type { AvailablePluginNode } from '../types/plugin';
+import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
+
+interface ContextMenuState {
+  visible: boolean;
+  position: { x: number; y: number };
+  flowPosition: { x: number; y: number };
+  hoverMenu: 'addNode' | null;
+}
+
+export function useCanvasContextMenu() {
+  const reactFlowInstance = useReactFlow();
+  const addNode = useAppStore((s) => s.addNode);
+  const undo = useAppStore((s) => s.undo);
+  const redo = useAppStore((s) => s.redo);
+  const pasteNodes = useAppStore((s) => s.pasteNodes);
+  const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
+  const installedPlugins = useAppStore((s) => s.installedPlugins);
+  const pluginNodes = getAvailablePluginNodes(installedPlugins);
+
+  const [menu, setMenu] = useState<ContextMenuState>({
+    visible: false,
+    position: { x: 0, y: 0 },
+    flowPosition: { x: 0, y: 0 },
+    hoverMenu: null,
+  });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const closeMenu = useCallback(() => {
+    setMenu({ visible: false, position: { x: 0, y: 0 }, flowPosition: { x: 0, y: 0 }, hoverMenu: null });
+  }, []);
+
+  // Close on click outside or Escape
+  useEffect(() => {
+    if (!menu.visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenu();
+    };
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as Element;
+      const ctxEl = menuRef.current;
+      const subEl = submenuRef.current;
+      if ((ctxEl && ctxEl.contains(target)) || (subEl && subEl.contains(target))) return;
+      if (target.closest('.canvas-ctx-menu')) return;
+      closeMenu();
+    };
+    document.addEventListener('keydown', onKey);
+    // 捕获阶段监听：传统交互模式下左键平移会被 React Flow(d3-zoom)在 pane 上 stopPropagation，
+    // 冒泡阶段的 document 监听收不到事件，必须在捕获阶段先于其触发才能关闭菜单。
+    document.addEventListener('mousedown', onClick, true);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onClick, true);
+    };
+  }, [menu.visible, closeMenu]);
+
+  const addNodeAtCtxPos = useCallback(
+    (
+      type: NodeType,
+      label: string,
+      role: 'generator' | 'source' = 'generator',
+      grid?: { rows: number; cols: number },
+    ) => {
+      if (type === 'ai-storyboard' && (!grid || !Number.isInteger(grid.rows) || !Number.isInteger(grid.cols)
+        || grid.rows < 1 || grid.cols < 1 || grid.rows > 20 || grid.cols > 20)) return;
+      const pos = menu.flowPosition;
+      const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
+      const defaultModel = role !== 'source' && type !== 'ai-director' ? getPreferredNodeModel(type, useAppStore.getState()) : null;
+      const id = `node-${generateId()}`;
+      const data = {
+        ...createUiNodeData(type, label, role),
+        ...(type === 'ai-storyboard' ? {
+          nodeWidth: Math.max(280, grid!.cols * 56), nodeHeight: Math.max(200, grid!.rows * 56),
+          storyboardRows: grid!.rows, storyboardCols: grid!.cols,
+          storyboardExtracted: new Array<boolean>(grid!.rows * grid!.cols).fill(true),
+        } : {}),
+        ...defaultModel,
+      };
+      const newNode: RFNode<BaseNodeData> = {
+        id, type,
+        position: { x: flowPos.x - data.nodeWidth / 2, y: flowPos.y - data.nodeHeight / 2 },
+        data,
+      };
+      addNode(newNode);
+      closeMenu();
+    },
+    [menu.flowPosition, reactFlowInstance, addNode, closeMenu],
+  );
+
+  const addPluginNodeAtCtxPos = useCallback((pluginNode: AvailablePluginNode) => {
+    const flowPos = reactFlowInstance.screenToFlowPosition(menu.flowPosition);
+    addNode(createPluginNode(pluginNode, flowPos));
+    closeMenu();
+  }, [menu.flowPosition, reactFlowInstance, addNode, closeMenu]);
+
+  const handleUndo = useCallback(() => { undo(); closeMenu(); }, [undo, closeMenu]);
+  const handleRedo = useCallback(() => { redo(); closeMenu(); }, [redo, closeMenu]);
+
+  const handlePaste = useCallback(() => {
+    const pos = menu.flowPosition;
+    const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
+    const { clipboard } = useAppStore.getState();
+    if (clipboard.nodes.length > 0) {
+      pasteNodes(flowPos);
+    } else {
+      useAppStore.getState().pasteExternalContent(flowPos);
+    }
+    closeMenu();
+  }, [menu.flowPosition, reactFlowInstance, pasteNodes, closeMenu]);
+
+  const handleCreateFolder = useCallback(() => {
+    const pos = menu.flowPosition;
+    useAppStore.getState().createEmptyGroup(
+      reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y }),
+    );
+    closeMenu();
+  }, [menu.flowPosition, reactFlowInstance, closeMenu]);
+
+  const showSubmenu = useCallback((m: ContextMenuState['hoverMenu']) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setMenu((s) => ({ ...s, hoverMenu: m }));
+  }, []);
+
+  const hideSubmenu = useCallback((backTo: ContextMenuState['hoverMenu']) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setMenu((s) => ({ ...s, hoverMenu: backTo }));
+    }, 250);
+  }, []);
+
+  const handleOpenProjectDir = useCallback(async () => {
+    try {
+      const { currentProjectId } = useAppStore.getState();
+      if (!currentProjectId) return;
+      const dir = await fileService.ensureProjectDataDir(currentProjectId);
+      if (!dir) return;
+      await fileService.openDirectoryInFileManager(dir);
+    } catch (err) {
+      console.warn('无法打开项目文件夹:', err);
+    } finally {
+      closeMenu();
+    }
+  }, [closeMenu]);
+
+  const handleDelete = useCallback(() => {
+    if (useAppStore.getState().deleteSelectedCanvasElements()) closeMenu();
+  }, [closeMenu]);
+
+  // ── 复制选中节点到内部剪贴板 ──
+  const handleCopyNodes = useCallback(() => {
+    const state = useAppStore.getState();
+    if (state.selectedNodeIds.length === 0) return;
+    if (state.copySelectedNodes()) {
+      useAppStore.getState().showToast(t('已复制 {count} 个节点', { count: state.selectedNodeIds.length }));
+    }
+    closeMenu();
+  }, [closeMenu]);
+
+  // ── 复制选中节点的媒体文件到系统剪贴板（CF_HDROP 多文件）──
+  // 收集所有选中节点中带本地文件路径的媒体文件，一次性写入剪贴板。
+  const handleCopyFiles = useCallback(async () => {
+    const state = useAppStore.getState();
+    const toast = state.showToast.bind(state);
+    const filePaths = state.nodes
+      .filter((n) => state.selectedNodeIds.includes(n.id))
+      .map((n) => (n.data as BaseNodeData).filePath)
+      .filter((p): p is string => !!p);
+    if (filePaths.length === 0) {
+      toast('选中节点没有可复制的本地文件', 'error');
+      closeMenu();
+      return;
+    }
+    const ok = await copyFilesToClipboard(filePaths);
+    toast(ok ? `已复制 ${filePaths.length} 个文件到剪贴板` : '复制失败', ok ? undefined : 'error');
+    closeMenu();
+  }, [closeMenu]);
+
+  const openMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains('react-flow__pane')) return;
+    setMenu({
+      visible: true,
+      position: { x: e.clientX, y: e.clientY },
+      flowPosition: { x: e.clientX, y: e.clientY },
+      hoverMenu: null,
+    });
+  }, []);
+
+  return {
+    menu,
+    menuRef,
+    submenuRef,
+    openMenu,
+    closeMenu,
+    addNodeAtCtxPos,
+    addPluginNodeAtCtxPos,
+    pluginNodes,
+    handleUndo,
+    handleRedo,
+    handlePaste,
+    handleCreateFolder,
+    handleDelete,
+    handleCopyNodes,
+    handleCopyFiles,
+    handleOpenProjectDir,
+    hasSelection: selectedNodeIds.length > 0,
+    showSubmenu,
+    hideSubmenu,
+  };
+}

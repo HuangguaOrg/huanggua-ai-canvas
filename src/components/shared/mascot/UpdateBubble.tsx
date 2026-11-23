@@ -1,0 +1,76 @@
+/**
+ * UpdateBubble — 吉祥物旁的聊天气泡，提示有新版本可用
+ */
+import { motion, AnimatePresence } from 'framer-motion';
+import type { UpdateInfo } from '../../../services/updateService';
+import DownloadProgress from '../DownloadProgress';
+import { useT } from '../../../i18n';
+import { useAppStore } from '../../../store/useAppStore';
+
+interface UpdateBubbleProps {
+  info: UpdateInfo;
+  visible: boolean;
+  onUpdate: () => void;
+  onDismiss: () => void;
+  updating?: boolean;
+}
+
+export default function UpdateBubble({ info, visible, onUpdate, onDismiss, updating }: UpdateBubbleProps) {
+  const t = useT();
+  const progress = useAppStore((state) => state.appUpdateProgress);
+  return (
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.6, y: 12 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.6, y: 6 }}
+          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          className="update-bubble fixed bottom-[245px] right-[28px] z-50"
+        >
+          {/* 聊天气泡尖角 — 指向右下吉祥物 */}
+          <div className="absolute -bottom-2 right-6 w-4 h-4 rotate-45 bg-canvas-card border-r border-b border-canvas-border" />
+
+          <div className="relative bg-canvas-card border border-canvas-border rounded-xl p-3 shadow-xl">
+            <p className="text-sm text-canvas-text font-semibold mb-1">
+              {t('发现新版本 v{version}', { version: info.version })}
+            </p>
+            {info.body && (
+              <p className="update-bubble__body text-xs text-canvas-text-secondary mb-3">
+                {info.body}
+              </p>
+            )}
+            {progress?.phase === 'downloading' ? (
+              <DownloadProgress
+                downloadedBytes={progress.downloadedBytes}
+                totalBytes={progress.totalBytes}
+                label={t(progress.message)}
+                className="mb-3 mt-2"
+              />
+            ) : progress ? (
+              <p role="status" className={`mb-3 mt-2 text-xs ${progress.phase === 'error' ? 'text-danger-light' : 'text-canvas-text-secondary'}`}>
+                {t(progress.message)}
+              </p>
+            ) : null}
+            <div className="flex gap-2">
+              <button
+                onClick={onDismiss}
+                disabled={updating}
+                className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {t('暂不更新')}
+              </button>
+              <button
+                onClick={onUpdate}
+                disabled={updating}
+                className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+              >
+                {updating ? t('正在更新...') : t('立即更新')}
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}

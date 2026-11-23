@@ -1,0 +1,469 @@
+﻿/**
+ * AssetSearchWindow — 独立「资源搜索」窗口（由 Alt+Space / Ctrl+Space 唤起）
+ *
+ * 跨项目 / 全局资产库 / 外部文件夹聚合所有文件，支持按文件名 + 标签搜索，
+ * 并可按来源（项目 / 文件夹）和分类筛选。运行在独立的 Tauri WebviewWindow 中，
+ * 不依赖主窗口的 zustand store，直接复用 fileService / IndexedDB（同源共享）。
+ */
+import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, type DragEvent } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  loadConfigWithoutSecrets as loadConfig,
+  saveConfig,
+  registerProjectFolders,
+  registerNativeProjectFolders,
+  activateNativeAssetSearchContext,
+  setBaseDataDir,
+  syncAuthorizedDirectories,
+  revealFileInFolder,
+  addAssetFilesToGlobal,
+  pickAssetFolder,
+  CATEGORY_LABELS,
+  type FileCategory,
+} from '../services/fileService';
+import { loadAssetSearchFiles, type AssetSearchEntry as SearchEntry } from '../services/assetSearchService';
+import { getAllAssetMeta } from '../services/indexedDbService';
+import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
+import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
+import { springSmooth, fadeFast } from '../utils/motion';
+import AssetThumb from './shared/AssetThumb';
+import Select from './shared/Select';
+import type { AppConfig } from '../types';
+import { getLocale, setLocale, t as translate, useT } from '../i18n';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
+import { distributeToColumns } from './assets/waterfallColumns';
+import { applyAppearanceTheme } from '../services/appearance/appearanceRuntime';
+import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
+import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
+import { listProjectCatalog } from '../services/projectModelRouter';
+import { projectNativeCatalogEntry } from '../store/nativeProjectView';
+
+/** 单页渲染数量（增量加载步长）*/
+const PAGE_SIZE = 60;
+
+/** 来源筛选项 */
+interface SourceOption {
+  key: string;        // 'all' | `project:<id>` | 'global' | `folder:<root>`
+  label: string;
+  group?: string;     // optgroup 分组标题
+}
+
+export default function AssetSearchWindow() {
+  const t = useT();
+  const locale = getLocale();
+  const [files, setFiles] = useState<SearchEntry[]>([]);
+  const [tagMap, setTagMap] = useState<Record<string, string[]>>({});
+  const [sources, setSources] = useState<SourceOption[]>([{ key: 'all', label: '全部来源' }]);
+
+  const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
+  const [activeSource, setActiveSource] = useState('all');
+  const [activeCategory, setActiveCategory] = useState<FileCategory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  const scanController = useRef<AbortController | null>(null);
+  const [loadError, setLoadError] = useState(false);
+
+  // 配置与授权仍由此窗口初始化；扫描有界并发，已识别的条目分批可见。
+  const loadAll = useCallback(async () => {
+    scanController.current?.abort();
+    const controller = new AbortController();
+    scanController.current = controller;
+    const { signal } = controller;
+    setLoading(true);
+    setLoadError(false);
+    setFiles([]);
+    setTagMap({});
+    setVisibleCount(PAGE_SIZE);
+    try {
+      const cfg = (await loadConfig()) as AppConfig | null;
+      signal.throwIfAborted();
+      applyAppearanceTheme(cfg?.appearance ?? getAppearanceForConfig(cfg));
+      document.documentElement.toggleAttribute('data-native-cursor', cfg?.customCursor === false);
+      const performanceMode = (cfg?.performanceMode ?? cfg?.graphicsCompatibilityMode) === true;
+      syncPerformanceModeRuntime(performanceMode);
+      document.documentElement.toggleAttribute('data-performance-mode', performanceMode);
+      setLocale(cfg?.language);
+      setBaseDataDir(cfg?.baseDataDir);
+      await syncAuthorizedDirectories(cfg ?? {});
+      signal.throwIfAborted();
+      const catalog = await listProjectCatalog();
+      signal.throwIfAborted();
+      const legacy = catalog.filter((entry) => entry.dataModel === 'legacy').map((entry) => entry.project);
+      registerProjectFolders(legacy);
+      activateNativeAssetSearchContext();
+      const native = catalog.filter((entry) => entry.dataModel === 'native');
+      for (const entry of native) {
+        registerNativeProjectFolders([entry.project.id, ...entry.episodeIds, ...entry.canvasIds]
+          .map((id) => ({ id, projectId: entry.project.id })));
+      }
+      // 每个新作品只扫描一次共享根；旧项目继续保留原有分集来源。
+      const projects = [...legacy, ...native.map((entry) => projectNativeCatalogEntry(entry)[0])];
+      const folders = cfg?.assetFolders ?? [];
+      const opts: SourceOption[] = [{ key: 'all', label: '全部来源' }];
+      for (const p of projects) opts.push({ key: `project:${p.id}`, label: p.name, group: '项目' });
+      opts.push({ key: 'global', label: '全局资产库', group: '其他' });
+      for (const root of folders) opts.push({ key: `folder:${root}`, label: shortFolderName(root), group: '文件夹' });
+      setSources(opts);
+      await loadAssetSearchFiles(projects, folders, { signal, onFiles: (files) => {
+        if (!signal.aborted) setFiles(files);
+      } });
+      signal.throwIfAborted();
+      // 扫描完成后包含本轮迁移的旧标签；取消后的读取结果不得覆盖新一轮。
+      try {
+        const metas = await getAllAssetMeta();
+        signal.throwIfAborted();
+        const map: Record<string, string[]> = {};
+        for (const m of metas) if (m.tags?.length) map[m.assetId] = m.tags;
+        setTagMap(map);
+      } catch { /* 保留无标签的文件结果 */ }
+    } catch {
+      if (!signal.aborted) setLoadError(true);
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { document.title = translate('资源搜索'); }, [locale]);
+
+  useEffect(() => {
+    void prepareDragIcon(); // 预创建拖拽占位图，确保 dragstart 时可同步发起原生拖拽
+    // 挂载时拉取数据（异步内部 setState，属合理的副作用数据获取）
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadAll();
+    return () => scanController.current?.abort();
+  }, [loadAll]);
+
+  // ── 添加文件 / 文件夹 ──
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [folderSaveError, setFolderSaveError] = useState<string | null>(null);
+  const pendingFolder = useRef<string | null>(null);
+  const addWrapRef = useRef<HTMLDivElement | null>(null);
+
+  // 点击外部关闭「添加」菜单
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (addWrapRef.current && !addWrapRef.current.contains(e.target as Node)) setAddMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [addMenuOpen]);
+
+  const handleAddFiles = useCallback(async () => {
+    setAddMenuOpen(false);
+    setBusy(true);
+    try {
+      const n = await addAssetFilesToGlobal();
+      if (n > 0) await loadAll();
+    } catch (err) { console.error('[AssetSearchWindow] 添加文件失败:', err); }
+    finally { setBusy(false); }
+  }, [loadAll]);
+
+  const handleAddFolder = useCallback(async () => {
+    setAddMenuOpen(false);
+    setBusy(true);
+    setFolderSaveError(null);
+    try {
+      const path = pendingFolder.current ?? await pickAssetFolder();
+      if (path) {
+        pendingFolder.current = path;
+        const cfg = (await loadConfig()) as AppConfig | null;
+        const folders = cfg?.assetFolders ?? [];
+        if (!folders.includes(path)) {
+          await saveConfig({ ...cfg, assetFolders: [...folders, path] }, {
+            baseline: cfg,
+            changes: [{ path: ['assetFolders'], before: cfg?.assetFolders, after: [...folders, path] }],
+          });
+          await loadAll();
+        }
+        pendingFolder.current = null;
+      }
+    } catch { setFolderSaveError('文件夹设置保存失败，已保留本次选择，请重试'); }
+    finally { setBusy(false); }
+  }, [loadAll]);
+
+  // 合并标签
+  const taggedFiles = useMemo(
+    () => files.map((f) => {
+      const key = f.assetId ?? f.path;
+      return tagMap[key] ? { ...f, tags: tagMap[key] } : f;
+    }),
+    [files, tagMap],
+  );
+
+  // 来源筛选
+  const sourceFiltered = useMemo(() => {
+    if (activeSource === 'all') return taggedFiles;
+    if (activeSource === 'global') return taggedFiles.filter((f) => f.source === 'global');
+    if (activeSource.startsWith('project:')) {
+      const id = activeSource.slice('project:'.length);
+      return taggedFiles.filter((f) => f.source === 'project' && f.projectId === id);
+    }
+    if (activeSource.startsWith('folder:')) {
+      const root = activeSource.slice('folder:'.length);
+      return taggedFiles.filter((f) => f.source === 'folder' && f.folderRoot === root);
+    }
+    return taggedFiles;
+  }, [taggedFiles, activeSource]);
+
+  // 分类计数（基于来源筛选后的集合）
+  const categoryCounts = useMemo(() => {
+    const c: Record<FileCategory, number> = { image: 0, video: 0, audio: 0, text: 0, other: 0 };
+    for (const f of sourceFiltered) c[f.category]++;
+    return c;
+  }, [sourceFiltered]);
+
+  // 分类 + 搜索（名称 / 标签）
+  const filtered = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    return sourceFiltered.filter((f) => {
+      if (activeCategory && f.category !== activeCategory) return false;
+      if (q) {
+        const inName = f.name.toLowerCase().includes(q);
+        const inTags = (f.tags ?? []).some((t) => t.toLowerCase().includes(q));
+        if (!inName && !inTags) return false;
+      }
+      return true;
+    });
+  }, [sourceFiltered, activeCategory, deferredSearch]);
+
+  // 筛选条件变化时重置增量渲染计数（回到顶部）
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [activeSource, activeCategory, deferredSearch]);
+
+  const visibleFiles = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
+  const videoPreview = useResourceVideoPreview(JSON.stringify([search, activeSource, activeCategory]), visibleFiles.map((file) => file.path));
+
+  // 无限滚动哨兵
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        setVisibleCount((c) => (c < filtered.length ? c + PAGE_SIZE : c));
+      }
+    }, { rootMargin: '300px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [filtered.length, visibleFiles.length]);
+
+  const handleReveal = useCallback((path: string) => {
+    revealFileInFolder(path).catch(() => {});
+  }, []);
+
+  // 自绘标题栏：窗口控制（无系统边框）
+  const minimizeWin = useCallback(() => {
+    import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().minimize()).catch(() => {});
+  }, []);
+  const closeWin = useCallback(() => {
+    import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().close()).catch(() => {});
+  }, []);
+
+  // 分组后的来源下拉
+  const sourceOptions = useMemo(() => {
+    const flat = sources.filter((s) => !s.group);
+    const groups = new Map<string, SourceOption[]>();
+    for (const s of sources) {
+      if (!s.group) continue;
+      const arr = groups.get(s.group) ?? [];
+      arr.push(s);
+      groups.set(s.group, arr);
+    }
+    const toOption = (source: SourceOption) => ({ value: source.key, label: source.key === 'all' || source.key === 'global' ? t(source.label) : source.label });
+    return [
+      ...flat.map(toOption),
+      ...[...groups.entries()].map(([label, entries]) => ({ label: t(label), options: entries.map(toOption) })),
+    ];
+  }, [sources, t]);
+
+  return (
+    <div className="asset-search-root" data-resource-video-boundary>
+      <div className="asset-search-header" data-tauri-drag-region>
+        <h1 className="asset-search-title">{translate("资源搜索")}</h1>
+        <span className="asset-search-total">{filtered.length} / {files.length}</span>
+        <span className="asset-search-hint">{translate("拖拽至画布可创建节点")}</span>
+        <div className="asset-search-winctrls">
+          <button type="button" className="asset-search-refresh" onClick={loadAll} disabled={loading} data-tooltip={translate("刷新")}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+          </button>
+          <button type="button" className="asset-search-winbtn" onClick={minimizeWin} aria-label={translate("最小化")} data-tooltip={translate("最小化")}>
+            <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0" y="5" width="10" height="1" fill="currentColor" /></svg>
+          </button>
+          <button type="button" className="asset-search-winbtn close" onClick={closeWin} aria-label={translate("关闭")} data-tooltip={translate("关闭")}>
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {folderSaveError && (
+        <div role="alert" className="ui-alert ui-alert--danger mx-3 my-2 flex items-center justify-between gap-2">
+          <span>{translate(folderSaveError)}</span>
+          <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => void handleAddFolder()}>{translate("重试保存")}</button>
+        </div>
+      )}
+
+      <div className="asset-search-toolbar">
+        <div className="assets-search asset-search-input">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="text" placeholder={translate("搜索文件名或标签…")} autoFocus
+            value={search} onChange={(e) => setSearch(e.target.value)}
+          />
+          {search && (
+            <button type="button" className="assets-search-clear" onClick={() => setSearch('')} aria-label={translate("清空")}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        <Select
+          className="assets-project-select-wrap"
+          triggerClassName="assets-project-select"
+          value={activeSource}
+          onChange={setActiveSource}
+          options={sourceOptions}
+          aria-label={translate("按项目 / 文件夹筛选")}
+          title={translate("按项目 / 文件夹筛选")}
+        />
+
+        <div className="assets-add-wrap" ref={addWrapRef}>
+          <motion.button
+            type="button" className="assets-add-btn" disabled={busy}
+            onClick={() => setAddMenuOpen((v) => !v)}
+            whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            {translate("添加")}
+          </motion.button>
+          <AnimatePresence>
+            {addMenuOpen && (
+              <motion.div
+                className="assets-add-menu"
+                initial={{ opacity: 0, y: -6, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.96, transition: fadeFast }}
+                transition={springSmooth}
+              >
+                <button type="button" onClick={handleAddFiles}>{translate("📄 添加文件")}</button>
+                <button type="button" onClick={handleAddFolder}>{translate("📁 添加文件夹")}</button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      <div className="assets-category-row asset-search-cats">
+        <button
+          type="button" className={`assets-cat-chip ${activeCategory === null ? 'active' : ''}`}
+          onClick={() => setActiveCategory(null)}
+        >
+          {translate("全部")}<span className="assets-cat-count">{sourceFiltered.length}</span>
+        </button>
+        {ALL_CATEGORIES.filter((cat) => categoryCounts[cat] > 0).map((cat) => (
+          <button
+            key={cat} type="button"
+            className={`assets-cat-chip ${activeCategory === cat ? 'active' : ''}`}
+            onClick={() => setActiveCategory(cat)}
+          >
+            {CATEGORY_ICONS[cat]} {translate(CATEGORY_LABELS[cat])}
+            <span className="assets-cat-count">{categoryCounts[cat]}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="asset-search-scroll" aria-busy={loading}>
+        {loadError && <div className="ui-alert ui-alert--warning m-2" role="alert">{translate('部分资源加载失败，请刷新重试')}</div>}
+        {loading && files.length > 0 && <div className="assets-load-sentinel" role="status">{translate('加载中…')}</div>}
+        {loading && filtered.length === 0 ? (
+          <div className="assets-empty">
+            <div className="assets-spinner asset-search-spinner" />
+            <span>{translate("加载中…")}</span>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="assets-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <span>{search || activeCategory || activeSource !== 'all' ? translate('没有匹配的文件') : translate('暂无文件')}</span>
+          </div>
+        ) : (
+          <>
+            <div className="assets-waterfall-cols">
+              {distributeToColumns(visibleFiles, 3).map((column, columnIndex) => (
+                <div className="assets-waterfall-col" key={columnIndex}>
+                  {column.map((file) => (
+                    <SearchCard
+                      key={file.path}
+                      file={file}
+                      onReveal={() => handleReveal(file.path)}
+                      onDragStart={(e) => { e.preventDefault(); startAssetDrag(file, undefined, e.currentTarget as Element); }}
+                      videoExpanded={videoPreview.expandedId === file.path}
+                      onVideoExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? file.path : null)}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+            {visibleCount < filtered.length && (
+              <div ref={sentinelRef} className="assets-load-sentinel">{translate("加载更多…")}</div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── 单个搜索结果卡片 ── */
+function SearchCard({ file, onReveal, onDragStart, videoExpanded, onVideoExpandedChange }: {
+  file: SearchEntry;
+  onReveal: () => void;
+  onDragStart: (e: DragEvent) => void;
+  videoExpanded: boolean;
+  onVideoExpandedChange: (expanded: boolean) => void;
+}) {
+  useT();
+  const tags = file.tags ?? [];
+  const sourceLabel = file.source === 'project'
+    ? (file.projectName || translate('项目'))
+    : file.source === 'folder'
+      ? shortFolderName(file.folderRoot || '')
+      : translate('全局');
+  return (
+    <div className={`assets-waterfall-card anim-card-in${videoExpanded ? ' has-expanded-video' : ''}`} draggable={!videoExpanded} onDragStart={onDragStart} onMouseEnter={() => { void prepareDragIcon(file); }} data-tooltip={videoExpanded ? undefined : translate('拖拽到主窗口画布以添加节点')} data-tooltip-pos="bottom">
+      <AssetThumb assetUrl={file.assetUrl} filePath={file.path} videoExpanded={videoExpanded} onVideoExpandedChange={onVideoExpandedChange}
+        videoPresentation="inline"
+        name={file.name} category={file.category} size={file.size} badge={sourceLabel}>
+        <div className="assets-card-actions">
+          <button type="button" className="assets-card-action-btn" data-tooltip={translate("在文件夹中显示")} onClick={onReveal}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+          </button>
+        </div>
+      </AssetThumb>
+      {tags.length > 0 && (
+        <div className="assets-card-tags">
+          {tags.map((t) => <span key={t} className="assets-card-tag">{t}</span>)}
+        </div>
+      )}
+      <div className="assets-card-name" data-tooltip={file.name}>{file.name}</div>
+    </div>
+  );
+}

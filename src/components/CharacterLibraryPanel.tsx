@@ -1,0 +1,1569 @@
+/**
+ * CharacterLibraryPanel — 角色库侧边面板。
+ * 列出项目级与全局角色，支持新建、编辑（打开 CharacterAssetDialog）、删除与筛选，
+ * 头像取自角色主视觉参考图，全局角色可被跨项目复用。
+ */
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent, CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
+import { Icon } from '@iconify/react';
+import { Swords } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
+import { generateId, useAppStore, type AppState } from '../store/useAppStore';
+import { isEligibleCharacterVoiceNode } from '../store/store.dramaAssets';
+import {
+  assertMediaDataUrlSize,
+  assertMediaDataUrlWithinLimit,
+  inferMediaDataUrlKind,
+  isTauriEnv,
+  saveBinaryToProjectData,
+} from '../services/fileService';
+import type {
+  CharacterActionCategory,
+  CharacterActionMedia,
+  CharacterActionMediaKind,
+  CharacterReferenceImage,
+  CharacterVoiceClip,
+  DramaCharacter,
+} from '../types/dramaAssets';
+import ModalOverlay from './shared/ModalOverlay';
+import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
+import ViewportImage from './shared/ViewportImage';
+import ResourceVideoPreview from './shared/ResourceVideoPreview';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
+import { useT } from '../i18n';
+import CharacterAssetDialog from './CharacterAssetDialog';
+import CharacterReferenceGallery from './character/CharacterReferenceGallery';
+import CharacterDock from './character/CharacterDock';
+import CharacterWeaponDialog from './character/CharacterWeaponDialog';
+import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
+import { sortCharactersForLibrary } from '../services/characterOrder';
+import type { ReferenceStageBox } from './character/CharacterReferenceGallery';
+import {
+  CHARACTER_VOICE_KIND_LABELS,
+  cropImageStyle,
+  formatVoiceDuration,
+  voiceClipTitle,
+} from './character/characterReferencePresentation';
+import { readAudioDuration } from './character/characterVoiceMedia';
+import { actionMediaFromCanvasNode } from './character/characterActionMedia';
+import { acquireComfyMediaSource } from '../services/comfyMediaSource';
+import { copyDramaAssetSelection } from '../services/dramaAssetBatchCopy';
+import { configValuesEqual } from '../services/configPatch';
+
+type CharacterLibraryScope = 'project' | 'global';
+const CharacterVisualPendingTasks = lazy(() => import('./character/CharacterVisualPendingTasks'));
+const EMPTY_CANVAS_NODES: AppState['nodes'] = [];
+
+const CHARACTER_ACTION_CATEGORIES: Array<{
+  id: CharacterActionCategory;
+  label: string;
+  icon: string;
+}> = [
+  { id: 'standing', label: '站立', icon: 'lucide:person-standing' },
+  { id: 'walking', label: '行走', icon: 'lucide:footprints' },
+  { id: 'running', label: '奔跑', icon: 'lucide:footprints' },
+  { id: 'jumping', label: '跳跃', icon: 'lucide:arrow-up-from-line' },
+  { id: 'sitting', label: '坐姿', icon: 'lucide:armchair' },
+  { id: 'crouching', label: '蹲伏', icon: 'lucide:move-down' },
+  { id: 'lying', label: '躺卧', icon: 'lucide:bed-single' },
+  { id: 'climbing', label: '攀爬', icon: 'lucide:mountain' },
+  { id: 'swimming', label: '游泳', icon: 'lucide:waves' },
+  { id: 'attacking', label: '攻击', icon: 'lucide:sword' },
+  { id: 'defending', label: '防御', icon: 'lucide:shield' },
+  { id: 'hit', label: '受击', icon: 'lucide:zap' },
+  { id: 'death', label: '死亡', icon: 'lucide:skull' },
+  { id: 'casting', label: '施法', icon: 'lucide:sparkles' },
+  { id: 'interacting', label: '互动', icon: 'lucide:handshake' },
+  { id: 'dancing', label: '舞蹈', icon: 'lucide:music-2' },
+  { id: 'expression', label: '表情动作', icon: 'lucide:smile' },
+  { id: 'custom', label: '自定义', icon: 'lucide:shapes' },
+];
+
+const ACTION_MEDIA_ACCEPT = 'image/png,image/jpeg,image/webp,image/avif,image/gif,video/mp4,video/webm,video/quicktime,video/x-m4v';
+const ACTION_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'avif']);
+const ACTION_VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
+
+function actionMediaKind(file: File): CharacterActionMediaKind | null {
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  if (file.type === 'image/gif' || extension === 'gif') return 'gif';
+  if (file.type.startsWith('image/') || (extension && ACTION_IMAGE_EXTENSIONS.has(extension))) {
+    return 'image';
+  }
+  if (file.type.startsWith('video/') || (extension && ACTION_VIDEO_EXTENSIONS.has(extension))) {
+    return 'video';
+  }
+  return null;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string'
+      ? resolve(reader.result)
+      : reject(new Error('媒体读取失败'));
+    reader.onerror = () => reject(reader.error ?? new Error('媒体读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function characterAvatar(character: DramaCharacter): CharacterReferenceImage | undefined {
+  const references = character.referenceImages ?? [];
+  return references.find((reference) => reference.id === character.avatarReferenceImageId)
+    ?? references.find((reference) => reference.id === character.primaryReferenceImageId)
+    ?? references[0];
+}
+
+function CharacterAvatar({ character }: { character: DramaCharacter }) {
+  const reference = characterAvatar(character);
+  const cropped = reference?.id === character.avatarReferenceImageId && character.avatarCrop;
+  return (
+    <span className="character-avatar">
+      {reference?.imageUrl ? (
+        <ViewportImage
+          src={reference.imageUrl}
+          alt=""
+          draggable={false}
+          className={cropped ? 'is-cropped' : ''}
+          style={cropped ? cropImageStyle(character.avatarCrop) : undefined}
+        />
+      ) : (
+        <Icon icon="lucide:user-round" width={22} height={22} aria-hidden="true" />
+      )}
+    </span>
+  );
+}
+
+export default function CharacterLibraryPanel() {
+  const t = useT();
+  const {
+    open,
+    openRequest,
+    actionLibraryOpen,
+    setActionLibraryOpen,
+    setOpen,
+    projectCharacters,
+    globalCharacters,
+    globalCharactersLoading,
+    loadGlobalCharacters,
+    reorderCharacters,
+    copyCharacterToGlobal,
+    copyGlobalCharacterToProject,
+    deleteDramaAsset,
+    deleteGlobalCharacter,
+    nodes,
+    setCharacterLibraryNodeHidden,
+    createImageNodeFromCharacterReference,
+    bindAudioNodeToCharacterVoice,
+    removeCharacterVoiceClip,
+    setCharacterPrimaryVoice,
+    createAudioNodeFromCharacterVoice,
+    createVoiceOverNodeFromCharacterVoice,
+    addCharacterAction,
+    addCharacterActionMedia,
+    removeCharacterActionMedia,
+    removeCharacterAction,
+    currentProjectId,
+    setSelectedNodeIds,
+    showToast,
+  } = useAppStore(
+    useShallow((state) => ({
+      open: state.characterLibraryOpen,
+      openRequest: state.characterLibraryRequest,
+      setOpen: state.setCharacterLibraryOpen,
+      actionLibraryOpen: state.characterActionLibraryOpen,
+      setActionLibraryOpen: state.setCharacterActionLibraryOpen,
+      projectCharacters: state.dramaAssets.characters,
+      globalCharacters: state.globalCharacters,
+      globalCharactersLoading: state.globalCharactersLoading,
+      loadGlobalCharacters: state.loadGlobalCharacters,
+      reorderCharacters: state.reorderCharacters,
+      copyCharacterToGlobal: state.copyCharacterToGlobal,
+      copyGlobalCharacterToProject: state.copyGlobalCharacterToProject,
+      deleteDramaAsset: state.deleteDramaAsset,
+      deleteGlobalCharacter: state.deleteGlobalCharacter,
+      nodes: state.characterLibraryOpen || state.characterActionLibraryOpen ? state.nodes : EMPTY_CANVAS_NODES,
+      setCharacterLibraryNodeHidden: state.setCharacterLibraryNodeHidden,
+      createImageNodeFromCharacterReference: state.createImageNodeFromCharacterReference,
+      bindAudioNodeToCharacterVoice: state.bindAudioNodeToCharacterVoice,
+      removeCharacterVoiceClip: state.removeCharacterVoiceClip,
+      setCharacterPrimaryVoice: state.setCharacterPrimaryVoice,
+      createAudioNodeFromCharacterVoice: state.createAudioNodeFromCharacterVoice,
+      createVoiceOverNodeFromCharacterVoice: state.createVoiceOverNodeFromCharacterVoice,
+      addCharacterAction: state.addCharacterAction,
+      addCharacterActionMedia: state.addCharacterActionMedia,
+      removeCharacterActionMedia: state.removeCharacterActionMedia,
+      removeCharacterAction: state.removeCharacterAction,
+      currentProjectId: state.currentProjectId,
+      setSelectedNodeIds: state.setSelectedNodeIds,
+      showToast: state.showToast,
+    })),
+  );
+  const [scope, setScope] = useState<CharacterLibraryScope>('project');
+  const [search, setSearch] = useState('');
+  const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+  // 图片按容器高等比缩小后左右会留白，浮层要贴图片边缘，否则卡片会跨在图片与面板底色的分界上
+  const [referenceStage, setReferenceStage] = useState<ReferenceStageBox | null>(null);
+  const handleStageResize = useCallback((next: ReferenceStageBox | null) => {
+    setReferenceStage((previous) => (
+      previous?.width === next?.width && previous?.height === next?.height ? previous : next
+    ));
+  }, []);
+  const [selectedReferenceId, setSelectedReferenceId] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [pendingTasksScope, setPendingTasksScope] = useState<{ scope: CharacterLibraryScope; projectId: string | null }>();
+  const [dialogCharacter, setDialogCharacter] = useState<DramaCharacter | null>(null);
+  const [dialogReferenceId, setDialogReferenceId] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const [voiceDockState, setVoiceDockState] = useState({ context: '', expanded: false });
+  // 记角色归属，切换角色时自然失效，不必在 effect 里回收状态
+  const [playingVoice, setPlayingVoice] = useState<{
+    characterId: string;
+    clipId: string;
+  } | null>(null);
+  const [bindingVoice, setBindingVoice] = useState(false);
+  const [captureNodeId, setCaptureNodeId] = useState<string | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [weaponTarget, setWeaponTarget] = useState<{ scope: CharacterLibraryScope; id: string; projectId: string | null } | null>(null);
+  const [weaponCopyBusy, setWeaponCopyBusy] = useState(false);
+  const weaponCopyPending = useRef(false);
+  const copyViewVersion = useRef(0);
+  const [actionCategory, setActionCategory] = useState<CharacterActionCategory>('standing');
+  const [actionFilter, setActionFilter] = useState<CharacterActionCategory | 'all'>('all');
+  const [actionName, setActionName] = useState('');
+  const [actionPrompt, setActionPrompt] = useState('');
+  const [customActionCategory, setCustomActionCategory] = useState('');
+  const [pendingActionMedia, setPendingActionMedia] = useState<CharacterActionMedia[]>([]);
+  const [actionMediaTargetId, setActionMediaTargetId] = useState<string | null>(null);
+  const [actionNodePickerTargetId, setActionNodePickerTargetId] = useState<string | null>(null);
+  const [hideActionNode, setHideActionNode] = useState(true);
+  const [uploadingActionMedia, setUploadingActionMedia] = useState(false);
+  const [savingAction, setSavingAction] = useState(false);
+  const voicePlayerRef = useRef<HTMLAudioElement>(null);
+  const voicePlaybackRef = useRef<{
+    clipId: string;
+    player: HTMLAudioElement;
+    controller: AbortController;
+    release?: () => void;
+  } | null>(null);
+  const stopVoicePlayback = useCallback(() => {
+    const playback = voicePlaybackRef.current;
+    voicePlaybackRef.current = null;
+    const player = playback?.player ?? voicePlayerRef.current;
+    player?.pause();
+    player?.removeAttribute('src');
+    player?.load();
+    playback?.controller.abort();
+    playback?.release?.();
+  }, []);
+  const actionMediaInputRef = useRef<HTMLInputElement>(null);
+
+  // 资源库分类可直接定位同一份全局人物、声音或动作，不另建角色状态。
+  useEffect(() => {
+    if (!open || !openRequest) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setScope(openRequest.scope);
+    setSelectedCharacterId(openRequest.characterId ?? null);
+    setSelectedReferenceId(null);
+    setSearch('');
+    if (openRequest.section === 'voice') {
+      setVoiceDockState({ context: `${open}:${openRequest.scope}:${openRequest.characterId ?? ''}`, expanded: true });
+    }
+  }, [open, openRequest]);
+
+  useEffect(() => {
+    if (open || actionLibraryOpen) void loadGlobalCharacters();
+  }, [actionLibraryOpen, loadGlobalCharacters, open]);
+
+  // 面板卸载时清掉动作库标记：关角色库的路径有好几条（开设置、开素材库…），
+  // 不清的话下次从侧边栏进角色库会莫名直接弹出动作库
+  useEffect(() => () => setActionLibraryOpen(false), [setActionLibraryOpen]);
+
+  const sourceCharacters = scope === 'project' ? projectCharacters : globalCharacters;
+  const characters = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return sortCharactersForLibrary(sourceCharacters)
+      .filter((character) => !query || [
+        character.name,
+        character.summary,
+        character.identity,
+        character.storyRole,
+        character.visualNotes,
+      ].some((value) => value?.toLowerCase().includes(query)));
+  }, [search, sourceCharacters]);
+
+  const selectedCharacter = characters.find(
+    (character) => character.id === selectedCharacterId,
+  ) ?? characters[0] ?? null;
+  useEffect(() => () => { copyViewVersion.current += 1; }, [open, scope, currentProjectId, selectedCharacter?.id]);
+  const effectiveReferenceId = selectedCharacter?.referenceImages?.some(
+    (reference) => reference.id === selectedReferenceId,
+  )
+    ? selectedReferenceId
+    : selectedCharacter?.primaryReferenceImageId
+      ?? selectedCharacter?.referenceImages?.[0]?.id
+      ?? null;
+  const selectedReference = selectedCharacter?.referenceImages?.find(
+    (reference) => reference.id === effectiveReferenceId,
+  ) ?? null;
+  const reorderReferences = useCallback(async (ids: string[]) => {
+    const state = useAppStore.getState();
+    if (!open || !selectedCharacter || state.currentProjectId !== currentProjectId
+      || !state.characterLibraryOpen || state.isCreatingProject || state.isReturningToStartPage
+      || state.switchingProjectName !== null || (scope === 'project' && (!currentProjectId || state.projectLoadStatus !== 'ready'))) return false;
+    const character = (scope === 'project' ? state.dramaAssets.characters : state.globalCharacters)
+      .find((item) => item.id === selectedCharacter.id);
+    const references = character?.referenceImages;
+    if (!character || !references || references !== selectedCharacter.referenceImages
+      || ids.length !== references.length || new Set(ids).size !== ids.length
+      || ids.some((id) => !references.some((reference) => reference.id === id))) return false;
+    const version = copyViewVersion.current;
+    return state.saveCharacterCard(scope, {
+      ...character,
+      referenceImages: ids.flatMap((id) => references.find((reference) => reference.id === id) ?? []),
+      primaryReferenceImageId: character.primaryReferenceImageId ?? references[0]?.id,
+      avatarReferenceImageId: character.avatarReferenceImageId ?? references.find((reference) => reference.kind === 'avatar')?.id,
+      updatedAt: Date.now(),
+    }, {
+      assertCurrent: () => {
+        const current = useAppStore.getState();
+        if (copyViewVersion.current !== version || !current.characterLibraryOpen || current.currentProjectId !== currentProjectId
+          || current.isCreatingProject || current.isReturningToStartPage || current.switchingProjectName !== null
+          || (scope === 'project' && current.projectLoadStatus !== 'ready')) throw new Error(t('角色素材保存失败'));
+      },
+    });
+  }, [open, selectedCharacter, currentProjectId, scope, t]);
+  const sourceNode = useMemo(() => {
+    if (!selectedCharacter || !selectedReference) return null;
+    return nodes.find((node) => (
+      node.id === selectedReference.sourceNodeId
+      || node.data.characterLibraryLinks?.some((link) => (
+        link.scope === scope
+        && link.characterId === selectedCharacter.id
+        && link.referenceImageId === selectedReference.id
+      ))
+    )) ?? null;
+  }, [nodes, scope, selectedCharacter, selectedReference]);
+  const canvasActionLabel = sourceNode
+    ? sourceNode.data.hiddenByCharacterLibrary
+      ? t('显示并定位节点')
+      : t('定位画布节点')
+    : t('添加到画布');
+  const canvasActionIcon = sourceNode
+    ? sourceNode.data.hiddenByCharacterLibrary
+      ? 'lucide:eye'
+      : 'lucide:locate-fixed'
+    : 'lucide:square-plus';
+
+  // 画布上还没进过角色库的图片节点，可当作新视角参考图
+  const pickableNodes = useMemo(() => open && pickerOpen ? nodes.filter((node) => (
+    !node.data.hiddenByCharacterLibrary
+    && (node.data.imageUrl || node.data.thumbnailUrl)
+  )) : [], [nodes, open, pickerOpen]);
+  // 画布上带音频产物的节点，可绑定为角色声音
+  const pickableAudioNodes = useMemo(
+    () => open && voicePickerOpen ? nodes.filter((node) => isEligibleCharacterVoiceNode(node)) : [],
+    [nodes, open, voicePickerOpen],
+  );
+  const pickableActionNodes = useMemo(
+    () => actionLibraryOpen && actionNodePickerTargetId ? nodes.filter((node) => actionMediaFromCanvasNode(node) !== null) : [],
+    [nodes, actionLibraryOpen, actionNodePickerTargetId],
+  );
+  const voiceClips = selectedCharacter?.voiceClips ?? [];
+  const voiceDockContext = `${open}:${scope}:${selectedCharacter?.id ?? ''}`;
+  const voiceDockOpen = voiceDockState.context === voiceDockContext && voiceDockState.expanded;
+  // 上下文变化时同步复位本组件状态，避免先显示上一角色的声音列表再收起。
+  if (voiceDockState.context !== voiceDockContext) {
+    setVoiceDockState({ context: voiceDockContext, expanded: false });
+    if (voicePickerOpen) setVoicePickerOpen(false);
+  }
+  const visibleActions = useMemo(() => actionLibraryOpen ? (selectedCharacter?.actions ?? []).filter((action) => (
+    actionFilter === 'all' || action.category === actionFilter
+  )) : [], [actionLibraryOpen, actionFilter, selectedCharacter?.actions]);
+  const videoPreview = useResourceVideoPreview(
+    JSON.stringify([open, actionLibraryOpen, scope, currentProjectId, selectedCharacter?.id, search, actionFilter, actionNodePickerTargetId]),
+    [
+      ...visibleActions.flatMap((action) => (action.media ?? []).map((media) => `action:${action.id}:${media.id}`)),
+      ...pendingActionMedia.map((media) => `pending:${media.id}`),
+      ...(actionNodePickerTargetId ? pickableActionNodes.map((node) => `node:${node.id}`) : []),
+    ],
+  );
+  const playingVoiceClipId = playingVoice?.characterId === selectedCharacter?.id
+    ? playingVoice?.clipId ?? null
+    : null;
+
+  // 切换角色或关闭面板时停止试听，避免声音跟着上一个角色继续播
+  useEffect(() => stopVoicePlayback, [open, scope, selectedCharacter?.id, stopVoicePlayback]);
+
+  const switchScope = (nextScope: CharacterLibraryScope) => {
+    setWeaponTarget(null);
+    setScope(nextScope);
+    setSelectedCharacterId(null);
+    setSelectedReferenceId(null);
+    setVoicePickerOpen(false);
+  };
+
+  const toggleVoicePlayback = async (clip: CharacterVoiceClip) => {
+    const player = voicePlayerRef.current;
+    if (!player || !clip.audioUrl || !selectedCharacter) return;
+    if (voicePlaybackRef.current?.clipId === clip.id) {
+      stopVoicePlayback();
+      setPlayingVoice(null);
+      return;
+    }
+    stopVoicePlayback();
+    setPlayingVoice(null);
+    const playback = { clipId: clip.id, player, controller: new AbortController(), release: undefined as (() => void) | undefined };
+    voicePlaybackRef.current = playback;
+    try {
+      const lease = await acquireComfyMediaSource(clip.audioUrl, playback.controller.signal);
+      if (playback.controller.signal.aborted || voicePlaybackRef.current !== playback || voicePlayerRef.current !== player) {
+        lease.release();
+        return;
+      }
+      playback.release = lease.release;
+      player.src = lease.src;
+      await player.play();
+      if (voicePlaybackRef.current === playback) setPlayingVoice({ characterId: selectedCharacter.id, clipId: clip.id });
+    } catch {
+      if (playback.controller.signal.aborted || voicePlaybackRef.current !== playback) return;
+      stopVoicePlayback();
+      showToast(t('音频播放失败'), 'error');
+    }
+  };
+
+  const handleBindVoiceNode = async (nodeId: string) => {
+    if (!selectedCharacter) return;
+    const state = useAppStore.getState();
+    if (state.currentProjectId !== currentProjectId) return;
+    const node = state.nodes.find((item) => item.id === nodeId);
+    const audioUrl = node?.data.audioUrl;
+    if (!audioUrl) {
+      showToast(t('该节点没有可用的音频'), 'error');
+      return;
+    }
+    setVoicePickerOpen(false);
+    setBindingVoice(true);
+    const clipId = await bindAudioNodeToCharacterVoice({
+      nodeId,
+      scope,
+      characterId: selectedCharacter.id,
+      label: node?.data.label,
+      durationSec: await readAudioDuration(audioUrl),
+    });
+    setBindingVoice(false);
+    if (!clipId) return;
+    showToast(scope === 'project' ? t('已绑定到本项目角色声音') : t('已绑定到全局角色声音'));
+  };
+
+  const handleRemoveVoiceClip = async (clip: CharacterVoiceClip) => {
+    if (!selectedCharacter) return;
+    if (voicePlaybackRef.current?.clipId === clip.id) { stopVoicePlayback(); setPlayingVoice(null); }
+    if (await removeCharacterVoiceClip(scope, selectedCharacter.id, clip.id)) {
+      showToast(t('已移除该声音'));
+    }
+  };
+
+  const focusNode = (nodeId: string) => {
+    if (openRequest?.origin === 'assets') useAppStore.getState().setAssetsPanelOpen(false);
+    setOpen(false);
+    setSelectedNodeIds([nodeId]);
+    window.dispatchEvent(new CustomEvent('canvas-focus-node', { detail: { nodeId, pulse: true } }));
+  };
+
+  const handleVoiceToCanvas = (clip: CharacterVoiceClip) => {
+    if (!selectedCharacter) return;
+    const nodeId = createAudioNodeFromCharacterVoice(scope, selectedCharacter.id, clip.id);
+    if (nodeId) {
+      setCharacterLibraryNodeHidden(nodeId, false);
+      focusNode(nodeId);
+    }
+  };
+
+  const handleVoiceOver = (clip: CharacterVoiceClip) => {
+    if (!selectedCharacter) return;
+    const nodeId = createVoiceOverNodeFromCharacterVoice(scope, selectedCharacter.id, clip.id);
+    if (!nodeId) return;
+    showToast(t('已创建配音节点，声音已连线为音色参考'));
+    focusNode(nodeId);
+  };
+
+  const handleAddAction = async () => {
+    if (!selectedCharacter || !actionName.trim()) return;
+    setSavingAction(true);
+    const actionId = await addCharacterAction(scope, selectedCharacter.id, {
+      category: actionCategory,
+      customCategory: actionCategory === 'custom' ? customActionCategory : undefined,
+      name: actionName,
+      prompt: actionPrompt,
+      media: pendingActionMedia,
+    });
+    setSavingAction(false);
+    if (!actionId) return;
+    setActionName('');
+    setActionPrompt('');
+    setPendingActionMedia([]);
+    if (actionCategory === 'custom') setCustomActionCategory('');
+    showToast(t('动作已添加到「{name}」', { name: selectedCharacter.name }));
+  };
+
+  const storeActionMediaFile = async (file: File): Promise<CharacterActionMedia | null> => {
+    const kind = actionMediaKind(file);
+    if (!kind) return null;
+    const mediaKind = inferMediaDataUrlKind(file.type || file.name);
+    assertMediaDataUrlSize(file.size, mediaKind, file.name);
+    let url: string | undefined;
+    let filePath: string | undefined;
+    if (scope === 'project' && currentProjectId && currentProjectId !== 'default') {
+      const stored = await saveBinaryToProjectData(
+        new Uint8Array(await file.arrayBuffer()),
+        currentProjectId,
+        file.name,
+      );
+      url = stored?.assetUrl || undefined;
+      filePath = stored?.filePath;
+    }
+    if (!url) {
+      url = await readFileAsDataUrl(file);
+      assertMediaDataUrlWithinLimit(url, mediaKind, file.name);
+    }
+    const now = Date.now();
+    return {
+      id: `action-media-${generateId()}`,
+      kind,
+      name: file.name,
+      mimeType: file.type || undefined,
+      filePath,
+      url,
+      createdAt: now,
+      updatedAt: now,
+    };
+  };
+
+  const openActionMediaPicker = (actionId: string | null) => {
+    setActionMediaTargetId(actionId);
+    requestAnimationFrame(() => actionMediaInputRef.current?.click());
+  };
+
+  const handleActionMediaFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    const targetActionId = actionMediaTargetId;
+    event.target.value = '';
+    if (files.length === 0 || !selectedCharacter) return;
+    setUploadingActionMedia(true);
+    try {
+      const media: CharacterActionMedia[] = [];
+      for (const file of files) {
+        const stored = await storeActionMediaFile(file);
+        if (stored) media.push(stored);
+      }
+      if (media.length === 0) {
+        showToast(t('请选择 PNG、JPG、WebP、AVIF、GIF、MP4、WebM、MOV 或 M4V 文件'), 'error');
+        return;
+      }
+      if (targetActionId) {
+        if (await addCharacterActionMedia(
+          scope,
+          selectedCharacter.id,
+          targetActionId,
+          media,
+        )) {
+          showToast(t('已添加 {count} 个动作媒体', { count: media.length }));
+        }
+      } else {
+        setPendingActionMedia((current) => [...current, ...media]);
+      }
+    } catch {
+      showToast(t('动作媒体读取或保存失败'), 'error');
+    } finally {
+      setUploadingActionMedia(false);
+      setActionMediaTargetId(null);
+    }
+  };
+
+  const handleBindActionNode = async (nodeId: string) => {
+    if (!selectedCharacter || !actionNodePickerTargetId) return;
+    const state = useAppStore.getState();
+    if (state.currentProjectId !== currentProjectId) return;
+    const character = (scope === 'project' ? state.dramaAssets.characters : state.globalCharacters)
+      .find((item) => item.id === selectedCharacter.id);
+    const action = character?.actions?.find((item) => item.id === actionNodePickerTargetId);
+    const node = state.nodes.find((item) => item.id === nodeId);
+    const media = node ? actionMediaFromCanvasNode(node) : null;
+    if (!action || !media) {
+      showToast(t('该节点没有可用的图片、GIF 或视频'), 'error');
+      return;
+    }
+    const duplicated = action.media?.some((item) => (
+      Boolean(media.assetId && item.assetId === media.assetId)
+      || Boolean(media.filePath && item.filePath === media.filePath)
+      || item.url === media.url
+    ));
+    if (duplicated) {
+      showToast(t('该节点已经添加到这个动作'));
+      return;
+    }
+    if (await addCharacterActionMedia(
+      scope,
+      selectedCharacter.id,
+      action.id,
+      [media],
+      { nodeId, hideNode: hideActionNode },
+    )) {
+      setActionNodePickerTargetId(null);
+      showToast(t('画布节点已添加到动作「{name}」', { name: action.name }));
+    }
+  };
+
+  const closeActionLibrary = () => {
+    setActionNodePickerTargetId(null);
+    setActionLibraryOpen(false);
+  };
+
+  const openEditor = (character: DramaCharacter | null, referenceId?: string | null) => {
+    setDialogCharacter(character);
+    setDialogReferenceId(referenceId ?? null);
+    setDialogOpen(true);
+  };
+
+  const handleCopy = async () => {
+    if (!selectedCharacter) return;
+    if (selectedCharacter.weaponIds?.length) {
+      if (weaponCopyPending.current) return;
+      weaponCopyPending.current = true;
+      setWeaponCopyBusy(true);
+      const version = copyViewVersion.current;
+      const state = useAppStore.getState();
+      const before = new Set((scope === 'project' ? state.globalCharacters : state.dramaAssets.characters).map((character) => character.id));
+      const assertCurrent = () => {
+        const latest = useAppStore.getState();
+        const source = (scope === 'project' ? latest.dramaAssets.characters : latest.globalCharacters).find((character) => character.id === selectedCharacter.id);
+        if (latest.currentProjectId !== currentProjectId || !latest.characterLibraryOpen || copyViewVersion.current !== version
+          || !configValuesEqual(source, selectedCharacter)) throw new Error(t('角色或项目已变化，请重新选择武器'));
+      };
+      try {
+        if (scope === 'global') await state.loadGlobalDramaAssets();
+        assertCurrent();
+        await copyDramaAssetSelection(scope, [{ kind: 'character', id: selectedCharacter.id }], { assertCurrent });
+        assertCurrent();
+        const latest = useAppStore.getState();
+        if (latest.currentProjectId !== currentProjectId) return;
+        const copied = (scope === 'project' ? latest.globalCharacters : latest.dramaAssets.characters).filter((character) => !before.has(character.id));
+        if (copied.length !== 1) throw new Error(t('复制失败，请重试'));
+        setWeaponTarget(null);
+        setScope(scope === 'project' ? 'global' : 'project');
+        setSelectedCharacterId(copied[0].id);
+        setSelectedReferenceId(null);
+        showToast(t(scope === 'project' ? '已复制到全局资产' : '已复制到本项目'));
+      } catch (error) { showToast(error instanceof Error ? error.message : t('复制失败，请重试'), 'error'); }
+      finally { weaponCopyPending.current = false; setWeaponCopyBusy(false); }
+      return;
+    }
+    if (scope === 'project') {
+      const copiedId = await copyCharacterToGlobal(selectedCharacter.id);
+      if (!copiedId) return;
+      showToast(t('已复制到全局资产'));
+      setScope('global');
+      setSelectedCharacterId(copiedId);
+      setSelectedReferenceId(null);
+      return;
+    }
+    const copiedId = copyGlobalCharacterToProject(selectedCharacter.id);
+    if (!copiedId) return;
+    showToast(t('已复制到本项目'));
+    setScope('project');
+    setSelectedCharacterId(copiedId);
+    setSelectedReferenceId(null);
+  };
+
+  const handleDelete = async () => {
+    if (!selectedCharacter) return;
+    setDeleteConfirmOpen(false);
+    if (scope === 'project') {
+      deleteDramaAsset('character', selectedCharacter.id);
+    } else if (!await deleteGlobalCharacter(selectedCharacter.id)) {
+      return;
+    }
+    showToast(t('角色已删除'));
+    setSelectedCharacterId(null);
+    setSelectedReferenceId(null);
+  };
+
+  const handleCanvasAction = () => {
+    if (!selectedCharacter || !selectedReference) return;
+    let nodeId = sourceNode?.id ?? null;
+    if (sourceNode?.data.hiddenByCharacterLibrary) {
+      setCharacterLibraryNodeHidden(sourceNode.id, false);
+      showToast(t('节点已显示'));
+    } else if (!sourceNode) {
+      nodeId = createImageNodeFromCharacterReference(
+        scope,
+        selectedCharacter.id,
+        selectedReference.id,
+      );
+      if (!nodeId) return;
+      showToast(t('已将角色参考图添加到画布'));
+    }
+    if (!nodeId) return;
+
+    focusNode(nodeId);
+  };
+
+  return (
+    <>
+      <ModalOverlay
+        isOpen={open}
+        onClose={() => { setPendingTasksScope(undefined); setOpen(false); }}
+        ariaLabel={t('角色库')}
+        className="character-library-panel ui-dialog-surface"
+      >
+        <div className="character-library-toolbar">
+          <div className="character-library-tabs" role="tablist" aria-label={t('角色保存范围')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={scope === 'project'}
+              className={scope === 'project' ? 'is-active' : ''}
+              onClick={() => switchScope('project')}
+            >
+              {t('本项目')}
+              <span>{projectCharacters.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={scope === 'global'}
+              className={scope === 'global' ? 'is-active' : ''}
+              onClick={() => switchScope('global')}
+            >
+              {t('全局资产')}
+              <span>{globalCharacters.length}</span>
+            </button>
+          </div>
+          <label className="character-library-search">
+            <Icon icon="lucide:search" width="15" height="15" aria-hidden="true" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t('搜索角色、身份或简介')}
+            />
+            {search ? (
+              <button type="button" aria-label={t('清空搜索')} onClick={() => setSearch('')}>
+                <Icon icon="lucide:x" width="13" height="13" aria-hidden="true" />
+              </button>
+            ) : null}
+          </label>
+          {isTauriEnv() && (scope === 'global' || currentProjectId) && <button type="button"
+            className="ui-icon-btn ui-icon-btn--sm" title={t('待处理生图任务')} aria-label={t('待处理生图任务')}
+            onClick={() => setPendingTasksScope({ scope, projectId: currentProjectId })}>
+            <Icon icon="lucide:list-todo" width="15" height="15" aria-hidden="true" />
+          </button>}
+          <button type="button" className="character-library-new" onClick={() => openEditor(null)}>
+            <Icon icon="lucide:plus" width="13" height="13" aria-hidden="true" />
+            {t('新建角色')}
+          </button>
+          <PopupCloseButton onClick={() => { setPendingTasksScope(undefined); setOpen(false); }} />
+        </div>
+
+        <main className="character-library-content">
+          {scope === 'global' && globalCharactersLoading ? (
+            <div className="character-library-empty">
+              <Icon icon="lucide:loader-circle" className="animate-spin" width="26" height="26" aria-hidden="true" />
+              <p>{t('正在读取全局角色…')}</p>
+            </div>
+          ) : selectedCharacter ? (
+            <section
+              className="character-library-gallery"
+              aria-label={t('多图参考')}
+              style={referenceStage ? {
+                '--character-stage-width': `${referenceStage.width}px`,
+                '--character-stage-height': `${referenceStage.height}px`,
+              } as CSSProperties : undefined}
+            >
+              <CharacterReferenceGallery
+                key={`${currentProjectId}:${scope}:${selectedCharacter.id}`}
+                references={selectedCharacter.referenceImages ?? []}
+                selectedId={effectiveReferenceId}
+                onSelect={setSelectedReferenceId}
+                onEdit={(referenceId) => openEditor(selectedCharacter, referenceId)}
+                onReorder={reorderReferences}
+                onStageResize={handleStageResize}
+              />
+
+              <div className="character-library-dock">
+                {pickerOpen ? (
+                  <div className="character-node-picker" role="listbox" aria-label={t('选择画布图片节点')}>
+                    {pickableNodes.length === 0 ? (
+                      <span className="character-node-picker-empty">{t('画布上没有可用的图片节点')}</span>
+                    ) : pickableNodes.map((node) => (
+                      <button
+                        key={node.id}
+                        type="button"
+                        role="option"
+                        aria-selected={false}
+                        onClick={() => {
+                          setCaptureNodeId(node.id);
+                          setPickerOpen(false);
+                        }}
+                      >
+                        <ViewportImage src={node.data.imageUrl ?? node.data.thumbnailUrl} alt="" draggable={false} />
+                        <span>{node.data.label || t('图片节点')}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {voiceDockOpen ? <section className="character-voice-dock" aria-label={t('角色声音')}>
+                  <div className="character-voice-dock-head">
+                    <Icon icon="lucide:audio-lines" width="14" height="14" aria-hidden="true" />
+                    <span>{t('角色声音')}</span>
+                    <strong>{voiceClips.length}</strong>
+                    <button
+                      type="button"
+                      data-tooltip={t('绑定画布音频节点')}
+                      aria-label={t('绑定画布音频节点')}
+                      aria-expanded={voicePickerOpen}
+                      className={voicePickerOpen ? 'is-active' : ''}
+                      disabled={bindingVoice}
+                      onClick={() => {
+                        setPickerOpen(false);
+                        setVoicePickerOpen((current) => !current);
+                      }}
+                    >
+                      <Icon icon="lucide:link" width="15" height="15" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      data-tooltip={t('上传音频')}
+                      aria-label={t('上传音频')}
+                      onClick={() => openEditor(selectedCharacter)}
+                    >
+                      <Icon icon="lucide:upload" width="15" height="15" aria-hidden="true" />
+                    </button>
+                  </div>
+
+                  {voicePickerOpen ? (
+                    <div className="character-voice-picker" role="listbox" aria-label={t('选择画布音频节点')}>
+                      {pickableAudioNodes.length === 0 ? (
+                        <span className="character-node-picker-empty">{t('画布上没有可用的音频节点')}</span>
+                      ) : pickableAudioNodes.map((node) => (
+                        <button
+                          key={node.id}
+                          type="button"
+                          role="option"
+                          aria-selected={false}
+                          onClick={() => void handleBindVoiceNode(node.id)}
+                        >
+                          <Icon icon="lucide:audio-lines" width="15" height="15" aria-hidden="true" />
+                          <span>{node.data.label || t('音频节点')}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {voiceClips.length === 0 ? (
+                    <p className="character-voice-dock-empty">
+                      {bindingVoice ? t('正在绑定…') : t('还没有声音，可绑定画布音频节点或上传音频')}
+                    </p>
+                  ) : (
+                    <div className="character-voice-chips" role="list">
+                      {voiceClips.map((clip) => {
+                        const voiceNode = nodes.find((node) => node.id === clip.sourceNodeId);
+                        const voiceHidden = voiceNode?.data.hiddenByCharacterLibrary === true;
+                        return (
+                        <div
+                          key={clip.id}
+                          role="listitem"
+                          className={`character-voice-chip${
+                            clip.id === selectedCharacter.primaryVoiceClipId ? ' is-primary' : ''
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className="character-voice-play"
+                            aria-label={playingVoiceClipId === clip.id ? t('暂停试听') : t('试听')}
+                            disabled={!clip.audioUrl}
+                            onClick={() => void toggleVoicePlayback(clip)}
+                          >
+                            <Icon
+                              icon={playingVoiceClipId === clip.id ? 'lucide:pause' : 'lucide:play'}
+                              width="13"
+                              height="13"
+                              aria-hidden="true"
+                            />
+                          </button>
+                          <span className="character-voice-chip-copy">
+                            <strong>{voiceClipTitle(clip)}</strong>
+                            <span>
+                              {t(CHARACTER_VOICE_KIND_LABELS[clip.kind])} · {formatVoiceDuration(clip.durationSec)}
+                            </span>
+                          </span>
+                          <span className="character-voice-chip-actions">
+                            <button
+                              type="button"
+                              data-tooltip={t('设为主音色')}
+                              aria-label={t('设为主音色')}
+                              className={clip.id === selectedCharacter.primaryVoiceClipId ? 'is-active' : ''}
+                              onClick={() => void setCharacterPrimaryVoice(scope, selectedCharacter.id, clip.id)}
+                            >
+                              <Icon icon="lucide:star" width="13" height="13" aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              data-tooltip={t('用这个声音生成台词')}
+                              aria-label={t('用这个声音生成台词')}
+                              onClick={() => handleVoiceOver(clip)}
+                            >
+                              <Icon icon="lucide:mic" width="13" height="13" aria-hidden="true" />
+                            </button>
+                            {voiceNode && !voiceHidden ? <button
+                              type="button"
+                              data-tooltip={t('定位画布节点')}
+                              aria-label={t('定位画布节点')}
+                              onClick={() => handleVoiceToCanvas(clip)}
+                            >
+                              <Icon
+                                icon="lucide:locate-fixed"
+                                width="13"
+                                height="13"
+                                aria-hidden="true"
+                              />
+                            </button> : null}
+                            {voiceNode ? (
+                              <button
+                                type="button"
+                                data-tooltip={t(voiceHidden ? '在画布中显示' : '在画布中隐藏')}
+                                aria-label={t(voiceHidden ? '在画布中显示' : '在画布中隐藏')}
+                                onClick={() => {
+                                  if (setCharacterLibraryNodeHidden(voiceNode.id, !voiceHidden)) {
+                                    showToast(t(voiceHidden ? '节点已显示' : '节点已隐藏'));
+                                  }
+                                }}
+                              >
+                                <Icon icon={voiceHidden ? 'lucide:eye' : 'lucide:eye-off'} width="13" height="13" aria-hidden="true" />
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              data-tooltip={t(clip.sourceNodeId ? '解除声音关联' : '移除该声音')}
+                              aria-label={t(clip.sourceNodeId ? '解除声音关联' : '移除该声音')}
+                              onClick={() => void handleRemoveVoiceClip(clip)}
+                            >
+                              <Icon icon="lucide:trash-2" width="13" height="13" aria-hidden="true" />
+                            </button>
+                          </span>
+                        </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section> : null}
+
+                <section className="character-library-profile" aria-label={t('当前角色')}>
+                  <div className="character-library-profile-copy">
+                    <div className="character-library-profile-name">
+                      <h3>{selectedCharacter.name}</h3>
+                      {selectedCharacter.identity ? <span>{selectedCharacter.identity}</span> : null}
+                      {selectedCharacter.storyRole ? <span>{selectedCharacter.storyRole}</span> : null}
+                    </div>
+                    <p>{selectedCharacter.summary || selectedCharacter.visualNotes || t('尚未填写角色简介')}</p>
+                  </div>
+                  <div className="character-library-profile-actions">
+                    <button type="button" data-tooltip={t('绑定角色武器')} aria-label={t('绑定角色武器')}
+                      onClick={() => setWeaponTarget({ scope, id: selectedCharacter.id, projectId: currentProjectId })}>
+                      <Swords width="16" height="16" aria-hidden="true" />
+                    </button>
+                    {selectedReference ? (
+                      <button type="button" data-tooltip={canvasActionLabel} aria-label={canvasActionLabel} onClick={handleCanvasAction}>
+                        <Icon icon={canvasActionIcon} width="16" height="16" aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {sourceNode && !sourceNode.data.hiddenByCharacterLibrary ? (
+                      <button
+                        type="button"
+                        data-tooltip={t('在画布中隐藏')}
+                        aria-label={t('在画布中隐藏')}
+                        onClick={() => {
+                          if (setCharacterLibraryNodeHidden(sourceNode.id, true)) showToast(t('节点已隐藏'));
+                        }}
+                      >
+                        <Icon icon="lucide:eye-off" width="16" height="16" aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      data-tooltip={t(voiceDockOpen ? '收起角色声音' : '展开角色声音')}
+                      aria-label={t(voiceDockOpen ? '收起角色声音' : '展开角色声音')}
+                      aria-expanded={voiceDockOpen}
+                      className={voiceDockOpen ? 'is-active' : ''}
+                      onClick={() => {
+                        if (voiceDockOpen) {
+                          stopVoicePlayback();
+                          setVoicePickerOpen(false);
+                        }
+                        setVoiceDockState({ context: voiceDockContext, expanded: !voiceDockOpen });
+                      }}
+                    >
+                      <Icon icon="lucide:audio-lines" width="16" height="16" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      data-tooltip={t('角色动作库')}
+                      aria-label={t('打开「{name}」的动作库', { name: selectedCharacter.name })}
+                      aria-expanded={actionLibraryOpen}
+                      className={actionLibraryOpen ? 'is-active' : ''}
+                      onClick={() => setActionLibraryOpen(true)}
+                    >
+                      <Icon icon="lucide:accessibility" width="16" height="16" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      data-tooltip={t('从画布添加视角图')}
+                      aria-label={t('从画布添加视角图')}
+                      aria-expanded={pickerOpen}
+                      className={pickerOpen ? 'is-active' : ''}
+                      onClick={() => {
+                        setVoicePickerOpen(false);
+                        setPickerOpen((open) => !open);
+                      }}
+                    >
+                      <Icon icon="lucide:image-plus" width="16" height="16" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      data-tooltip={scope === 'project' ? t('复制到全局资产') : t('复制到本项目')}
+                      aria-label={scope === 'project' ? t('复制到全局资产') : t('复制到本项目')}
+                      disabled={weaponCopyBusy}
+                      onClick={() => void handleCopy()}
+                    >
+                      <Icon icon="lucide:copy-plus" width="16" height="16" aria-hidden="true" />
+                    </button>
+                    <button type="button" data-tooltip={t('编辑角色')} aria-label={t('编辑角色')} onClick={() => openEditor(selectedCharacter)}>
+                      <Icon icon="lucide:pencil" width="16" height="16" aria-hidden="true" />
+                    </button>
+                    <button type="button" data-tooltip={t('删除角色')} aria-label={t('删除角色')} onClick={() => setDeleteConfirmOpen(true)}>
+                      <Icon icon="lucide:trash-2" width="16" height="16" aria-hidden="true" />
+                    </button>
+                  </div>
+                </section>
+              </div>
+
+              <audio
+                ref={voicePlayerRef}
+                className="sr-only"
+                onPause={(event) => {
+                  if (event.currentTarget.paused && voicePlaybackRef.current?.release) stopVoicePlayback();
+                  setPlayingVoice(null);
+                }}
+                onEnded={() => { stopVoicePlayback(); setPlayingVoice(null); }}
+                onError={(event) => {
+                  if (!event.currentTarget.error || !voicePlaybackRef.current) return;
+                  stopVoicePlayback(); setPlayingVoice(null);
+                  showToast(t('音频播放失败'), 'error');
+                }}
+              />
+            </section>
+          ) : (
+            <div className="character-library-empty">
+              <Icon icon="lucide:contact-round" width="34" height="34" aria-hidden="true" />
+              <h3>{search ? t('没有匹配的角色') : t('这里还没有角色')}</h3>
+              {!search ? (
+                <button type="button" className="character-button-primary mt-3" onClick={() => openEditor(null)}>
+                  <Icon icon="lucide:plus" width="15" height="15" aria-hidden="true" />
+                  {t('新建角色')}
+                </button>
+              ) : null}
+            </div>
+          )}
+        </main>
+
+        <footer className="character-library-strip" aria-label={t('角色列表')}>
+          <div className="character-library-strip-label">
+            <span>{scope === 'project' ? t('本项目角色') : t('全局角色')}</span>
+            <strong>{characters.length}</strong>
+          </div>
+          <CharacterDock
+            key={JSON.stringify([open, currentProjectId, scope, search,
+              characters.map(({ id, updatedAt }) => [id, updatedAt]).sort()])}
+            characters={characters}
+            selectedId={selectedCharacter?.id}
+            renderAvatar={(character) => <CharacterAvatar character={character} />}
+            onSelect={(id) => {
+              setWeaponTarget(null);
+              setSelectedCharacterId(id);
+              setSelectedReferenceId(null);
+            }}
+            onReorder={async (ids) => {
+              // 尚未点击过角色时，也保持当前预览，不随首项换位而跳到其他角色。
+              if (selectedCharacter) setSelectedCharacterId(selectedCharacter.id);
+              return reorderCharacters(scope, ids, currentProjectId);
+            }}
+          />
+        </footer>
+      </ModalOverlay>
+
+      {open && pendingTasksScope?.scope === scope && (scope === 'global' || pendingTasksScope.projectId === currentProjectId)
+        && <LazyLoadBoundary label="待处理生图任务" resetKey={scope}>
+          <Suspense fallback={<LazyLoadFallback label="待处理生图任务" />}>
+            <CharacterVisualPendingTasks scope={scope} onClose={() => setPendingTasksScope(undefined)} />
+          </Suspense>
+        </LazyLoadBoundary>}
+
+      {open && weaponTarget && weaponTarget.scope === scope && weaponTarget.id === selectedCharacter?.id
+        && weaponTarget.projectId === currentProjectId && <CharacterWeaponDialog
+          key={`${scope}:${currentProjectId}:${weaponTarget.id}`} scope={scope} characterId={weaponTarget.id}
+          onClose={() => setWeaponTarget(null)} />}
+
+      {dialogOpen ? createPortal(
+        <CharacterAssetDialog
+          isOpen
+          scope={scope}
+          character={dialogCharacter}
+          initialReferenceId={dialogReferenceId}
+          onClose={() => setDialogOpen(false)}
+          onSaved={(characterId) => {
+            setSelectedCharacterId(characterId);
+            setSelectedReferenceId(null);
+          }}
+        />,
+        document.body,
+      ) : null}
+
+      {deleteConfirmOpen && selectedCharacter ? createPortal(
+        <ModalOverlay
+          isOpen
+          onClose={() => setDeleteConfirmOpen(false)}
+          ariaLabel={t('确认删除角色')}
+          className="character-confirm-dialog"
+          motionPreset="quick"
+        >
+          <div className="character-confirm-body">
+            <span className="character-confirm-icon" aria-hidden="true">
+              <Icon icon="lucide:trash-2" width="18" height="18" />
+            </span>
+            <div>
+              <h3>{t('删除「{name}」？', { name: selectedCharacter.name })}</h3>
+              <p>
+                {scope === 'project'
+                  ? t('将从本项目移除该角色及其 {count} 张参考图，画布上被收纳的节点会重新显示。', { count: selectedCharacter.referenceImages?.length ?? 0 })
+                  : t('将从全局资产永久删除该角色及其 {count} 张参考图，删除后无法恢复。', { count: selectedCharacter.referenceImages?.length ?? 0 })}
+              </p>
+            </div>
+          </div>
+          <footer className="character-dialog-footer">
+            <button type="button" className="character-button-secondary" onClick={() => setDeleteConfirmOpen(false)}>
+              {t('取消')}
+            </button>
+            <button type="button" className="character-button-danger" onClick={() => void handleDelete()}>
+              {t('删除角色')}
+            </button>
+          </footer>
+        </ModalOverlay>,
+        document.body,
+      ) : null}
+
+      {selectedCharacter ? (
+        <ModalOverlay
+          isOpen={actionLibraryOpen}
+          onClose={closeActionLibrary}
+          ariaLabel={t('「{name}」的动作库', { name: selectedCharacter.name })}
+          className="ui-dialog-surface h-[min(820px,calc(100vh-32px))] w-[min(1180px,calc(100vw-32px))] border-canvas-border text-canvas-text"
+          motionPreset="quick"
+        >
+          <header className="flex items-center gap-3 border-b border-canvas-border px-2.5 py-2">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-canvas-border bg-canvas-card text-brand-light">
+              <Icon icon="lucide:accessibility" width="19" height="19" aria-hidden="true" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-[15px] font-semibold">{t('{name} · 动作库', { name: selectedCharacter.name })}</h2>
+              <p className="mt-0.5 text-[11px] text-canvas-text-secondary">
+                {t('{count} 个动作 · 支持为每个动作添加多份图片、GIF 和视频', { count: selectedCharacter.actions?.length ?? 0 })}
+              </p>
+            </div>
+            <PopupCloseButton onClick={closeActionLibrary} />
+          </header>
+
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_360px] max-md:block max-md:overflow-y-auto">
+            <section className="flex min-h-0 flex-col" aria-label={t('动作列表')}>
+              <div className="flex items-center gap-3 border-b border-canvas-border px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-xs font-semibold">{t('动作列表')}</h3>
+                  <p className="mt-0.5 text-[10px] text-canvas-text-muted">{t('同一动作可继续添加多份演示素材')}</p>
+                </div>
+                <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
+                  {t('角色')}
+                  <Select
+                    value={selectedCharacter.id}
+                    onChange={(value) => setSelectedCharacterId(value)}
+                    className="min-w-32 max-w-44"
+                    triggerStyle={{ height: 32 }}
+                    fixedMenu
+                    options={characters.map((character) => ({ value: character.id, label: character.name }))}
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
+                  {t('筛选')}
+                  <Select
+                    value={actionFilter}
+                    onChange={(value) => setActionFilter(value as CharacterActionCategory | 'all')}
+                    className="min-w-32"
+                    triggerStyle={{ height: 32 }}
+                    fixedMenu
+                    options={[
+                      { value: 'all', label: t('全部类别') },
+                      ...CHARACTER_ACTION_CATEGORIES.map((category) => ({
+                        value: category.id,
+                        label: t(category.label),
+                      })),
+                    ]}
+                  />
+                </label>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {visibleActions.length === 0 ? (
+                  <div className="flex h-full min-h-52 flex-col items-center justify-center rounded-xl border border-dashed border-canvas-border px-6 text-center">
+                    <Icon icon="lucide:accessibility" width="28" height="28" className="text-canvas-text-muted" aria-hidden="true" />
+                    <h3 className="mt-3 text-sm font-medium">{actionFilter === 'all' ? t('还没有动作') : t('这个类别还没有动作')}</h3>
+                    <p className="mt-1 max-w-72 text-xs leading-5 text-canvas-text-secondary">{t('在右侧选择类别并添加动作，可同时上传多份图片、GIF 或视频')}</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 items-start gap-3 max-lg:grid-cols-1">
+                    {visibleActions.map((action) => {
+                      const category = CHARACTER_ACTION_CATEGORIES.find((item) => item.id === action.category);
+                      const categoryLabel = action.category === 'custom' && action.customCategory
+                        ? action.customCategory
+                        : t(category?.label ?? '自定义');
+                      return (
+                        <article key={action.id} className="character-action-card flex min-w-0 flex-col rounded-xl border border-canvas-border bg-canvas-card p-3 shadow-sm">
+                          <div className="flex items-start gap-2">
+                            <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-canvas-border bg-canvas-surface text-brand-light">
+                              <Icon icon={category?.icon ?? 'lucide:shapes'} width="15" height="15" aria-hidden="true" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <h3 className="truncate text-xs font-semibold">{action.name}</h3>
+                              <span className="mt-1 inline-flex rounded-md border border-canvas-border px-1.5 py-0.5 text-[10px] text-canvas-text-secondary">
+                                {categoryLabel}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="grid size-7 shrink-0 place-items-center rounded-md text-canvas-text-muted transition-[transform,color,background-color] duration-150 ease-out hover:bg-canvas-hover hover:text-canvas-text active:scale-[.97]"
+                              aria-label={t('删除动作「{name}」', { name: action.name })}
+                              onClick={async () => {
+                                if (await removeCharacterAction(scope, selectedCharacter.id, action.id)) {
+                                  showToast(t('动作已移除'));
+                                }
+                              }}
+                            >
+                              <Icon icon="lucide:trash-2" width="13" height="13" aria-hidden="true" />
+                            </button>
+                          </div>
+                          <p className="mt-2 min-h-10 text-[11px] leading-5 text-canvas-text-secondary">
+                            {action.prompt || t('未填写动作提示词')}
+                          </p>
+
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            {(action.media ?? []).map((media) => {
+                              const linkedNodes = nodes.filter((node) => node.data.characterLibraryLinks?.some((link) => (
+                                link.scope === scope && link.characterId === selectedCharacter.id
+                                && link.actionId === action.id && link.mediaId === media.id
+                              )));
+                              // 旧素材没有节点关联时，仅在媒体身份唯一匹配时提供显隐，避免误操作同图副本。
+                              const candidates = linkedNodes.length > 0 ? linkedNodes : nodes.filter((node) => (
+                                Boolean(media.assetId && node.data.assetId === media.assetId)
+                                || Boolean(media.filePath && node.data.filePath === media.filePath)
+                                || Boolean(media.url && (media.kind === 'video'
+                                  ? node.data.videoUrl === media.url
+                                  : node.data.imageUrl === media.url || node.data.thumbnailUrl === media.url))
+                              ));
+                              const mediaNode = candidates.length === 1 ? candidates[0] : undefined;
+                              const hidden = mediaNode?.data.hiddenByCharacterLibrary === true;
+                              const visibilityLabel = !mediaNode
+                                ? t('没有唯一对应的画布节点')
+                                : hidden ? t('显示画布节点') : t('在画布中隐藏');
+                              return (
+                                <figure key={media.id} className={`resource-video-tile group relative m-0 overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface${media.kind === 'video' ? '' : ' aspect-video'}${videoPreview.expandedId === `action:${action.id}:${media.id}` ? ' is-expanded' : ''}`}>
+                                  {media.kind !== 'video' ? (
+                                    <ViewportImage src={media.url} alt={media.name} className="size-full object-cover" draggable={false} />
+                                  ) : (
+                                    <ResourceVideoPreview src={media.url} filePath={media.filePath} name={media.name}
+                                      expanded={videoPreview.expandedId === `action:${action.id}:${media.id}`}
+                                      onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? `action:${action.id}:${media.id}` : null)} />
+                                  )}
+                                  <span className="pointer-events-none absolute bottom-1 left-1 max-w-[calc(100%-40px)] truncate rounded bg-[color:color-mix(in_srgb,var(--theme-bg)_78%,transparent)] px-1.5 py-0.5 text-[9px] text-canvas-text">
+                                    {media.name}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="absolute right-1 top-1 grid size-6 place-items-center rounded-md bg-[color:color-mix(in_srgb,var(--theme-bg)_78%,transparent)] text-canvas-text transition-[transform,background-color] duration-150 ease-out hover:bg-[color:color-mix(in_srgb,var(--theme-bg)_92%,transparent)] active:scale-[.97]"
+                                    aria-label={t('移除媒体「{name}」', { name: media.name })}
+                                    onClick={async () => {
+                                      if (await removeCharacterActionMedia(
+                                        scope,
+                                        selectedCharacter.id,
+                                        action.id,
+                                        media.id,
+                                      )) showToast(t('动作媒体已移除'));
+                                    }}
+                                  >
+                                    <Icon icon="lucide:x" width="12" height="12" aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ui-icon-btn ui-icon-btn--sm absolute bottom-1 right-1 border border-canvas-border bg-canvas-surface"
+                                    disabled={!mediaNode}
+                                    data-tooltip={visibilityLabel}
+                                    aria-label={visibilityLabel}
+                                    aria-pressed={Boolean(mediaNode && !hidden)}
+                                    onClick={() => {
+                                      if (!mediaNode) return;
+                                      if (hidden) {
+                                        setCharacterLibraryNodeHidden(mediaNode.id, false);
+                                      } else {
+                                        useAppStore.getState().linkNodeToCharacter(mediaNode.id, {
+                                          scope, characterId: selectedCharacter.id, actionId: action.id, mediaId: media.id,
+                                        }, true);
+                                      }
+                                      showToast(hidden ? t('节点已显示') : t('节点已隐藏'));
+                                    }}
+                                  >
+                                    <Icon icon={hidden ? 'lucide:eye' : 'lucide:eye-off'} width="13" height="13" aria-hidden="true" />
+                                  </button>
+                                </figure>
+                              );
+                            })}
+                            <button
+                              type="button"
+                              disabled={uploadingActionMedia}
+                              className="flex aspect-video min-h-20 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-canvas-border text-[10px] text-canvas-text-muted transition-[transform,color,background-color,border-color] duration-150 ease-out hover:border-brand-light hover:bg-canvas-surface hover:text-canvas-text active:scale-[.98] disabled:opacity-50"
+                              onClick={() => openActionMediaPicker(action.id)}
+                            >
+                              <Icon icon="lucide:upload" width="16" height="16" aria-hidden="true" />
+                              {t('上传图片 / GIF / 视频')}
+                            </button>
+                            <button
+                              type="button"
+                              aria-expanded={actionNodePickerTargetId === action.id}
+                              className="flex aspect-video min-h-20 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-canvas-border text-[10px] text-canvas-text-muted transition-[transform,color,background-color,border-color] duration-150 ease-out hover:border-brand-light hover:bg-canvas-surface hover:text-canvas-text active:scale-[.98]"
+                              onClick={() => setActionNodePickerTargetId((current) => (
+                                current === action.id ? null : action.id
+                              ))}
+                            >
+                              <Icon icon="lucide:panel-top" width="16" height="16" aria-hidden="true" />
+                              {t('从画布添加')}
+                            </button>
+                            {actionNodePickerTargetId === action.id ? (
+                              <div className="col-span-2 rounded-lg border border-canvas-border bg-canvas-surface p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[10px] font-medium text-canvas-text-secondary">
+                                    {t('选择画布图片 / GIF / 视频节点')}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="grid size-6 place-items-center rounded-md text-canvas-text-muted transition-[color,background-color] duration-150 hover:bg-canvas-hover hover:text-canvas-text"
+                                    aria-label={t('关闭画布节点选择')}
+                                    onClick={() => setActionNodePickerTargetId(null)}
+                                  >
+                                    <Icon icon="lucide:x" width="12" height="12" aria-hidden="true" />
+                                  </button>
+                                </div>
+                                <label className="character-capture-hide-option mt-2">
+                                  <input type="checkbox" checked={hideActionNode} onChange={(event) => setHideActionNode(event.target.checked)} />
+                                  <span>{t('添加后隐藏画布节点')}</span>
+                                </label>
+                                {pickableActionNodes.length === 0 ? (
+                                  <div className="mt-2 flex min-h-20 flex-col items-center justify-center gap-1 rounded-md border border-dashed border-canvas-border px-3 text-center text-[10px] text-canvas-text-muted">
+                                    <Icon icon="lucide:film" width="16" height="16" aria-hidden="true" />
+                                    {t('画布中暂无图片、GIF 或视频节点')}
+                                  </div>
+                                ) : (
+                                  <div className="mt-2 grid max-h-48 grid-cols-3 gap-2 overflow-y-auto pr-1 max-sm:grid-cols-2">
+                                    {pickableActionNodes.map((node) => {
+                                      const previewUrl = node.data.videoUrl
+                                        || node.data.imageUrl
+                                        || node.data.thumbnailUrl;
+                                      const label = node.data.label
+                                        || node.data.fileName
+                                        || t('未命名节点');
+                                      return (
+                                        <div
+                                          key={node.id}
+                                          className={`resource-video-tile group min-w-0 overflow-hidden rounded-md border border-canvas-border bg-canvas-card text-left${videoPreview.expandedId === `node:${node.id}` ? ' is-expanded' : ''}`}
+                                        >
+                                          <div className={`overflow-hidden bg-canvas-bg${node.data.videoUrl ? '' : ' aspect-video'}`}>
+                                            {node.data.videoUrl ? (
+                                              <ResourceVideoPreview src={previewUrl} filePath={node.data.filePath} name={label}
+                                                poster={node.data.thumbnailUrl} revision={node.data.mediaVersion}
+                                                expanded={videoPreview.expandedId === `node:${node.id}`}
+                                                onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? `node:${node.id}` : null)} />
+                                            ) : (
+                                              <button type="button" className="size-full" onClick={() => void handleBindActionNode(node.id)} aria-label={t('{label}：添加素材', { label })}>
+                                                <ViewportImage src={previewUrl} alt="" className="size-full object-cover" draggable={false} />
+                                              </button>
+                                            )}
+                                          </div>
+                                          <button type="button" className="block w-full truncate px-2 py-1.5 text-left text-[10px] text-canvas-text-secondary hover:text-canvas-text"
+                                            aria-label={t('{label}：添加素材', { label })} onClick={() => void handleBindActionNode(node.id)}>
+                                            {node.data.videoUrl ? t('添加：{label}', { label }) : label}
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <form
+              className="flex min-h-0 flex-col border-l border-canvas-border bg-canvas-card/80 max-md:border-l-0 max-md:border-t"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleAddAction();
+              }}
+            >
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="flex items-center gap-2">
+                  <span className="grid size-8 place-items-center rounded-lg bg-brand text-[var(--brand-contrast)]">
+                    <Icon icon="lucide:plus" width="15" height="15" aria-hidden="true" />
+                  </span>
+                  <div>
+                    <h3 className="text-xs font-semibold">{t('添加动作')}</h3>
+                    <p className="text-[10px] text-canvas-text-muted">{t('类别在添加时选择')}</p>
+                  </div>
+                </div>
+
+                <label className="mt-4 grid gap-1 text-[10px] text-canvas-text-secondary">
+                  {t('动作类别')}
+                  <Select
+                    value={actionCategory}
+                    onChange={(value) => setActionCategory(value as CharacterActionCategory)}
+                    triggerStyle={{ height: 36 }}
+                    fixedMenu
+                    options={CHARACTER_ACTION_CATEGORIES.map((category) => ({
+                      value: category.id,
+                      label: t(category.label),
+                    }))}
+                  />
+                </label>
+
+                {actionCategory === 'custom' ? (
+                  <label className="mt-3 grid gap-1 text-[10px] text-canvas-text-secondary">
+                    {t('自定义分类名')}
+                    <input
+                      value={customActionCategory}
+                      onChange={(event) => setCustomActionCategory(event.target.value)}
+                      placeholder={t('例如：武术、特殊技能')}
+                      className="h-9 rounded-lg border border-canvas-border bg-canvas-surface px-3 text-xs text-canvas-text outline-none transition-[border-color] duration-150 focus:border-brand-light"
+                    />
+                  </label>
+                ) : null}
+
+                <label className="mt-3 grid gap-1 text-[10px] text-canvas-text-secondary">
+                  {t('动作名称')}
+                  <input
+                    value={actionName}
+                    onChange={(event) => setActionName(event.target.value)}
+                    placeholder={t('例如：警戒站姿')}
+                    className="h-9 rounded-lg border border-canvas-border bg-canvas-surface px-3 text-xs text-canvas-text outline-none transition-[border-color] duration-150 focus:border-brand-light"
+                  />
+                </label>
+
+                <label className="mt-3 grid gap-1 text-[10px] text-canvas-text-secondary">
+                  {t('动作提示词')}
+                  <textarea
+                    value={actionPrompt}
+                    onChange={(event) => setActionPrompt(event.target.value)}
+                    placeholder={t('描述姿势、重心、手部动作和运动方向…')}
+                    rows={4}
+                    className="resize-none rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2 text-xs leading-5 text-canvas-text outline-none transition-[border-color] duration-150 focus:border-brand-light"
+                  />
+                </label>
+
+                <div className="mt-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-canvas-text-secondary">{t('动作媒体')}</span>
+                    <span className="text-[9px] text-canvas-text-muted">{t('可多选')}</span>
+                  </div>
+                  {pendingActionMedia.length > 0 ? (
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {pendingActionMedia.map((media) => (
+                        <figure key={media.id} className={`resource-video-tile relative m-0 overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface${media.kind === 'video' ? '' : ' aspect-video'}${videoPreview.expandedId === `pending:${media.id}` ? ' is-expanded' : ''}`}>
+                          {media.kind !== 'video' ? (
+                            <ViewportImage src={media.url} alt={media.name} className="size-full object-cover" draggable={false} />
+                          ) : (
+                            <ResourceVideoPreview src={media.url} filePath={media.filePath} name={media.name}
+                              expanded={videoPreview.expandedId === `pending:${media.id}`}
+                              onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? `pending:${media.id}` : null)} />
+                          )}
+                          <button
+                            type="button"
+                            className="absolute right-1 top-1 grid size-6 place-items-center rounded-md bg-[color:color-mix(in_srgb,var(--theme-bg)_78%,transparent)] text-canvas-text transition-transform duration-150 ease-out active:scale-[.97]"
+                            aria-label={t('移除待添加媒体「{name}」', { name: media.name })}
+                            onClick={() => setPendingActionMedia((current) => current.filter((item) => item.id !== media.id))}
+                          >
+                            <Icon icon="lucide:x" width="12" height="12" aria-hidden="true" />
+                          </button>
+                        </figure>
+                      ))}
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={uploadingActionMedia}
+                    className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-canvas-border bg-canvas-surface px-3 py-3 text-[10px] text-canvas-text-secondary transition-[transform,color,border-color] duration-150 ease-out hover:border-brand-light hover:text-canvas-text active:scale-[.98] disabled:opacity-50"
+                    onClick={() => openActionMediaPicker(null)}
+                  >
+                    <Icon icon={uploadingActionMedia ? 'lucide:loader-circle' : 'lucide:upload'} className={uploadingActionMedia ? 'animate-spin' : ''} width="14" height="14" aria-hidden="true" />
+                    {uploadingActionMedia ? t('正在处理媒体…') : t('添加多份图片、GIF 或视频')}
+                  </button>
+                </div>
+              </div>
+
+              <footer className="border-t border-canvas-border p-4">
+                <button
+                  type="submit"
+                  disabled={!actionName.trim() || savingAction || uploadingActionMedia}
+                  className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 text-xs font-medium text-[var(--brand-contrast)] transition-[transform,opacity,background-color] duration-150 ease-out hover:bg-brand-hover active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Icon icon={savingAction ? 'lucide:loader-circle' : 'lucide:plus'} className={savingAction ? 'animate-spin' : ''} width="14" height="14" aria-hidden="true" />
+                  {savingAction ? t('正在保存…') : t('添加到动作库')}
+                </button>
+              </footer>
+            </form>
+
+            <input
+              ref={actionMediaInputRef}
+              type="file"
+              accept={ACTION_MEDIA_ACCEPT}
+              multiple
+              className="sr-only"
+              onChange={(event) => void handleActionMediaFiles(event)}
+            />
+          </div>
+        </ModalOverlay>
+      ) : null}
+
+      {captureNodeId ? createPortal(
+        <CharacterAssetDialog
+          isOpen
+          sourceNodeId={captureNodeId}
+          initialScope={scope}
+          initialCharacterId={selectedCharacter?.id}
+          onClose={() => setCaptureNodeId(null)}
+        />,
+        document.body,
+      ) : null}
+    </>
+  );
+}

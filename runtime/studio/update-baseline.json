@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "version": "0.11.7",
+  "resources": {
+    "huanggua-studio.zip": "4426f78d8caeac653f7aed3c2e85c5f6ee507ebb37f801edf006f7146f6124a2",
+    "huanggua-studio.json": "50d61806de66b63f577d081fea62dda4b95b64b6e7253db389587d030fee9889",
+    "director-desk.tar.gz": "16fa8edfae6b1667712d2013ce3b0128a56627444b94352c467758508791e559"
+  }
+}

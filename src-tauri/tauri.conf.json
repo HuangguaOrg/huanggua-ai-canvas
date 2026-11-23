@@ -1,0 +1,103 @@
+{
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "devUrl": "http://localhost:1420",
+        "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1 && npm run release:pack && npm run release:preflight && npm run build && npm run build:mcp-adapter",
+        "beforeBundleCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1",
+        "frontendDist": "../dist"
+    },
+    "productName": "黄瓜 AI 画布",
+    "mainBinaryName": "HuangGuaAI",
+    "version": "0.11.8",
+    "identifier": "com.huanggua.canvas",
+    "plugins": {
+        "shell": {
+            "open": true
+        },
+        "updater": {
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRCMDI0NUJDRjA1NDQwQ0IKUldUTFFGVHd2RVVDUzlBaGRHQ2xnWW1lTm5YN1NBams0NjVSOGpsN3pDYWtWQ3l2M2QxU0lSL0MK",
+            "endpoints": [
+                "https://gitee.com/xiang834740239/huanggua-aiagent/raw/master/latest.json",
+                "https://gitee.com/xiang834740239/huanggua-aiagent/raw/main/latest.json"
+            ],
+            "windows": {
+                "installMode": "passive"
+            }
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "createUpdaterArtifacts": true,
+        "resources": {
+            "resources/ai-canvas-mcp.mjs": "ai-canvas-mcp.mjs",
+            "resources/huanggua-studio.zip": "huanggua-studio.zip",
+            "resources/huanggua-studio.json": "huanggua-studio.json",
+            "resources/director-desk.tar.gz": "director-desk.tar.gz",
+            "resources/windows-runtime/msvcp140.dll": "msvcp140.dll",
+            "resources/windows-runtime/msvcp140_1.dll": "msvcp140_1.dll",
+            "resources/windows-runtime/vcruntime140.dll": "vcruntime140.dll",
+            "resources/windows-runtime/vcruntime140_1.dll": "vcruntime140_1.dll"
+        },
+        "icon": [
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.icns",
+            "icons/icon.ico"
+        ],
+        "windows": {
+            "nsis": {
+                "installerIcon": "icons/icon.ico",
+                "installMode": "currentUser",
+                "compression": "zlib",
+                "installerHooks": "windows/nsis-hooks.nsh",
+                "languages": [
+                    "English",
+                    "SimpChinese"
+                ]
+            }
+        },
+        "publisher": "Huanggua AI"
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "macOSPrivateApi": true,
+        "security": {
+            "csp": "default-src 'self'; script-src 'self' http://plugin-ui.localhost plugin-ui:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: theme-image: comfy-media: asset: http://asset.localhost https://asset.localhost http: https:; media-src 'self' data: blob: comfy-media: asset: http://asset.localhost https://asset.localhost http: https:; connect-src 'self' data: blob: theme-image: comfy-media: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost http: https: ws: wss:; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
+            "assetProtocol": {
+                "enable": true,
+                "scope": {
+                    "allow": [
+                        "$APPDATA/**"
+                    ],
+                    "deny": [
+                        "$APPDATA/secrets",
+                        "$APPDATA/secrets/**",
+                        "$APPLOCALDATA/secrets",
+                        "$APPLOCALDATA/secrets/**",
+                        "$APPDATA/project-model-backups",
+                        "$APPDATA/project-model-backups/**",
+                        "$APPDATA/project-model-maintenance",
+                        "$APPDATA/project-model-maintenance/**",
+                        "$APPLOCALDATA/project-model-maintenance",
+                        "$APPLOCALDATA/project-model-maintenance/**"
+                    ]
+                }
+            }
+        },
+        "windows": [
+            {
+                "title": "黄瓜 AI 画布",
+                "width": 1420,
+                "height": 900,
+                "minWidth": 1000,
+                "minHeight": 700,
+                "decorations": false,
+                "transparent": true,
+                "resizable": true,
+                "shadow": false
+            }
+        ]
+    }
+}

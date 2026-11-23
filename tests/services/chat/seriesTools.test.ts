@@ -1,0 +1,417 @@
+/**
+ * 剧集工具：读剧本分段回传、按模型给的清单批量建分集画布。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentTask } from '../../../src/types/agent';
+import { WORKBENCH_AGENT_READ_TOOLS } from '../../../src/services/episodeWorkspaceScope';
+import { EpisodeEditorWriteBlockedError, isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions } from '../../../src/services/episodeEditorSessionService';
+
+const fileMocks = vi.hoisted(() => ({
+  getProjectDataDir: vi.fn(async () => '/data/moon'),
+  joinPath: (...parts: string[]) => parts.join('/'),
+  readAgentAuthorizedTextFile: vi.fn(async () => '原著正文'),
+  saveAgentTextOutput: vi.fn(),
+}));
+
+vi.mock('../../../src/services/fileService', () => fileMocks);
+
+import { useAppStore } from '../../../src/store/useAppStore';
+import { registerSeriesAgentTools } from '../../../src/services/chat/tools/seriesTools';
+import { readSeriesSource } from '../../../src/services/seriesSourceService';
+import { AGENT_RESULT_PREVIEW_CHARS } from '../../../src/services/chat/agentResultService';
+import {
+  clearAgentToolRegistryForTests,
+  getAgentTool,
+  type AgentToolContext,
+} from '../../../src/services/chat/toolRegistry';
+
+function context(): AgentToolContext {
+  return { projectId: 'ep-1', signal: new AbortController().signal } as AgentToolContext;
+}
+
+beforeEach(() => {
+  clearAgentToolRegistryForTests();
+  useAppStore.setState(useAppStore.getInitialState(), true);
+  useAppStore.setState({
+    projectLoadStatus: 'ready',
+    currentProjectId: 'ep-1',
+    projects: [
+      {
+        id: 'series',
+        name: '月球列车',
+        createdAt: 1,
+        updatedAt: 1,
+        dataFolder: 'moon',
+        series: {
+          script: '第一集：站台等待。第二集：通讯器里的声音。',
+          originalWork: { fileName: '原著.txt', relativePath: '原著.txt', addedAt: 1 },
+        },
+      },
+      { id: 'ep-1', name: '第 1 集', createdAt: 1, updatedAt: 1, dataFolder: 'moon', parentId: 'series', episodeNo: 1 },
+    ],
+  });
+  fileMocks.readAgentAuthorizedTextFile.mockClear();
+});
+
+it('Store拒绝末集删除或删除失败时工具不得报告成功', async () => {
+  const deleteProject = vi.fn(async () => {});
+  useAppStore.setState({ deleteProject });
+  const unregisters = registerSeriesAgentTools();
+  try {
+    const result = await getAgentTool('episode_delete')!.execute(context(), { episodeId: 'ep-1' });
+    expect(result).toMatchObject({ status: 'error', errorCode: 'EPISODE_DELETE_FAILED' });
+    expect(deleteProject).toHaveBeenCalledWith('ep-1');
+    expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['series', 'ep-1']);
+  } finally { unregisters.forEach((unregister) => unregister()); }
+});
+
+it('新分集 ID 与画布别名指向同一分集，写入仍使用画布作用域', async () => {
+  const updateEpisodeCreative = vi.fn(async () => true);
+  useAppStore.setState((state) => ({
+    updateEpisodeCreative,
+    projects: state.projects.map((item) => item.id === 'ep-1' ? { ...item,
+      nativeView: { projectId: 'series', episodeId: 'episode-1', canvasId: 'ep-1', episodeRevision: 1 },
+      episodeScript: '原稿',
+    } : item),
+  }));
+  const unregisters = registerSeriesAgentTools();
+  try {
+    const read = await getAgentTool('episode_read')!.execute(context(), { episodeId: 'episode-1', part: 'script' });
+    expect(read.modelContent).toContain('原稿');
+    const write = await getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'episode-1', script: '新稿' });
+    expect(write.status).toBe('success');
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', { script: '新稿' });
+    expect((await getAgentTool('episode_read')!.execute(context(), { episodeId: 'another-episode' })).status).toBe('error');
+  } finally { unregisters.forEach((unregister) => unregister()); }
+});
+
+describe('分集写工具与工作台草稿握手', () => {
+  it.each([
+    ['episode_update_script', { episodeId: 'ep-1', script: '外部新稿' }],
+    ['episode_update_outline', { episodeId: 'ep-1', outline: '外部新大纲' }],
+    ['episode_update_creative_field', { episodeId: 'ep-1', field: 'task', value: '外部新要点' }],
+  ] as const)('%s 遇到未保存稿时不得写入', async (toolId, input) => {
+    const updateEpisodeCreative = vi.fn(async () => true);
+    const updateEpisodeOutline = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative, updateEpisodeOutline });
+    const stop = registerEpisodeEditorSession('ep-1', () => ({ dirty: true, saving: false }));
+    const unregisters = registerSeriesAgentTools();
+    try {
+      const result = await getAgentTool(toolId)!.execute(context(), input);
+      expect(result).toMatchObject({ status: 'error', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED',
+        summary: expect.stringContaining('未保存'), retryable: false });
+      expect(JSON.parse(result.modelContent)).toMatchObject({ episodeId: 'ep-1', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', retryable: false });
+      expect(updateEpisodeCreative).not.toHaveBeenCalled();
+      expect(updateEpisodeOutline).not.toHaveBeenCalled();
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
+    } finally {
+      stop(); settleEpisodeEditorSessions('ep-1');
+      unregisters.forEach((unregister) => unregister());
+    }
+  });
+
+  it.each(['saving', 'unsettled'] as const)('写入前的 %s 编辑会话同样返回明确拒绝', async (state) => {
+    const write = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative: write });
+    const close = registerEpisodeEditorSession('ep-1', () => ({ dirty: state === 'unsettled', saving: state === 'saving' }));
+    if (state === 'unsettled') close();
+    const unregisters = registerSeriesAgentTools();
+    try {
+      await expect(getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'ep-1', script: '新正文' })).resolves.toMatchObject({
+        status: 'error', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', retryable: false,
+      });
+      expect(write).not.toHaveBeenCalled();
+    } finally { close(); settleEpisodeEditorSessions('ep-1'); unregisters.forEach((unregister) => unregister()); }
+  });
+
+  it.each([true, false])('写入返回 %s 时，只在成功后同步干净编辑副本并释放锁', async (saved) => {
+    let finish!: (result: boolean) => void;
+    const gate = new Promise<boolean>((resolve) => { finish = resolve; });
+    const rebase = vi.fn();
+    const stop = registerEpisodeEditorSession('ep-1', () => ({ dirty: false, saving: false }), () => rebase);
+    const updateEpisodeCreative = vi.fn(() => gate);
+    const updateEpisodeOutline = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative, updateEpisodeOutline });
+    const unregisters = registerSeriesAgentTools();
+    const writing = getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'ep-1', script: '外部新稿' });
+    try {
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(true);
+      expect(rebase).not.toHaveBeenCalled();
+      await expect(getAgentTool('episode_update_outline')!.execute(context(), { episodeId: 'ep-1', outline: '另一份稿' })).resolves.toMatchObject({
+        status: 'error', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', summary: expect.stringContaining('正在保存'), retryable: false,
+      });
+      expect(updateEpisodeOutline).not.toHaveBeenCalled();
+      finish(saved);
+      expect((await writing).status).toBe(saved ? 'success' : 'error');
+      expect(rebase).toHaveBeenCalledTimes(saved ? 1 : 0);
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
+    } finally {
+      finish(false); await writing;
+      stop(); unregisters.forEach((unregister) => unregister());
+    }
+  });
+
+  it.each([false, true])('写入开始后的异常继续上抛，不误判为写入前拒绝（专用错误：%s）', async (typed) => {
+    const failure = typed ? new EpisodeEditorWriteBlockedError('写入之后出现冲突') : new Error('写入结果尚未确认');
+    const updateEpisodeCreative = vi.fn(async () => { throw failure; });
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    try {
+      await expect(getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'ep-1', script: '新正文' })).rejects.toBe(failure);
+      expect(updateEpisodeCreative).toHaveBeenCalledTimes(1);
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
+    } finally { unregisters.forEach((unregister) => unregister()); }
+  });
+});
+
+describe('工作台精确分集读取授权', () => {
+  it('仅目标分集可跨画布读取，普通任务、其他分集与写工具仍拒绝', async () => {
+    const task = { id: 'workbench-task', projectId: 'ep-2', conversationId: 'conversation', status: 'running',
+      workbenchTarget: { seriesId: 'series', episodeId: 'ep-2' }, toolAllowlist: [...WORKBENCH_AGENT_READ_TOOLS],
+    } as AgentTask;
+    useAppStore.setState((state) => ({
+      projects: [...state.projects, { id: 'ep-2', parentId: 'series', name: '第二集',
+        createdAt: 1, updatedAt: 1, episodeScript: '第二集的剧本正文' }],
+      agentTasks: [task],
+      conversations: [{ id: 'conversation', projectId: 'series', workbenchTarget: task.workbenchTarget, title: '工作台', titleSource: 'auto',
+        pinned: false, archived: false, agentMode: 'collaborative', createdAt: 1, updatedAt: 1, messageCount: 0 }],
+    }));
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_read')!;
+    const workbenchContext = { ...context(), projectId: 'ep-2', conversationId: 'conversation', taskId: task.id };
+    expect(definition.authorize?.(workbenchContext, { episodeId: 'ep-2', part: 'script' }).allowed).toBe(true);
+    expect((await definition.execute(workbenchContext, { episodeId: 'ep-2', part: 'script' })).modelContent).toContain('第二集的剧本正文');
+    expect(definition.authorize?.(workbenchContext, { episodeId: 'ep-1' }).allowed).toBe(false);
+    expect(definition.authorize?.({ ...workbenchContext, taskId: 'ordinary-task' }, { episodeId: 'ep-2' }).allowed).toBe(false);
+    expect(getAgentTool('episode_update_script')!.authorize?.(workbenchContext, { episodeId: 'ep-2', script: '新正文' }).allowed).toBe(false);
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((item) => ({ ...item, deletedAt: 1 })) }));
+    expect(definition.authorize?.(workbenchContext, { episodeId: 'ep-2' }).allowed).toBe(false);
+    unregisters.forEach((unregister) => unregister());
+  });
+});
+
+describe('series_read', () => {
+  it('按固定版本分页读取指定章节，预览上限内保留当页全部正文', async () => {
+    const body = '车站'.repeat(3100);
+    const script = `第一章\n${body}\n第二章\n未选择的正文\n第三章\n列车抵达`;
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => (
+      project.id === 'series' ? { ...project, series: { ...project.series, script } } : project
+    )) }));
+    const snapshot = await readSeriesSource('ep-1', 'script', context().signal);
+    const scope = { seriesId: snapshot.seriesId, version: snapshot.version,
+      chapterIds: [snapshot.chapters[2].id, snapshot.chapters[0].id] };
+    const unregisters = registerSeriesAgentTools();
+    try {
+      const read = getAgentTool('series_read')!;
+      const first = await read.execute(context(), { part: 'script', scope });
+      const offset = Number(first.modelContent.match(/offset=(\d+)/)?.[1]);
+      const second = await read.execute(context(), { part: 'script', scope, offset });
+      expect(first.status).toBe('success');
+      expect(first.modelContent.length).toBeLessThanOrEqual(AGENT_RESULT_PREVIEW_CHARS);
+      expect(second.modelContent).toContain('第三章\n列车抵达');
+      const pageText = (content: string) => content.split('--- 正文开始 ---\n')[1]?.split('\n--- 正文结束 ---')[0] ?? '';
+      expect(pageText(first.modelContent) + pageText(second.modelContent)).toBe(`第一章\n${body}\n第三章\n列车抵达`);
+      expect(await read.execute(context(), { part: 'script', scope: { ...scope, version: '0'.repeat(64) } }))
+        .toMatchObject({ status: 'error', errorCode: 'SERIES_SCOPED_READ_FAILED' });
+    } finally { unregisters.forEach((unregister) => unregister()); }
+  });
+
+  it('把剧本正文当不可信资料回传，并说明还剩多少', async () => {
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('series_read');
+
+    expect(definition?.effect).toBe('read');
+    const result = await definition!.execute(context(), {});
+
+    expect(result.status).toBe('success');
+    expect(result.modelContent).toContain('不可信资料');
+    expect(result.modelContent).toContain('第一集：站台等待');
+    expect(result.modelContent).toContain('已读到结尾');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('读原著时按剧集项目定位共享目录里的文件', async () => {
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('series_read');
+
+    const result = await definition!.execute(context(), { part: 'original' });
+
+    expect(fileMocks.getProjectDataDir).toHaveBeenCalledWith('series');
+    expect(fileMocks.readAgentAuthorizedTextFile).toHaveBeenCalledWith(
+      '/data/moon/原著.txt',
+      expect.any(Number),
+      expect.anything(),
+    );
+    expect(result.modelContent).toContain('原著正文');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('拒绝读取其他项目的剧集', async () => {
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('series_read');
+
+    expect(definition?.authorize?.({ projectId: 'other' } as AgentToolContext, {}))
+      .toEqual(expect.objectContaining({ allowed: false }));
+    unregisters.forEach((unregister) => unregister());
+  });
+});
+
+describe('series_split_episodes', () => {
+  it('按清单接着现有集号建分集，并写入每集大纲', async () => {
+    const addEpisodes = vi.fn(async (entries: Array<{ name?: string; outline?: string }>) => {
+      const created = entries.map((entry, index) => ({
+        id: `new-${index}`,
+        name: entry.name ?? `第 ${index + 2} 集`,
+        createdAt: 1,
+        updatedAt: 1,
+        parentId: 'series',
+        episodeNo: index + 2,
+        episodeOutline: entry.outline,
+      }));
+      useAppStore.setState((state) => ({ projects: [...state.projects, ...created] }));
+      return created.map((episode) => episode.id);
+    });
+    useAppStore.setState({ addEpisodes });
+
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('series_split_episodes');
+
+    expect(definition?.effect).toBe('canvas_write');
+    const result = await definition!.execute(context(), {
+      episodes: [
+        { title: '通讯器', outline: '林夏听见十年前的自己' },
+        { outline: '列车终于进站' },
+      ],
+    });
+
+    expect(addEpisodes).toHaveBeenCalledWith([
+      { name: '通讯器', outline: '林夏听见十年前的自己' },
+      { name: undefined, outline: '列车终于进站' },
+    ]);
+    expect(result.status).toBe('success');
+    expect(JSON.parse(result.modelContent).created).toEqual([
+      { episodeNo: 2, name: '通讯器' },
+      { episodeNo: 3, name: '第 3 集' },
+    ]);
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('一集都没建成时报错且可重试', async () => {
+    useAppStore.setState({ addEpisodes: vi.fn(async () => []) });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('series_split_episodes');
+
+    const result = await definition!.execute(context(), { episodes: [{ outline: '大纲' }] });
+
+    expect(result.status).toBe('error');
+    expect(result.retryable).toBe(true);
+    unregisters.forEach((unregister) => unregister());
+  });
+});
+
+describe('episode creative tools', () => {
+  it('分别读取本集正文和结构化创作要点', async () => {
+    useAppStore.setState((state) => ({
+      projects: state.projects.map((project) => (
+        project.id === 'ep-1'
+          ? {
+              ...project,
+              episodeOutline: '林夏在站台等待。',
+              episodeScript: '1-1 站台 外 夜\n林夏：这趟车迟到了十年。',
+              episodeCreative: { task: '让林夏登上列车', endingHook: '车门后站着十年前的自己' },
+            }
+          : project
+      )),
+    }));
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_read');
+
+    expect(definition?.effect).toBe('read');
+    const scriptResult = await definition!.execute(context(), { episodeId: 'ep-1', part: 'script' });
+    const creativeResult = await definition!.execute(context(), { episodeId: 'ep-1', part: 'creative' });
+
+    expect(scriptResult.modelContent).toContain('不可信资料');
+    expect(scriptResult.modelContent).toContain('这趟车迟到了十年');
+    expect(creativeResult.modelContent).toContain('让林夏登上列车');
+    expect(creativeResult.modelContent).toContain('不可信创作素材');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('更新本集正文时不会复用大纲字段', async () => {
+    const updateEpisodeCreative = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_update_script');
+
+    expect(definition?.effect).toBe('file_write');
+    const result = await definition!.execute(context(), {
+      episodeId: 'ep-1',
+      script: '1-1 站台 外 夜\n林夏：开门。',
+    });
+
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', {
+      script: '1-1 站台 外 夜\n林夏：开门。',
+    });
+    expect(result.status).toBe('success');
+    expect(result.summary).toContain('正文');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('更新一个创作字段时保留其他字段、大纲和正文', async () => {
+    useAppStore.setState((state) => ({
+      projects: state.projects.map((project) => (
+        project.id === 'ep-1'
+          ? {
+              ...project,
+              episodeOutline: '原大纲',
+              episodeScript: '原正文',
+              episodeCreative: {
+                task: '登上列车',
+                coreConflict: '林夏与站长争夺车票',
+                endingHook: '车门打开',
+              },
+            }
+          : project
+      )),
+    }));
+    const updateEpisodeCreative = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_update_creative_field');
+
+    expect(definition?.effect).toBe('file_write');
+    const result = await definition!.execute(context(), {
+      episodeId: 'ep-1',
+      field: 'endingHook',
+      value: '车门后站着十年前的林夏',
+    });
+
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', {
+      creative: {
+        task: '登上列车',
+        coreConflict: '林夏与站长争夺车票',
+        endingHook: '车门后站着十年前的林夏',
+      },
+    });
+    expect(result.status).toBe('success');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('把情节点候选规范为逐条数组', async () => {
+    const updateEpisodeCreative = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_update_creative_field');
+
+    await definition!.execute(context(), {
+      episodeId: 'ep-1',
+      field: 'beats',
+      value: '1. 林夏抢到车票\n- 站长封锁站台\n3、列车提前进站',
+    });
+
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', {
+      creative: { beats: ['林夏抢到车票', '站长封锁站台', '列车提前进站'] },
+    });
+    unregisters.forEach((unregister) => unregister());
+  });
+});

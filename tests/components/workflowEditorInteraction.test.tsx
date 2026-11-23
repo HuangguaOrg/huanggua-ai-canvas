@@ -1,0 +1,249 @@
+/**
+ * workflowEditorInteraction — 回归测试：shows loading, blocks repeated opens, and retries a failed workflow from its row。
+ */
+import { beforeEach, expect, it, vi } from 'vitest';
+import type { ComfyUIWorkflowOpenResult } from '../../src/services/comfyUIWindowService';
+import type { WorkflowDefinition } from '../../src/types';
+
+interface ElementLike {
+  key?: string | null;
+  props: Record<string, unknown> & { children?: unknown };
+}
+
+function findElement(root: unknown, predicate: (element: ElementLike) => boolean): ElementLike | undefined {
+  if (Array.isArray(root)) {
+    for (const child of root) {
+      const found = findElement(child, predicate);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!root || typeof root !== 'object' || !('props' in root)) return undefined;
+  const element = root as ElementLike;
+  return predicate(element) ? element : findElement(element.props.children, predicate);
+}
+
+function textOf(root: unknown): string {
+  if (typeof root === 'string' || typeof root === 'number') return String(root);
+  if (Array.isArray(root)) return root.map(textOf).join('');
+  if (root && typeof root === 'object' && 'props' in root) return textOf((root as ElementLike).props.children);
+  return '';
+}
+
+beforeEach(() => {
+  vi.resetModules();
+  vi.restoreAllMocks();
+});
+
+it('shows loading, blocks repeated opens, and retries a failed workflow from its row', async () => {
+  // Preserve state and refs between explicit renders without invoking browser-only effects.
+  const slots: unknown[] = [];
+  let cursor = 0;
+  vi.doMock('react', async () => ({
+    ...await vi.importActual<typeof import('react')>('react'),
+    useSyncExternalStore: <T,>(_subscribe: unknown, getSnapshot: () => T) => getSnapshot(),
+    useCallback: <T,>(callback: T) => callback,
+    useEffect: () => undefined,
+    useRef: <T,>(initial: T) => {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = { current: initial };
+      return slots[index];
+    },
+    useState: <T,>(initial: T | (() => T)) => {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
+      return [slots[index], (next: T | ((previous: T) => T)) => {
+        slots[index] = typeof next === 'function' ? (next as (previous: T) => T)(slots[index] as T) : next;
+      }];
+    },
+  }));
+  vi.doMock('framer-motion', () => ({
+    motion: new Proxy({}, { get: (_target, key) => String(key) }),
+    AnimatePresence: 'presence',
+  }));
+  vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+  vi.doMock('../../src/components/shared/PopupCloseButton', () => ({ default: () => null }));
+  vi.doMock('../../src/components/shared/Select', () => ({ default: () => null }));
+  vi.doMock('../../src/components/runninghub/RunningHubWorkflowImport', () => ({ default: () => null }));
+  const store = {
+    workflows: ['A', 'B'].map((name) => ({
+      id: `wf-${name}`, name, category: 'ai-image', fileName: `${name}.json`,
+      fileContent: '{}', createdAt: 0,
+    })),
+    workflowPanelOpen: true,
+    // 工作流列表按来源过滤，默认展示 ComfyUI 来源；缺了这个字段会筛空整个列表。
+    workflowPanelSource: 'comfyui',
+    config: { comfyServers: [] },
+    showToast: vi.fn(),
+  };
+  vi.doMock('../../src/store/useAppStore', () => ({
+    generateId: () => 'test',
+    useAppStore: <T,>(selector: (state: typeof store) => T) => selector(store),
+  }));
+  vi.doMock('../../src/services/comfyServers', () => ({
+    comfyBaseUrlFor: () => 'http://127.0.0.1:8188', DEFAULT_COMFY_URL: 'http://127.0.0.1:8188',
+  }));
+  let rejectOpen!: (error: Error) => void;
+  const openEditor = vi.fn().mockImplementationOnce(
+    () => new Promise<ComfyUIWorkflowOpenResult>((_resolve, reject) => { rejectOpen = reject; }),
+  );
+  vi.doMock('../../src/services/comfyUIWindowService', () => ({
+    extractComfyUIIONodes: () => [], openComfyUIWorkflowEditor: openEditor,
+  }));
+  const { default: WorkflowPanel } = await import('../../src/components/WorkflowPanel');
+  const render = () => { cursor = 0; return WorkflowPanel(); };
+  const editButton = (tree: unknown, name: string) => {
+    const button = findElement(tree, (element) => element.props['aria-label'] === `编辑工作流：${name}`);
+    expect(button).toBeDefined();
+    return button!;
+  };
+  const click = (element: ElementLike) => (element.props.onClick as (event: unknown) => void)({ stopPropagation: vi.fn() });
+
+  const first = editButton(render(), 'A');
+  click(first);
+  click(first);
+  expect(openEditor).toHaveBeenCalledTimes(1);
+  let tree = render();
+  expect(editButton(tree, 'A').props['aria-busy']).toBe(true);
+  expect(editButton(tree, 'B').props.disabled).toBe(true);
+  expect(textOf(findElement(tree, (element) => element.props.role === 'status'))).toContain('正在检查工作流');
+
+  rejectOpen(new Error('工作流载入后画布为空'));
+  await vi.waitFor(() => expect(store.showToast).toHaveBeenCalledWith('工作流载入后画布为空', 'error'));
+  tree = render();
+  expect(textOf(findElement(tree, (element) => element.props.role === 'alert'))).toContain('画布为空');
+  expect(editButton(tree, 'B').props.disabled).toBe(false);
+  openEditor.mockResolvedValueOnce({
+    requestId: 'open-retry', nodeCount: 12, source: 'api', detail: '已从 API 数据恢复画布', missingNodeClasses: [],
+  } satisfies ComfyUIWorkflowOpenResult);
+  const retry = findElement(tree, (element) => element.props.children === '重试打开');
+  expect(retry).toBeDefined();
+  click(retry!);
+  await vi.waitFor(() => expect(textOf(render())).toContain('12 个画布节点'));
+  expect(openEditor).toHaveBeenCalledTimes(2);
+  expect(openEditor.mock.calls[1][1].id).toBe('wf-A');
+  expect(editButton(render(), 'B').props.disabled).toBe(false);
+});
+
+it.each(['workflow', 'app'] as const)('%s 删除当前云工作流后撤销编辑目标，保留草稿实例', async (kind) => {
+  const slots: unknown[] = [];
+  let cursor = 0;
+  vi.doMock('react', async () => ({
+    ...await vi.importActual<typeof import('react')>('react'),
+    useSyncExternalStore: <T,>(_subscribe: unknown, getSnapshot: () => T) => getSnapshot(),
+    useCallback: <T,>(callback: T) => callback,
+    useEffect: () => undefined,
+    useRef: <T,>(initial: T) => {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = { current: initial };
+      return slots[index];
+    },
+    useState: <T,>(initial: T | (() => T)) => {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
+      return [slots[index], (next: T | ((previous: T) => T)) => {
+        slots[index] = typeof next === 'function' ? (next as (previous: T) => T)(slots[index] as T) : next;
+      }];
+    },
+  }));
+  vi.doMock('framer-motion', () => ({ motion: new Proxy({}, { get: (_target, key) => String(key) }), AnimatePresence: 'presence' }));
+  vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+  vi.doMock('../../src/components/shared/PopupCloseButton', () => ({ default: () => null }));
+  vi.doMock('../../src/components/shared/Select', () => ({ default: () => null }));
+  vi.doMock('../../src/components/runninghub/RunningHubWorkflowImport', () => ({ default: () => null }));
+  vi.doMock('../../src/services/comfyServers', () => ({ comfyBaseUrlFor: vi.fn(), DEFAULT_COMFY_URL: '' }));
+  vi.doMock('../../src/services/comfyUIWindowService', () => ({ extractComfyUIIONodes: vi.fn(), openComfyUIWorkflowEditor: vi.fn() }));
+  let finishDelete!: (error?: Error) => void;
+  const store = {
+    workflows: ['A', 'B'].map((name): WorkflowDefinition => ({
+      id: `wf-${name}`, name, category: 'ai-image', fileName: 'RH', fileContent: '', createdAt: 1,
+      adapterType: 'runninghub', runninghub: {
+        version: 1, kind, remoteId: '1904152026220003329', connectionId: 'runninghub',
+        parameters: [
+          { nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' },
+          { nodeId: '7', fieldName: 'text', label: '固定负面', type: 'string', defaultValue: '模糊', source: 'value', inputType: 'prompt' },
+          { nodeId: '8', fieldName: 'value', label: '共用文本', type: 'string', defaultValue: '', source: 'value', inputType: 'prompt' },
+          { nodeId: '9', fieldName: 'value', label: '未知用途', type: 'string', defaultValue: '', source: 'value', inputType: 'prompt' },
+          { nodeId: '10', fieldName: 'image', label: '图片', type: 'string', defaultValue: '', source: 'image' },
+        ],
+        promptRoles: { '6::text': 'positive', '7::text': 'negative', '8::value': 'mixed' },
+      },
+    })),
+    workflowPanelOpen: true, workflowPanelSource: kind, config: { comfyServers: [] }, showToast: vi.fn(),
+    setWorkflowPanelSource: vi.fn(),
+    updateWorkflow: vi.fn(async (id: string, changes: Partial<WorkflowDefinition>) => {
+      store.workflows = store.workflows.map((workflow) => workflow.id === id ? { ...workflow, ...changes } : workflow);
+    }),
+    toggleWorkflowDefaultNode: vi.fn(async (id: string, node: { nodeId: string; type: 'prompt' }) => {
+      store.workflows = store.workflows.map((workflow) => workflow.id === id ? {
+        ...workflow, defaultNodes: { [node.type]: node.nodeId }, runninghub: { ...workflow.runninghub!, inputBindingMode: 'nodes' },
+      } : workflow);
+      return true;
+    }),
+    deleteWorkflow: vi.fn((id: string) => new Promise<void>((resolve, reject) => {
+      finishDelete = (error) => {
+        if (error) { reject(error); return; }
+        store.workflows = store.workflows.filter((workflow) => workflow.id !== id);
+        resolve();
+      };
+    })),
+  };
+  vi.doMock('../../src/store/useAppStore', () => ({
+    generateId: () => 'test',
+    useAppStore: Object.assign(<T,>(selector: (state: typeof store) => T) => selector(store), { getState: () => store }),
+  }));
+  const { default: WorkflowPanel } = await import('../../src/components/WorkflowPanel');
+  const render = () => { cursor = 0; return WorkflowPanel(); };
+  const click = (element: ElementLike) => (element.props.onClick as (event: unknown) => void)({ stopPropagation: vi.fn() });
+  const editor = () => findElement(render(), (element) => element.props.kind === kind && typeof element.props.onSaved === 'function')!;
+  const deleteRow = (name: string) => {
+    const row = findElement(render(), (element) => element.key === `wf-${name}`)!;
+    click(findElement(row, (element) => element.props['data-tooltip'] === '删除工作流')!);
+  };
+
+  click(findElement(render(), (element) => element.props['aria-label'] === '编辑工作流：A')!);
+  const draftKey = editor().key;
+  expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
+  const inputRow = findElement(render(), (element) => element.key === 'wf-A')!;
+  click(findElement(inputRow, (element) => element.props['data-tooltip'] === '展开输入输出节点')!);
+  const expanded = findElement(render(), (element) => element.key === 'wf-A')!;
+  for (const label of ['正面', '负面', '正负共用', '未判定']) {
+    expect(findElement(expanded, (element) => String(element.props.className).startsWith('ui-badge ') && textOf(element) === label)).toBeDefined();
+  }
+  const imageBadge = findElement(expanded, (element) => String(element.props.className).includes('wf-ionode-image'));
+  expect(imageBadge).toBeDefined();
+  expect(textOf(imageBadge)).not.toMatch(/正面|负面|未判定/);
+  expect(store.toggleWorkflowDefaultNode).not.toHaveBeenCalled();
+  expect(store.workflows[0].defaultNodes).toBeUndefined();
+  const inputBadge = findElement(render(), (element) => String(element.props.title ?? '').includes('设为默认文本节点'))!;
+  click(inputBadge);
+  await Promise.resolve();
+  expect(store.toggleWorkflowDefaultNode).toHaveBeenCalledWith('wf-A', { nodeId: '6::text', type: 'prompt' });
+  expect(store.updateWorkflow).not.toHaveBeenCalled();
+  expect(textOf(render())).toContain('★1');
+  click(findElement(render(), (element) => element.props.children === '生成视频')!);
+  expect(textOf(render())).toContain('该分类下暂无工作流');
+  expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
+  click(findElement(render(), (element) => element.props.children === '全部')!);
+
+  deleteRow('B');
+  finishDelete();
+  await Promise.resolve();
+  expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
+  expect(editor().key).toBe(draftKey);
+
+  deleteRow('A');
+  finishDelete(new Error('保存失败'));
+  await Promise.resolve();
+  expect(store.showToast).toHaveBeenCalledWith('删除工作流失败，请重试', 'error');
+  expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
+  expect(editor().key).toBe(draftKey);
+
+  deleteRow('A');
+  expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
+  finishDelete();
+  await Promise.resolve();
+  expect(store.workflows).toHaveLength(0);
+  expect(editor().props.editing).toBeUndefined();
+  expect(editor().key).toBe(draftKey);
+});

@@ -1,0 +1,1384 @@
+/**
+ * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
+ */
+import Select from '../../shared/Select';
+import AnimatedButton from '../../shared/AnimatedButton';
+import { Icon } from '@iconify/react';
+import { Sparkles } from 'lucide-react';
+import LazyLoadBoundary from '../../shared/LazyLoadBoundary';
+import SendShortcutMenu from '../../shared/SendShortcutMenu';
+import { lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react';
+import { useReducedMotion } from 'framer-motion';
+const MetalFx = lazy(() => import('./PolishMetalFx'));
+const CinematographyDialog = lazy(() => import('../ShotlistCinematographyDialog'));
+// 生成中的思考球：仅在生成时按需加载
+const ThinkingOrb = lazy(() => import('../../../vendor/generation-effects/thinking-orbs/src').then((m) => ({ default: m.ThinkingOrb })));
+import type {
+  AnimationAction,
+  CameraAperture,
+  CameraExposureTime,
+  CameraGenerationSettings,
+  CameraLens,
+  CameraShutterEffect,
+  ImagePostProcess,
+  ModelOption,
+  NodeType,
+  PromptSubmitShortcut,
+  UserPreset,
+  WorkflowDefinition,
+} from '../../../types';
+import type { SkillPickerOption } from '../../../types/agentPackage';
+import { ANIMATION_ACTION_LABELS, PRESET_NODE_TYPES } from '../../../types';
+import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
+import type { PresetOverride } from './SlashCommandMenu';
+import { useAppStore } from '../../../store/useAppStore';
+import ModelSelector from './ModelSelector';
+import { RunningHubModelParameterFields } from './RunningHubParameterFields';
+import { getRunningHubModel } from '../../../services/ai/providers/runninghubModelManifest';
+import QualityRatioSelector from './QualityRatioSelector';
+import VideoParamSelector from './VideoParamSelector';
+import AudioParamSelector from './AudioParamSelector';
+import CharacterVoiceSelector, { type CharacterVoiceChoice } from './CharacterVoiceSelector';
+import { collectAudioSpeechReferences, resolveAudioSpeechWorkflow } from '../../../services/ai/audioSpeechSettings';
+import { listGlobalDramaAssets, resolveDramaVoiceRef } from '../../../services/dramaAssetPrompt';
+import { buildDramaVoiceMentionId } from '../../../types/dramaAssets';
+import StyleSelector from './StyleSelector';
+import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
+import SlashCommandMenu from './SlashCommandMenu';
+import SkillManager from './SkillManager';
+import { expandSkillReferences } from '../../../services/skillPromptService';
+import { listRuntimeSkills, projectSkillPickerOptions } from '../../../services/chat/skillCatalog';
+import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
+import type { AudioOutputFormat, AudioSpeechSettings, AudioSpeechReference, AudioTtsVoice, VideoReferenceItem } from '../../../types/aiTypes';
+import type { AudioGenerationPurpose } from '../../../types/media';
+import { useT } from '../../../i18n';
+import CloudWorkflowParamSelector from './CloudWorkflowParamSelector';
+import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../../services/ai/dreaminaModels';
+import { resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
+import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
+import { getPromptSubmitShortcutHint, normalizePromptSubmitShortcut } from '../../../utils/promptSubmitShortcut';
+
+const IMAGE_RATIO_CLASS_NAMES: Record<string, string> = {
+  '1:1': 'img-rp-sq',
+  '9:16': 'img-rp-tall',
+  '16:9': 'img-rp-wide',
+  '3:4': 'img-rp-p34',
+  '4:3': 'img-rp-l43',
+  '3:2': 'img-rp-l32',
+  '2:3': 'img-rp-p23',
+  '5:4': 'img-rp-l54',
+  '4:5': 'img-rp-p45',
+  '21:9': 'img-rp-ultra',
+  '9:21': 'img-rp-tall',
+  '2:1': 'img-rp-ultra',
+  '1:2': 'img-rp-tall',
+  '3:1': 'img-rp-ultra',
+  '1:3': 'img-rp-tall',
+};
+
+function getImageRatioClassName(ratio: string): string {
+  const knownClass = IMAGE_RATIO_CLASS_NAMES[ratio];
+  if (knownClass) return knownClass;
+  const [width, height] = ratio.split(':').map(Number);
+  if (!width || !height) return 'img-rp-sq';
+  if (width === height) return 'img-rp-sq';
+  return width > height ? 'img-rp-wide' : 'img-rp-tall';
+}
+
+const ANIMATION_ACTIONS: AnimationAction[] = ['idle', 'walk', 'run', 'jump', 'attack', 'hit', 'custom'];
+const IMAGE_BATCH_COUNTS = Array.from({ length: MAX_IMAGE_BATCH_COUNT - 1 }, (_, index) => index + 2);
+const BATCH_LONG_PRESS_MS = 450;
+
+const CAMERA_LENS_OPTIONS: Array<{ value: CameraLens; label: string }> = [
+  { value: '15mm', label: '15mm 超广角' },
+  { value: '24mm', label: '24mm 广角' },
+  { value: '35mm', label: '35mm 电影感' },
+  { value: '50mm', label: '50mm 标准' },
+  { value: '85mm', label: '85mm 人像' },
+  { value: '200mm', label: '200mm 长焦' },
+  { value: 'macro', label: '100mm 微距' },
+  { value: 'fisheye', label: '鱼眼' },
+];
+const CAMERA_SHUTTER_OPTIONS: Array<{ value: CameraShutterEffect; label: string }> = [
+  { value: 'freeze', label: '凝固动作' },
+  { value: 'natural', label: '自然动态' },
+  { value: 'motion', label: '动态拖影' },
+  { value: 'light-trails', label: '光轨效果' },
+];
+const CAMERA_APERTURE_OPTIONS: CameraAperture[] = ['f/1.4', 'f/2', 'f/2.8', 'f/4', 'f/5.6', 'f/8', 'f/11', 'f/16'];
+const CAMERA_EXPOSURE_OPTIONS: CameraExposureTime[] = ['1/2000s', '1/1000s', '1/500s', '1/250s', '1/125s', '1/60s', '1/30s', '1/8s', '1/2s', '1s', '5s'];
+
+function CameraSettingsPreview({ settings }: { settings: CameraGenerationSettings }) {
+  const t = useT();
+  const lens = settings.lens;
+  const macro = lens === 'macro';
+  const subjectScale = lens === '15mm' ? 0.66
+    : lens === '24mm' ? 0.76
+      : lens === '35mm' ? 0.88
+        : lens === '50mm' ? 1
+          : lens === '85mm' ? 1.18
+            : lens === '200mm' ? 1.38
+              : macro ? 1.55
+              : 0.92;
+  const apertureNumber = settings.aperture ? Number(settings.aperture.slice(2)) : 5.6;
+  const backgroundBlur = apertureNumber <= 1.4 ? 8
+    : apertureNumber <= 2 ? 6.5
+      : apertureNumber <= 2.8 ? 5
+        : apertureNumber <= 4 ? 3.2
+          : apertureNumber <= 5.6 ? 1.5
+            : apertureNumber <= 8 ? 0.7
+              : apertureNumber <= 11 ? 0.25
+                : 0;
+  const bokehRadius = apertureNumber <= 1.4 ? 14
+    : apertureNumber <= 2 ? 11
+      : apertureNumber <= 2.8 ? 9
+        : apertureNumber <= 4 ? 7
+          : apertureNumber <= 5.6 ? 5
+            : 3;
+  const bokehOpacity = apertureNumber <= 2.8 ? 0.72 : apertureNumber <= 5.6 ? 0.58 : 0.42;
+  const exposureBrightness = settings.exposureTime === '5s' ? 1.28
+    : settings.exposureTime === '1s' ? 1.2
+      : settings.exposureTime === '1/2s' ? 1.13
+        : settings.exposureTime === '1/8s' ? 1.06
+          : settings.exposureTime === '1/2000s' ? 0.68
+            : settings.exposureTime === '1/1000s' ? 0.76
+              : settings.exposureTime === '1/500s' ? 0.84
+                : 1;
+  const motionCopies = macro ? []
+    : settings.shutterEffect === 'light-trails' ? [42, 28, 14]
+      : settings.shutterEffect === 'motion' ? [24, 12]
+        : [];
+  const fisheye = lens === 'fisheye';
+
+  return (
+    <svg viewBox="0 0 400 168" className="h-full w-full" fill="none" aria-label={t('摄影参数综合成像预览')} role="img">
+      <defs>
+        <linearGradient id="camera-preview-sky" x1="0" y1="0" x2="0" y2="1">
+          <stop stopColor="#312e81" />
+          <stop offset="1" stopColor="#111827" />
+        </linearGradient>
+        <linearGradient id="camera-preview-ground" x1="0" y1="0" x2="1" y2="0">
+          <stop stopColor="#111827" />
+          <stop offset=".5" stopColor="#312e81" />
+          <stop offset="1" stopColor="#111827" />
+        </linearGradient>
+        <filter id="camera-preview-background-blur">
+          <feGaussianBlur stdDeviation={macro ? Math.max(6, backgroundBlur) : backgroundBlur} />
+        </filter>
+        <clipPath id="camera-preview-clip"><rect width="400" height="168" rx="10" /></clipPath>
+      </defs>
+      <g clipPath="url(#camera-preview-clip)">
+        <rect width="400" height="168" fill="url(#camera-preview-sky)" />
+        <g filter="url(#camera-preview-background-blur)" opacity=".9">
+          <circle cx="70" cy="43" r="19" fill="#fbbf24" opacity=".72" />
+          <path d={fisheye ? 'M-18 117Q200 52 418 117V174H-18Z' : 'M-10 113 63 54l58 50 65-69 79 73 49-43 96 50v59H-10Z'} fill="#172554" />
+          <path d={fisheye ? 'M-20 135Q200 94 420 135V174H-20Z' : 'M-10 130 88 90l67 36 78-48 82 48 95-30v78H-10Z'} fill="#1e1b4b" />
+          <g stroke="#818cf8" strokeWidth="1" opacity=".52">
+            <path d="M22 126V88h34v38M74 126V99h28v27M292 126V84h38v42M345 126V96h31v30" />
+            <path d="M29 96h8m7 0h7m30 11h14m204-14h8m8 0h8m29 11h17M29 108h8m7 0h7m248-3h8m8 0h8" />
+          </g>
+          <rect y="130" width="400" height="38" fill="url(#camera-preview-ground)" />
+          <path d="M0 145h400M56 130l-25 38m313-38 25 38" stroke="#6366f1" strokeWidth="1" opacity=".55" />
+          {[34, 98, 302, 360].map((x) => <circle key={x} cx={x} cy="116" r={bokehRadius} fill="#fbbf24" opacity={bokehOpacity} />)}
+        </g>
+        {(settings.shutterEffect === 'motion' || settings.shutterEffect === 'light-trails') && (
+          <g strokeLinecap="round">
+            <path d="M18 119h126" stroke="#22d3ee" strokeWidth="3" opacity=".5" />
+            <path d="M258 106h124" stroke="#f472b6" strokeWidth="4" opacity=".5" />
+            {settings.shutterEffect === 'light-trails' && <path d="M8 137c88-34 204 31 384-18" stroke="#fde047" strokeWidth="3" opacity=".62" />}
+          </g>
+        )}
+        {motionCopies.map((offset, index) => (
+          <g key={offset} transform={`translate(${offset} 0) translate(200 105) scale(${subjectScale}) translate(-200 -105)`} fill="#a5b4fc" opacity={0.08 + index * 0.05}>
+            <circle cx="200" cy="70" r="17" />
+            <path d="M169 151c2-43 12-66 31-66s29 23 31 66h-62Z" />
+          </g>
+        ))}
+        {macro ? (
+          <g transform="translate(200 101)">
+            {[0, 60, 120, 180, 240, 300].map((angle) => (
+              <ellipse key={angle} cx="0" cy="-27" rx="18" ry="35" fill="#c4b5fd" opacity=".9" transform={`rotate(${angle})`} />
+            ))}
+            <circle r="24" fill="#fde047" />
+            <circle r="10" fill="#f59e0b" />
+            <path d="M0 23c-4 31 5 43 18 61" stroke="#4ade80" strokeWidth="6" strokeLinecap="round" />
+            <path d="M9 54c18-13 31-10 38 0-17 8-29 8-38 0Z" fill="#4ade80" opacity=".85" />
+          </g>
+        ) : (
+          <g transform={`translate(200 105) scale(${subjectScale}) translate(-200 -105)`}>
+            <circle cx="200" cy="70" r="17" fill="#f8fafc" />
+            <path d="M169 151c2-43 12-66 31-66s29 23 31 66h-62Z" fill="#c7d2fe" />
+            <path d="M181 105h38" stroke="#818cf8" strokeWidth="4" opacity=".7" />
+          </g>
+        )}
+        {exposureBrightness < 1 && <rect width="400" height="168" fill="#020617" opacity={1 - exposureBrightness} />}
+        {exposureBrightness > 1 && <rect width="400" height="168" fill="#fff7ed" opacity={(exposureBrightness - 1) * 0.45} />}
+        {fisheye && <path d="M2 35Q200 6 398 35M2 142Q200 162 398 142" stroke="#fff" opacity=".22" />}
+        <path d="M14 28V14h14M372 14h14v14M386 140v14h-14M28 154H14v-14" stroke="#fff" opacity=".45" />
+      </g>
+    </svg>
+  );
+}
+
+function VideoCameraSettingsSelector({ nodeId, projectId, value, disabled }: {
+  nodeId?: string; projectId: string | undefined; value?: CameraGenerationSettings; disabled: boolean;
+}) {
+  const t = useT();
+  const [target, setTarget] = useState<{ nodeId: string; projectId: string | undefined } | null>(null);
+  const open = !!target && target.nodeId === nodeId && target.projectId === projectId;
+  const configured = !!(value?.lens || value?.aperture || value?.shutterEffect || value?.exposureTime)
+    || Object.values(value?.cinematography ?? {}).some((item) => item !== undefined);
+  return <>
+    <button type="button" className={`prompt-btn${configured ? ' is-configured' : ''}`}
+      aria-label={t('摄影设置')} data-tooltip={t('摄影设置')} aria-haspopup="dialog" aria-expanded={open}
+      disabled={disabled || !nodeId} onClick={(event) => {
+        event.stopPropagation();
+        if (nodeId) setTarget({ nodeId, projectId });
+      }}>
+      <Icon icon="lucide:video" width={17} height={17} aria-hidden="true" />
+    </button>
+    {open && <Suspense fallback={null}><CinematographyDialog key={`${target.projectId}:${target.nodeId}`}
+      nodeId={target.nodeId} projectId={target.projectId} video onClose={() => setTarget(null)} /></Suspense>}
+  </>;
+}
+
+function CameraSettingsSelector({
+  value = {},
+  onChange,
+}: {
+  value?: CameraGenerationSettings;
+  onChange: (value: CameraGenerationSettings | undefined) => void;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const activeCount = Object.values(value).filter(Boolean).length;
+
+  const updateSetting = <K extends keyof CameraGenerationSettings>(
+    key: K,
+    settingValue: CameraGenerationSettings[K],
+  ) => {
+    const next = { ...value, [key]: settingValue || undefined };
+    onChange(Object.values(next).some(Boolean) ? next : undefined);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-ui-select-portal]')) return;
+      if (!rootRef.current?.contains(event.target as globalThis.Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutside, true);
+    return () => document.removeEventListener('pointerdown', closeOnOutside, true);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      <button
+        type="button"
+        className={`prompt-btn${activeCount > 0 ? ' is-configured' : ''}`}
+        aria-label={activeCount > 0 ? t('摄影参数：已设置 {count} 项', { count: activeCount }) : t('选择摄影参数')}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        data-tooltip={activeCount > 0 ? t('摄影参数 · {count} 项', { count: activeCount }) : t('摄影参数')}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
+      >
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path d="M4 8.5h3l1.4-2h7.2l1.4 2h3v9H4z" />
+          <circle cx="12" cy="13" r="3.5" />
+          <path d="M12 9.5 9.5 13l2.5 3.5 2.5-3.5z" opacity=".6" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label={t('摄影参数')}
+          className="absolute bottom-10 left-1/2 z-50 w-[430px] -translate-x-1/2 rounded-xl border border-canvas-border bg-canvas-surface p-3 shadow-2xl"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="mb-2 flex items-center justify-between px-0.5">
+            <span className="text-xs font-semibold text-canvas-text">{t('摄影参数')}</span>
+            <button type="button" className="text-[10px] text-canvas-text-muted hover:text-canvas-text" onClick={() => onChange(undefined)}>{t('全部自动')}</button>
+          </div>
+          <div className="h-[168px] overflow-hidden rounded-lg border border-canvas-border bg-canvas-bg text-canvas-text">
+            <CameraSettingsPreview settings={value} />
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <label className="min-w-0 text-[10px] text-canvas-text-muted">
+              <span className="mb-1 block">{t('焦距')}</span>
+              <Select fixedMenu className="min-w-0 w-full" value={value.lens ?? ''} onChange={(selectedOptionValue) => updateSetting('lens', selectedOptionValue as CameraLens || undefined)}>
+                <option value="">{t('自动')}</option>
+                {CAMERA_LENS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
+              </Select>
+            </label>
+            <label className="min-w-0 text-[10px] text-canvas-text-muted">
+              <span className="mb-1 block">{t('快门效果')}</span>
+              <Select fixedMenu className="min-w-0 w-full" value={value.shutterEffect ?? ''} onChange={(selectedOptionValue) => updateSetting('shutterEffect', selectedOptionValue as CameraShutterEffect || undefined)}>
+                <option value="">{t('自动')}</option>
+                {CAMERA_SHUTTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
+              </Select>
+            </label>
+            <label className="min-w-0 text-[10px] text-canvas-text-muted">
+              <span className="mb-1 block">{t('光圈')}</span>
+              <Select fixedMenu className="min-w-0 w-full" value={value.aperture ?? ''} onChange={(selectedOptionValue) => updateSetting('aperture', selectedOptionValue as CameraAperture || undefined)}>
+                <option value="">{t('自动')}</option>
+                {CAMERA_APERTURE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+              </Select>
+            </label>
+            <label className="min-w-0 text-[10px] text-canvas-text-muted">
+              <span className="mb-1 block">{t('曝光时间')}</span>
+              <Select fixedMenu className="min-w-0 w-full" value={value.exposureTime ?? ''} onChange={(selectedOptionValue) => updateSetting('exposureTime', selectedOptionValue as CameraExposureTime || undefined)}>
+                <option value="">{t('自动')}</option>
+                {CAMERA_EXPOSURE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+              </Select>
+            </label>
+          </div>
+          <p className="mt-2 px-0.5 text-[9px] text-canvas-text-muted">{t('自动项不会写入提示词；预览仅用于表达景深、明暗、透视与动态趋势。')}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnimationPoseIcon({ action }: { action: AnimationAction }) {
+  const commonProps = {
+    width: 20,
+    height: 20,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+  };
+
+  switch (action) {
+    case 'custom':
+      return <Icon icon="mdi:pencil-outline" width={20} height={20} aria-hidden="true" />;
+    case 'walk':
+      return <svg {...commonProps}><circle cx="13" cy="4" r="2" /><path d="m12.5 7-1 7m.5-5-4.5 3.5m4-3 4.5 2.5m-4.5 2L7 20m4.5-6 5 5" /></svg>;
+    case 'run':
+      return <svg {...commonProps}><circle cx="14.5" cy="4" r="2" /><path d="m13.5 7-3 6m2-4-4.5-2m4 3 5 2m-6.5 1-5 3m5-3 5.5 6" /></svg>;
+    case 'jump':
+      return <svg {...commonProps}><circle cx="12" cy="4" r="2" /><path d="M12 7v7m0-5L7 5m5 4 5-4m-5 9-4.5 4m4.5-4 4.5 4" /></svg>;
+    case 'attack':
+      return <svg {...commonProps}><circle cx="9" cy="4.5" r="2" /><path d="m9.5 7 2 7m-1.5-5 7.5 1m-7-1.5L6 12m5.5 2-4.5 6m4.5-6 5 4" /><path d="m17.5 7.5 2.5 2.5-2.5 2.5" /></svg>;
+    case 'hit':
+      return <svg {...commonProps}><circle cx="14.5" cy="4.5" r="2" /><path d="m13 7-2 7m1-5-5-1m5 2 5 3m-6 1-4 5m4-5 5 5" /><path d="m19 5 2-2m-1 5 3-1" /></svg>;
+    default:
+      return <svg {...commonProps}><circle cx="12" cy="4" r="2" /><path d="M12 7v7m0-5-4.5 2m4.5-2 4.5 2M12 14l-3.5 6m3.5-6 3.5 6" /></svg>;
+  }
+}
+
+interface PromptPanelProps {
+  onPolish?: () => void;
+  polishOpen?: boolean;
+  nodeType: NodeType;
+  /** 菜单筛选类型与实际节点类型不同（如导演台）时，用于说明真实执行行为。 */
+  sourceNodeType?: NodeType;
+  nodeId?: string;
+  prompt?: string;
+  placeholder?: string;
+  selectedModel?: string;
+  selectedProvider?: string;
+  selectedWorkflowId?: string;
+  costEstimate?: ReactNode;
+  runninghubModelParameters?: Record<string, string>;
+  onRunninghubModelParametersChange?: (values: Record<string, string>) => void;
+  workflowInputs?: Record<string, string>;
+  onWorkflowInputsChange?: (values: Record<string, string>, aspectRatio?: string) => void;
+  animationAction?: AnimationAction;
+  onAnimationActionChange?: (action: AnimationAction) => void;
+  animationFrames?: number;
+  onAnimationFramesChange?: (value: number) => void;
+  canGenerate?: boolean;
+  isGenerating?: boolean;
+  onCancelGeneration?: () => void;
+  onChange: (value: string, previousValue?: string) => void;
+  onContinuousEditEnd?: () => void;
+  onSubmit: (overridePrompt?: string, postProcess?: ImagePostProcess) => void;
+  onModelSelect: (model: ModelOption) => void;
+  onClearModel?: () => void;
+  onWorkflowSelect?: (workflowId: string | undefined) => void;
+  onDebug?: () => void;
+  onPassThrough?: () => void;
+  imageSize?: string;
+  imageQuality?: string;
+  imageBackground?: string;
+  aspectRatio?: string;
+  onChangeImageSize?: (size: string) => void;
+  onChangeImageQuality?: (quality: string | undefined) => void;
+  onChangeImageBackground?: (background: string | undefined) => void;
+  onChangeAspectRatio?: (ratio: string) => void;
+  batchCount?: number;
+  onChangeBatchCount?: (count: number) => void;
+  cameraSettings?: CameraGenerationSettings;
+  onChangeCameraSettings?: (settings: CameraGenerationSettings | undefined) => void;
+  videoResolution?: number;
+  videoFps?: number;
+  videoFrames?: number;
+  onChangeVideoResolution?: (value: number) => void;
+  onChangeVideoFps?: (value: number | undefined) => void;
+  // ── Seedance 参数 ──
+  seedanceResolution?: string;
+  seedanceRatio?: string;
+  seedanceDuration?: number;
+  generateAudio?: boolean;
+  videoReferences?: VideoReferenceItem[];
+  onChangeVideoReferences?: (value: VideoReferenceItem[]) => void;
+  onChangeSeedanceResolution?: (value: string | undefined) => void;
+  onChangeSeedanceRatio?: (value: string | undefined) => void;
+  onChangeSeedanceDuration?: (value: number | undefined) => void;
+  onChangeGenerateAudio?: (value: boolean | undefined) => void;
+  audioSpeechSettings?: AudioSpeechSettings;
+  onChangeAudioSpeechSettings?: (value: AudioSpeechSettings) => void;
+  onRemoveAudioReference?: (reference: AudioSpeechReference) => void;
+  audioPurpose?: AudioGenerationPurpose;
+  audioVoice?: AudioTtsVoice;
+  audioFormat?: AudioOutputFormat;
+  audioSpeed?: number;
+  musicTitle?: string;
+  musicLyrics?: string;
+  musicBpm?: number;
+  musicDuration?: number;
+  autoGenerateLyrics?: boolean;
+  onChangeAudioVoice?: (value: AudioTtsVoice) => void;
+  onChangeAudioFormat?: (value: AudioOutputFormat) => void;
+  onChangeAudioSpeed?: (value: number) => void;
+  onChangeMusicTitle?: (value: string) => void;
+  onChangeMusicLyrics?: (value: string) => void;
+  onChangeMusicBpm?: (value: number | undefined) => void;
+  onChangeMusicDuration?: (value: number) => void;
+  onChangeAutoGenerateLyrics?: (value: boolean) => void;
+  workflows?: WorkflowDefinition[];
+  editorRef?: React.Ref<MentionEditorHandle>;
+  selectedStyle?: string;
+  onStyleChange?: (styleId: string) => void;
+}
+
+export default function PromptPanel({
+  onPolish,
+  polishOpen = false,
+  nodeType,
+  sourceNodeType = nodeType,
+  nodeId,
+  prompt = '',
+  placeholder,
+  selectedModel,
+  selectedProvider,
+  selectedWorkflowId,
+  costEstimate,
+  workflowInputs,
+  onWorkflowInputsChange,
+  runninghubModelParameters,
+  onRunninghubModelParametersChange,
+  animationAction = 'idle',
+  onAnimationActionChange,
+  animationFrames = 8,
+  onAnimationFramesChange,
+  canGenerate = true,
+  isGenerating = false,
+  onCancelGeneration,
+  onChange,
+  onContinuousEditEnd,
+  onSubmit,
+  onModelSelect,
+  onClearModel,
+  onWorkflowSelect,
+  onDebug,
+  onPassThrough,
+  imageSize,
+  imageQuality,
+  imageBackground,
+  aspectRatio,
+  onChangeImageSize,
+  onChangeImageQuality,
+  onChangeImageBackground,
+  onChangeAspectRatio,
+  batchCount = 1,
+  onChangeBatchCount,
+  cameraSettings,
+  onChangeCameraSettings,
+  videoResolution,
+  videoFps,
+  videoFrames,
+  onChangeVideoResolution,
+  onChangeVideoFps,
+  seedanceResolution,
+  seedanceRatio,
+  seedanceDuration,
+  generateAudio,
+  videoReferences,
+  onChangeVideoReferences,
+  onChangeSeedanceResolution,
+  onChangeSeedanceRatio,
+  onChangeSeedanceDuration,
+  onChangeGenerateAudio,
+  audioSpeechSettings,
+  onChangeAudioSpeechSettings,
+  onRemoveAudioReference,
+  audioPurpose,
+  audioVoice,
+  audioFormat,
+  audioSpeed,
+  musicTitle,
+  musicLyrics,
+  musicBpm,
+  musicDuration,
+  autoGenerateLyrics,
+  onChangeAudioVoice,
+  onChangeAudioFormat,
+  onChangeAudioSpeed,
+  onChangeMusicTitle,
+  onChangeMusicLyrics,
+  onChangeMusicBpm,
+  onChangeMusicDuration,
+  onChangeAutoGenerateLyrics,
+  workflows = [],
+  editorRef,
+  selectedStyle,
+  onStyleChange,
+}: PromptPanelProps) {
+  const t = useT();
+  const projectId = useAppStore((state) => state.currentProjectId ?? undefined);
+  const reduceMotion = useReducedMotion();
+  const polishIconPathRef = useRef<Path2D | null>(null);
+  const capturePolishIcon = useCallback((icon: SVGSVGElement | null) => {
+    if (!icon) { polishIconPathRef.current = null; return; }
+    const path = new Path2D();
+    icon.querySelectorAll('path').forEach((element) => {
+      const data = element.getAttribute('d');
+      if (data) path.addPath(new Path2D(data));
+    });
+    polishIconPathRef.current = path;
+  }, []);
+  // 复用真实星光 SVG；与金属文字一样，仅在笔画上合成纹理。
+  const paintPolishIcon = useCallback((ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    const path = polishIconPathRef.current;
+    if (!path) return;
+    const scale = Math.min(width, height) * (16 / 30) / 24;
+    ctx.save();
+    ctx.translate(width / 2, height / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-12, -12);
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke(path);
+    ctx.restore();
+  }, []);
+  const submitShortcut = useAppStore((state) => normalizePromptSubmitShortcut(state.config.promptSubmitShortcut));
+  const configHydrated = useAppStore((state) => state.configHydrated);
+  const updateConfig = useAppStore((state) => state.updateConfig);
+  const saveConfig = useAppStore((state) => state.saveConfig);
+  const appearanceMode = useAppStore((state) => resolveAppearanceMode(
+    state.config.appearance?.mode ?? state.config.theme,
+  ));
+  const customAnimation = nodeType === 'ai-animation' && animationAction === 'custom';
+  const placeholderText = customAnimation
+    ? t('描述角色和自定义动作，例如：原地转身并挥手，动作连贯、首尾循环')
+    : placeholder ?? t('输入提示词开始创作');
+  const effectivePlaceholder = `${placeholderText}\n${getPromptSubmitShortcutHint(submitShortcut)}`;
+  const [focused, setFocused] = useState(false);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [skillManagerOpen, setSkillManagerOpen] = useState(false);
+  const [slashAnchor, setSlashAnchor] = useState<HTMLElement | null>(null);
+  const slashBtnRef = useRef<HTMLButtonElement>(null);
+  const promptInputRef = useRef<HTMLDivElement>(null);
+  const batchTriggerRef = useRef<HTMLDivElement>(null);
+  const [shortcutMenuAnchor, setShortcutMenuAnchor] = useState<HTMLElement | null>(null);
+  const closeShortcutMenu = useCallback(() => setShortcutMenuAnchor(null), []);
+  const batchLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressSubmitClickRef = useRef(false);
+  const [batchMenuOpen, setBatchMenuOpen] = useState(false);
+  const [workflowEditorTarget, setWorkflowEditorTarget] = useState<HTMLSpanElement | null>(null);
+  const imageModelConfig = useAppStore((state) => state.config);
+  const dreaminaImageModel = nodeType === 'ai-image' && selectedProvider === 'dreamina'
+    ? getDreaminaImageModel(selectedModel)
+    : undefined;
+  const imageCapability = nodeType === 'ai-image' && !dreaminaImageModel
+    ? resolveImageParameterCapability(selectedModel, selectedProvider, imageModelConfig)
+    : undefined;
+  const imageOutputsPerJob = nodeType === 'ai-image' && !selectedWorkflowId
+    ? resolveImageOutputsPerJob(selectedModel, selectedProvider, imageModelConfig) : 1;
+  const imageResolutions = dreaminaImageModel?.resolutions ?? imageCapability?.resolutions;
+  const imageGeneralModel = selectedProvider === 'general'
+    ? imageModelConfig.generalModels?.find((model) => model.id === selectedModel?.replace(/^general\//, ''))
+    : undefined;
+  const imageConnectionId = imageGeneralModel?.providerConfigId ?? selectedProvider;
+  const imageConnection = imageConnectionId ? imageModelConfig.providers[imageConnectionId] : undefined;
+  const audioCapability = useMemo(() => nodeType === 'ai-audio' && !selectedWorkflowId
+    ? resolveAudioParameterCapability(selectedModel, selectedProvider, imageModelConfig) : undefined,
+  [nodeType, selectedWorkflowId, selectedModel, selectedProvider, imageModelConfig]);
+  const imageModelId = imageGeneralModel?.modelId
+    ?? (imageConnectionId && selectedModel?.startsWith(`${imageConnectionId}/`)
+      ? selectedModel.slice(imageConnectionId.length + 1) : selectedModel);
+  const imageSettingsModel = imageConnectionId && imageConnection
+    && getProviderDefinition(imageConnectionId, imageConnection)?.id === 'custom-openai'
+    ? imageConnection.selectedModels?.find((model) => model.id === imageModelId && model.category === 'image')
+    : undefined;
+  const imageNeedsParameterSettings = !!imageSettingsModel && (
+    !imageCapability?.ratios?.length
+    || (imageCapability?.hasResolutionField !== false && !imageResolutions?.length)
+  );
+  const imageRatioValues = useMemo<readonly string[] | undefined>(() => (
+    dreaminaImageModel
+      ? DREAMINA_IMAGE_RATIOS
+      : imageCapability?.ratios?.filter((ratio) => ratio !== 'auto')
+  ), [dreaminaImageModel, imageCapability]);
+  const imageSupportsAdaptive = !dreaminaImageModel && (
+    !imageCapability
+    || imageCapability.defaultRatio === 'auto'
+    || imageCapability.ratios?.includes('auto') === true
+  );
+
+  useEffect(() => {
+    if (nodeType !== 'ai-image') return;
+    const normalizedSize = imageSize?.toLowerCase();
+    const supportedSize = imageResolutions?.some(
+      (size) => size.toLowerCase() === normalizedSize,
+    );
+    if (imageResolutions?.length && !supportedSize) {
+      const fallback = imageCapability?.defaultResolution
+        ?? imageResolutions.find((size) => size.toLowerCase() === '2k')
+        ?? imageResolutions[0];
+      onChangeImageSize?.(fallback);
+    }
+    const ratios = selectedWorkflowId ? undefined : dreaminaImageModel ? DREAMINA_IMAGE_RATIOS : imageCapability?.ratios;
+    if (ratios?.length) {
+      const currentRatio = aspectRatio === '自适应' ? 'auto' : aspectRatio;
+      const supportedRatio = currentRatio !== undefined
+        && ratios.some((ratio) => ratio.toLowerCase() === currentRatio.toLowerCase());
+      if (!supportedRatio) {
+        const fallbackRatio = imageCapability?.defaultRatio ?? ratios[0];
+        onChangeAspectRatio?.(fallbackRatio === 'auto' ? '自适应' : fallbackRatio);
+      }
+    }
+    const qualities = selectedWorkflowId ? undefined : imageCapability?.qualities;
+    const selectedQuality = qualities?.find((quality) => quality.toLowerCase() === imageQuality?.toLowerCase())
+      ?? qualities?.find((quality) => quality.toLowerCase() === imageCapability?.defaultQuality?.toLowerCase());
+    if (imageQuality !== selectedQuality) {
+      onChangeImageQuality?.(selectedQuality);
+    }
+    const backgrounds = selectedWorkflowId ? undefined : imageCapability?.backgrounds;
+    const backgroundDefault = backgrounds?.find((background) => background.toLowerCase() === imageCapability?.defaultBackground?.toLowerCase());
+    const fixedBackground = imageCapability?.backgroundIsFixed === true && backgroundDefault !== undefined;
+    // 保留显式“接口默认”，避免能力目录刷新后重新套用配置默认值。
+    const selectedBackground = selectedWorkflowId ? undefined : fixedBackground ? backgroundDefault
+      : imageBackground === '' ? '' : backgrounds?.find((background) => background.toLowerCase() === imageBackground?.toLowerCase()) ?? backgroundDefault;
+    if (imageBackground !== selectedBackground) {
+      onChangeImageBackground?.(selectedBackground);
+    }
+  }, [
+    nodeType,
+    dreaminaImageModel,
+    imageCapability,
+    imageResolutions,
+    imageSize,
+    aspectRatio,
+    imageQuality,
+    imageBackground,
+    selectedWorkflowId,
+    onChangeImageSize,
+    onChangeAspectRatio,
+    onChangeImageQuality,
+    onChangeImageBackground,
+  ]);
+
+  const performanceMode = useAppStore((s) => s.config.performanceMode === true);
+  const userPresets = useAppStore((s) => s.userPresets);
+  const presetFolders = useAppStore((s) => s.presetFolders);
+  const userSkills = useAppStore((s) => s.userSkills);
+  const recentSkillIds = useAppStore((s) => s.recentSkillIds);
+  const markSkillUsed = useAppStore((s) => s.markSkillUsed);
+  const agentPackageSkills = useAppStore((s) => s.agentPackageSkills);
+  const skillOptions = useMemo(
+    () => projectSkillPickerOptions(userSkills, agentPackageSkills),
+    [userSkills, agentPackageSkills],
+  );
+  const uploadSkill = useAppStore((s) => s.uploadSkill);
+  const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
+  const setPresetRunRequest = useAppStore((s) => s.setPresetRunRequest);
+  const showToast = useAppStore((s) => s.showToast);
+  const pendingPresetAction = useAppStore((s) => s.pendingPresetAction);
+  const setPendingPresetAction = useAppStore((s) => s.setPendingPresetAction);
+
+  const handleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
+    const sourcePrompt = overridePrompt ?? prompt;
+    onSubmit(expandSkillReferences(sourcePrompt, listRuntimeSkills()), postProcess);
+  }, [onSubmit, prompt]);
+
+  const handleSingleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
+    onChangeBatchCount?.(1);
+    setBatchMenuOpen(false);
+    handleSubmit(overridePrompt, postProcess);
+  }, [handleSubmit, onChangeBatchCount]);
+
+  const clearBatchLongPress = useCallback(() => {
+    if (batchLongPressTimerRef.current) {
+      clearTimeout(batchLongPressTimerRef.current);
+      batchLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  const hasGenerationInput = !!prompt.trim() || selectedProvider === 'runninghub' || selectedProvider === 'runninghubwf' || selectedProvider === 'workflow-api';
+  // 单次只能一张的通用模型由画布创建多个节点逐张执行，不限制用户选择的总张数。
+  const sequentialImageBatch = selectedProvider === 'general' && !selectedWorkflowId
+    && (imageCapability?.supportsBatch === false || imageCapability?.maxBatchCount === 1);
+  const imageBatchMaximum = sequentialImageBatch ? MAX_IMAGE_BATCH_COUNT : imageCapability?.supportsBatch === false
+    ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, imageCapability?.maxBatchCount ?? MAX_IMAGE_BATCH_COUNT);
+  const imageBatchCounts = IMAGE_BATCH_COUNTS.filter((count) => count <= imageBatchMaximum);
+  const batchSupported = (selectedProvider !== 'general' || imageCapability?.supportsBatch === true || sequentialImageBatch)
+    && imageBatchMaximum > 1 && nodeType === 'ai-image'
+    && Boolean(onChangeBatchCount)
+    && selectedProvider !== 'dreamina'
+    && !selectedWorkflowId;
+
+  const handleBatchPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!batchSupported || event.button !== 0 || !canGenerate || !hasGenerationInput) return;
+    suppressSubmitClickRef.current = false;
+    clearBatchLongPress();
+    batchLongPressTimerRef.current = setTimeout(() => {
+      suppressSubmitClickRef.current = true;
+      setBatchMenuOpen(true);
+      batchLongPressTimerRef.current = null;
+    }, BATCH_LONG_PRESS_MS);
+  }, [batchSupported, canGenerate, clearBatchLongPress, hasGenerationInput]);
+
+  const handleSubmitClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    clearBatchLongPress();
+    if (suppressSubmitClickRef.current) {
+      suppressSubmitClickRef.current = false;
+      return;
+    }
+    if (canGenerate && hasGenerationInput) handleSingleSubmit();
+  }, [canGenerate, clearBatchLongPress, handleSingleSubmit, hasGenerationInput]);
+
+  const handleBatchSelect = useCallback((count: number) => (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onChangeBatchCount?.(count);
+    setBatchMenuOpen(false);
+    handleSubmit();
+  }, [handleSubmit, onChangeBatchCount]);
+
+  useEffect(() => clearBatchLongPress, [clearBatchLongPress]);
+
+  const openShortcutMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearBatchLongPress();
+    suppressSubmitClickRef.current = false;
+    setBatchMenuOpen(false);
+    setShortcutMenuAnchor(event.currentTarget);
+  };
+  const chooseSubmitShortcut = (shortcut: PromptSubmitShortcut) => {
+    if (!configHydrated) return;
+    updateConfig({ promptSubmitShortcut: shortcut });
+    void saveConfig({ silent: true }).catch(() => {}); // Store 保留失败状态并显示错误提示。
+  };
+
+  useEffect(() => {
+    if (!batchMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!batchTriggerRef.current?.contains(event.target as globalThis.Node)) {
+        setBatchMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
+  }, [batchMenuOpen]);
+
+  const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean, preset?: PresetOverride) => {
+    setSlashOpen(false);
+    // 如果预设绑定了模型/尺寸，写入节点数据（覆盖节点当前设置）
+    if (preset) {
+      if (preset.model && preset.provider) {
+        onModelSelect({ value: preset.model, provider: preset.provider, label: preset.model, nodeTypes: [] });
+      }
+      if (preset.imageSize && onChangeImageSize) {
+        onChangeImageSize(preset.imageSize);
+      }
+      if (preset.aspectRatio && onChangeAspectRatio) {
+        onChangeAspectRatio(preset.aspectRatio);
+      }
+    }
+    if (shouldTrigger) {
+      // Direct trigger: combine preset template + input box content, call model directly
+      // Don't update the input box — the preset prompt is only used for this generation
+      handleSingleSubmit(filledPrompt, preset?.postProcess);
+    } else {
+      // Insert mode: update input box with filled template, user can edit before generating
+      onChange(filledPrompt);
+      onContinuousEditEnd?.();
+    }
+  }, [handleSingleSubmit, onChange, onContinuousEditEnd, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
+
+  // ── 从 Toolbar 点击快捷指令后的自动执行 ──
+  useEffect(() => {
+    if (!pendingPresetAction || pendingPresetAction.nodeId !== nodeId) return;
+    const { filledPrompt, shouldTrigger, override, postProcess } = pendingPresetAction;
+    // 清除 pending，防止重复执行
+    setPendingPresetAction(null);
+    const raf = requestAnimationFrame(() => {
+      handleSlashSelect(filledPrompt, shouldTrigger, override ? {
+        model: override.model,
+        provider: override.provider,
+        imageSize: override.imageSize,
+        aspectRatio: override.aspectRatio,
+        postProcess: postProcess as ImagePostProcess | undefined,
+      } : { postProcess: postProcess as ImagePostProcess | undefined });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingPresetAction, nodeId, handleSlashSelect, setPendingPresetAction]);
+
+  const handleEditorSlash = useCallback(() => {
+    setSlashAnchor(promptInputRef.current);
+    setSlashOpen(true);
+  }, []);
+
+  const handleButtonSlash = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSlashAnchor(slashBtnRef.current);
+    setSlashOpen((open) => !open);
+  }, []);
+
+  const handleManagePresets = useCallback(() => {
+    const presetNodeType = PRESET_NODE_TYPES.find((type) => type === nodeType);
+    setPresetManagerOpen(true, presetNodeType);
+  }, [nodeType, setPresetManagerOpen]);
+
+  const handleRunAdvancedPreset = useCallback((preset: UserPreset) => {
+    if (!nodeId) {
+      showToast(t('高级快捷指令需要从画布节点中运行'), 'error');
+      return;
+    }
+    setPresetRunRequest({ presetId: preset.id, sourceNodeId: nodeId });
+  }, [nodeId, setPresetRunRequest, showToast, t]);
+
+  const handleManageSkills = useCallback(() => {
+    setSkillManagerOpen(true);
+  }, []);
+
+  const handleSkillSelect = useCallback((skill: SkillPickerOption) => {
+    setSlashOpen(false);
+    const token = `@skill{${skill.id}|${encodeURIComponent(skill.name)}}`;
+    const spacer = prompt && !/\s$/.test(prompt) ? ' ' : '';
+    onChange(`${prompt}${spacer}${token}`);
+    onContinuousEditEnd?.();
+    void markSkillUsed(skill.id).catch(() => showToast(t('最近 Skill 使用记录保存失败'), 'error'));
+  }, [onChange, onContinuousEditEnd, prompt, markSkillUsed, showToast, t]);
+
+  const handleUploadSkill = useCallback(async (source: 'file' | 'folder') => {
+    setSlashOpen(false);
+    try {
+      await uploadSkill(source);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t('上传 Skill 失败');
+      showToast(msg, 'error');
+    }
+  }, [showToast, uploadSkill, t]);
+
+  const selectedAudioWorkflow = nodeType === 'ai-audio' ? workflows.find((item) => item.id === selectedWorkflowId) : undefined;
+  const speechControls = resolveAudioSpeechWorkflow(selectedAudioWorkflow);
+  const referenceInputId = speechControls?.referenceInputId;
+  const loadGlobalCharacters = useAppStore((state) => state.loadGlobalCharacters);
+  useEffect(() => {
+    if (referenceInputId) void loadGlobalCharacters();
+  }, [referenceInputId, loadGlobalCharacters]);
+  const voiceChoiceSnapshot = useAppStore((state) => JSON.stringify(referenceInputId ? [
+    ...state.dramaAssets.characters.map((character) => ({ character, scope: 'project' as const })),
+    ...state.globalCharacters.map((character) => ({ character, scope: 'global' as const })),
+  ].flatMap(({ character, scope }) => {
+    if (!character.primaryVoiceClipId) return [];
+    const voice = resolveDramaVoiceRef(character, character.primaryVoiceClipId);
+    if (!voice) return [];
+    return [{
+      id: `${scope}:${character.id}:${voice.id}`, scope, label: voice.label, url: voice.url,
+      // 项目角色沿用声音片段引用；全局声音读取持久化音频快照，不依赖项目节点。
+      value: scope === 'project'
+        ? `@drama{${buildDramaVoiceMentionId(character.id, voice.id)}:${voice.label.replace(/[{}]/g, '')}}`
+        : voice.url,
+    }];
+  }) : []));
+  const voiceChoices = JSON.parse(voiceChoiceSnapshot) as CharacterVoiceChoice[];
+  const selectedReference = referenceInputId ? workflowInputs?.[referenceInputId] ?? '' : '';
+  const selectCharacterVoice = (value: string) => {
+    if (!referenceInputId || !onWorkflowInputsChange) return;
+    const inputs = { ...workflowInputs };
+    if (value) inputs[referenceInputId] = value;
+    else delete inputs[referenceInputId];
+    // 同一输入已有手动 IO 芯片时移除旧赋值，防止编辑正文后重新覆盖下拉选择。
+    const nextPrompt = prompt.replace(/@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}\(([\s\S]*?)\)/g,
+      (token, id: string) => id === referenceInputId ? '' : token);
+    if (nextPrompt !== prompt) onChange(nextPrompt);
+    onWorkflowInputsChange(inputs);
+    onContinuousEditEnd?.();
+  };
+  // 返回稳定标量，避免其他节点移动时让弹窗重渲染。
+  const audioReferenceSnapshot = useAppStore((state) => speechControls ? JSON.stringify(collectAudioSpeechReferences(
+    prompt, nodeId, state.nodes, state.edges, state.dramaAssets, selectedAudioWorkflow, workflowInputs, listGlobalDramaAssets(state),
+  )) : '[]');
+  const audioReferences = JSON.parse(audioReferenceSnapshot) as AudioSpeechReference[];
+  const addAudioReference = () => {
+    requestAnimationFrame(() => {
+      const editor = promptInputRef.current?.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (!editor) return;
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.execCommand('insertText', false, '@');
+    });
+  };
+  const runninghubModel = selectedProvider === 'runninghub' ? getRunningHubModel(selectedModel, true) : undefined;
+  const runninghubWorkflow = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'runninghub');
+  const workflowApi = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'workflow-api');
+  const cloudWorkflow = runninghubWorkflow ?? (workflowApi?.workflowApi?.version === 2 ? workflowApi : undefined);
+  const parameterWorkflow = cloudWorkflow ?? workflows.find((workflow) => workflow.id === selectedWorkflowId
+    && (!workflow.adapterType || workflow.adapterType === 'comfyui'));
+  const generatingFallback = <span className="ui-spinner" role="img" aria-label={t('生成中')} />;
+  const submitButton = (
+    <button
+      type="button"
+      className={`ui-ai-input__icon-btn ui-ai-input__submit prompt-btn prompt-submit-btn${isGenerating ? ' is-generating' : ''} ${!canGenerate || !hasGenerationInput ? 'disabled' : ''}`}
+      aria-label={isGenerating ? t('生成中') : t('调用模型生成')}
+      disabled={!canGenerate || !hasGenerationInput}
+      aria-haspopup="menu"
+      aria-expanded={!!shortcutMenuAnchor || (batchSupported && batchMenuOpen)}
+      data-tooltip={`${isGenerating ? t('生成中') : imageOutputsPerJob > 1
+        ? t('点击生成 {count} 张候选图，长按选择作业次数', { count: imageOutputsPerJob })
+        : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))} · ${t('右键设置发送快捷键')}`}
+      onPointerDown={handleBatchPointerDown}
+      onPointerUp={clearBatchLongPress}
+      onPointerCancel={clearBatchLongPress}
+      onPointerLeave={clearBatchLongPress}
+      onClick={handleSubmitClick}
+    >
+      {isGenerating && !performanceMode ? (
+        <LazyLoadBoundary label={t('生成按钮动画')} errorFallback={generatingFallback}>
+          <Suspense fallback={generatingFallback}>
+            <ThinkingOrb state="composing" size={20} aria-label={t('生成中')} />
+          </Suspense>
+        </LazyLoadBoundary>
+      ) : (
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="12" y1="19" x2="12" y2="5" />
+          <polyline points="5 12 12 5 19 12" />
+        </svg>
+      )}
+    </button>
+  );
+  const polishButton = onPolish ? (
+    <button type="button" className="ui-icon-btn ui-icon-btn--ghost prompt-polish-button"
+      aria-label={t('AI 润色')} aria-expanded={polishOpen} data-tooltip={t('AI 润色')} onClick={onPolish}>
+      <Sparkles ref={capturePolishIcon} size={16} aria-hidden="true" />
+    </button>
+  ) : null;
+  return (
+    <>
+    <div className={`prompt-panel ${focused ? 'focused' : ''}`}>
+      <div className="ui-ai-input__body prompt-input-wrap" ref={promptInputRef}>
+        <MentionEditor
+          ref={editorRef}
+          value={prompt}
+          onChange={onChange}
+          onSubmit={handleSingleSubmit}
+          submitShortcut={submitShortcut}
+          placeholder={effectivePlaceholder}
+          nodeId={nodeId}
+          selectedWorkflowId={selectedWorkflowId}
+          canSubmit={canGenerate}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false);
+            queueMicrotask(() => onContinuousEditEnd?.());
+          }}
+          onSlashTrigger={handleEditorSlash}
+        />
+      </div>
+      {runninghubModel && onRunninghubModelParametersChange && <details className="ui-card m-2 p-2">
+        <summary className="cursor-pointer text-xs">{t('模型参数 · {count} 项需填写', { count: runninghubModel.parameters.filter((field) => field.required && !field.binding && field.defaultValue === undefined).length })}</summary>
+        <div className="mt-2 max-h-80 overflow-y-auto"><RunningHubModelParameterFields model={runninghubModel} values={runninghubModelParameters} onChange={onRunninghubModelParametersChange} disabled={isGenerating} /></div>
+      </details>}
+      <div className="ui-ai-input__footer prompt-footer">
+        <ModelSelector
+          appearance="pill"
+          workflowEditorTarget={workflowEditorTarget}
+          nodeType={nodeType}
+          selectedModel={selectedModel}
+          selectedProvider={selectedProvider}
+          selectedWorkflowId={selectedWorkflowId}
+          onSelect={onModelSelect}
+          onClear={onClearModel}
+          onWorkflowSelect={onWorkflowSelect}
+          workflows={workflows}
+        />
+
+        <div className="ui-ai-input__tools prompt-footer-tools">
+          {referenceInputId && onWorkflowInputsChange ? (
+            <CharacterVoiceSelector
+              key={`${nodeId}:${selectedWorkflowId}:${isGenerating}`}
+              choices={voiceChoices}
+              value={selectedReference}
+              disabled={isGenerating}
+              onChange={selectCharacterVoice}
+              onPlaybackError={() => showToast(t('声音试听失败，请检查音频文件是否可用'), 'error')}
+            />
+          ) : null}
+
+          {nodeType === 'ai-animation' && onAnimationActionChange && (
+            <>
+              <div className="animation-action-picker" role="group" aria-label={t('动画动作')}>
+                {ANIMATION_ACTIONS.map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    className={`animation-pose-btn${animationAction === action ? ' active' : ''}`}
+                    data-tooltip={action === 'custom' ? t('自定义：在提示词中描述动作') : t(ANIMATION_ACTION_LABELS[action])}
+                    aria-label={t(ANIMATION_ACTION_LABELS[action])}
+                    aria-pressed={animationAction === action}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onAnimationActionChange(action);
+                    }}
+                  >
+                    <AnimationPoseIcon action={action} />
+                  </button>
+                ))}
+              </div>
+              <Select fixedMenu
+                className="min-w-0 shrink-0"
+                size="sm"
+                value={animationFrames}
+                aria-label={t('生成帧数')}
+                onChange={(selectedOptionValue) => {
+                  onAnimationFramesChange?.(Number(selectedOptionValue));
+                }}
+              >
+                {[6, 8, 10, 12, 16, 20].map((count) => (
+                  <option key={count} value={count}>{t('{count} 帧', { count })}</option>
+                ))}
+              </Select>
+            </>
+          )}
+
+          {(nodeType === 'ai-image' || nodeType === 'ai-panorama' || nodeType === 'ai-video') && (
+            <StyleSelector
+              nodeType={nodeType}
+              selectedStyle={selectedStyle}
+              onChange={onStyleChange}
+            />
+          )}
+
+          {nodeType === 'ai-video' && onChangeCameraSettings && (
+            <VideoCameraSettingsSelector key={`${projectId}:${nodeId}`} nodeId={nodeId} projectId={projectId} value={cameraSettings} disabled={isGenerating} />
+          )}
+          {nodeType === 'ai-image' && onChangeCameraSettings && (
+            <CameraSettingsSelector value={cameraSettings} onChange={onChangeCameraSettings} />
+          )}
+
+          {parameterWorkflow && onWorkflowInputsChange && (
+            <CloudWorkflowParamSelector key={`${nodeId}:${selectedWorkflowId}`}
+              workflow={parameterWorkflow} values={workflowInputs}
+              onChange={onWorkflowInputsChange} disabled={isGenerating} onContinuousEditEnd={onContinuousEditEnd} />
+          )}
+
+          {nodeType === 'ai-image' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
+            imageNeedsParameterSettings && imageSettingsModel ? (
+              <AnimatedButton type="button" className="img-pill-btn" disabled={isGenerating}
+                aria-label={t('打开 {name} 图片参数设置', { name: imageSettingsModel.name })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  useAppStore.getState().openApiKeySettings(imageConnectionId, imageSettingsModel.id);
+                }}>
+                <Icon icon="lucide:sliders-horizontal" width="16" />
+                <span>{t('参数')}</span>
+              </AnimatedButton>
+            ) : (
+              <QualityRatioSelector
+                imageSize={imageResolutions?.length === 0 ? t('未声明') : imageSize}
+                imageQuality={imageQuality}
+                imageQualities={selectedWorkflowId ? undefined : imageCapability?.qualities}
+                defaultImageQuality={selectedWorkflowId ? undefined : imageCapability?.defaultQuality}
+                imageBackground={imageBackground}
+                imageBackgrounds={selectedWorkflowId ? undefined : imageCapability?.backgrounds}
+                defaultImageBackground={selectedWorkflowId ? undefined : imageCapability?.defaultBackground}
+                imageBackgroundIsFixed={selectedWorkflowId ? false : imageCapability?.backgroundIsFixed}
+                aspectRatio={imageRatioValues?.length === 0 && !imageSupportsAdaptive ? t('比例待确认') : aspectRatio}
+                onChangeImageSize={onChangeImageSize || (() => {})}
+                onChangeImageQuality={onChangeImageQuality}
+                onChangeImageBackground={onChangeImageBackground}
+                onChangeAspectRatio={onChangeAspectRatio || (() => {})}
+                showImageSize={imageResolutions === undefined || imageResolutions.length > 0}
+                imageSizes={imageResolutions}
+                showAdaptive={imageSupportsAdaptive}
+                ratios={imageRatioValues?.map((value) => ({
+                  value,
+                  className: getImageRatioClassName(value),
+                }))}
+              />
+            )
+          )}
+
+          {nodeType === 'ai-panorama' && (
+            <QualityRatioSelector
+              imageSize={imageSize}
+              aspectRatio={aspectRatio}
+              onChangeImageSize={onChangeImageSize || (() => {})}
+              onChangeAspectRatio={onChangeAspectRatio || (() => {})}
+              showAdaptive={false}
+              ratios={[
+                { value: '2:1', className: 'img-rp-pano' },
+                { value: '21:9', className: 'img-rp-ultra' },
+              ]}
+            />
+          )}
+
+          {nodeType === 'ai-video' && !runninghubWorkflow && !runninghubModel && workflowApi?.workflowApi?.version !== 2 && (
+            <VideoParamSelector
+              provider={selectedProvider}
+              selectedModel={selectedModel}
+              nodeId={nodeId}
+              videoReferences={videoReferences}
+              onChangeVideoReferences={onChangeVideoReferences}
+              videoResolution={videoResolution}
+              videoFps={videoFps}
+              videoFrames={videoFrames}
+              onChangeResolution={onChangeVideoResolution || (() => {})}
+              onChangeFps={onChangeVideoFps || (() => {})}
+              seedanceResolution={seedanceResolution}
+              seedanceRatio={seedanceRatio}
+              seedanceDuration={seedanceDuration}
+              generateAudio={generateAudio}
+              onChangeSeedanceResolution={onChangeSeedanceResolution}
+              onChangeSeedanceRatio={onChangeSeedanceRatio}
+              onChangeSeedanceDuration={onChangeSeedanceDuration}
+              onChangeGenerateAudio={onChangeGenerateAudio}
+              onContinuousEditEnd={onContinuousEditEnd}
+              disabled={Boolean(workflowApi && isGenerating)}
+              extraParameters={workflowApi?.workflowApi?.version === 1 && onWorkflowInputsChange ? (
+                <div className="mt-3 space-y-2 border-t border-canvas-border pt-2 text-xs text-canvas-text-secondary">
+                  <p>{t('引用 1–9 张图片与最多 3 段音频；按引用顺序发送。')}</p>
+                  <label className="flex flex-col gap-1">{t('随机种子（可选）')}
+                    <input className="ui-input w-full" type="number" step={1} disabled={isGenerating}
+                      value={workflowInputs?.seed ?? ''} placeholder={workflowApi.workflowApi.defaults?.seed?.toString() ?? t('留空随机')}
+                      onChange={(event) => {
+                        const values = { ...workflowInputs };
+                        if (event.target.value === '') delete values.seed; else values.seed = event.target.value;
+                        onWorkflowInputsChange(values);
+                      }} onBlur={onContinuousEditEnd} />
+                  </label>
+                </div>
+              ) : undefined}
+            />
+          )}
+
+          {nodeType === 'ai-audio' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
+            <AudioParamSelector
+              capability={audioCapability}
+              purpose={speechControls ? 'speech' : audioPurpose}
+              speechControls={speechControls}
+              speechSettings={audioSpeechSettings}
+              references={audioReferences}
+              onChangeSpeechSettings={onChangeAudioSpeechSettings}
+              onAddReference={addAudioReference}
+              onRemoveReference={onRemoveAudioReference}
+              voice={audioVoice}
+              format={audioFormat}
+              speed={audioSpeed}
+              musicTitle={musicTitle}
+              musicLyrics={musicLyrics}
+              musicBpm={musicBpm}
+              musicDuration={musicDuration}
+              autoGenerateLyrics={autoGenerateLyrics}
+              onChangeVoice={onChangeAudioVoice}
+              onChangeFormat={onChangeAudioFormat}
+              onChangeSpeed={onChangeAudioSpeed}
+              onChangeMusicTitle={onChangeMusicTitle}
+              onChangeMusicLyrics={onChangeMusicLyrics}
+              onChangeMusicBpm={onChangeMusicBpm}
+              onChangeMusicDuration={onChangeMusicDuration}
+              onChangeAutoGenerateLyrics={onChangeAutoGenerateLyrics}
+              onContinuousEditEnd={onContinuousEditEnd}
+            />
+          )}
+
+          <div className="ui-ai-input__actions prompt-actions">
+            <span ref={setWorkflowEditorTarget} className="contents" />
+            {/* 支持自定义快捷指令的节点共用同一入口。 */}
+            {PRESET_NODE_TYPES.some((type) => type === nodeType) && (
+              <button
+                ref={slashBtnRef}
+                type="button"
+                className={`prompt-btn prompt-slash-btn${slashOpen ? ' slash-active' : ''}`}
+                data-tooltip={t('预设提示词')}
+                aria-label={t('预设提示词')}
+                onClick={handleButtonSlash}
+              >
+                /
+              </button>
+            )}
+            {onDebug && (
+              <button
+                type="button"
+                className="prompt-btn prompt-debug-btn"
+                data-tooltip={t('调试 API 参数')}
+                onClick={(e) => { e.stopPropagation(); onDebug(); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+                </svg>
+              </button>
+            )}
+            {onPassThrough && (
+              <button
+                type="button"
+                className={`prompt-btn prompt-pass-through-btn ${!prompt.trim() ? 'disabled' : ''}`}
+                disabled={!canGenerate || !hasGenerationInput}
+                data-tooltip={t('直接输出（跳过模型调用）')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (prompt.trim()) onPassThrough();
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5 12 12 5 19 12" />
+                </svg>
+              </button>
+            )}
+            {polishButton && (
+              <div className="prompt-polish-entry">
+                {performanceMode || reduceMotion ? polishButton : (
+                  <LazyLoadBoundary label={t('润色按钮特效')} errorFallback={polishButton}>
+                    <Suspense fallback={polishButton}>
+                      <MetalFx className="prompt-polish-metal" variant="button"
+                        preset={appearanceMode === 'light' ? 'silver' : 'chromatic'} theme={appearanceMode}
+                        strength={appearanceMode === 'light' ? 0.55 : 0.62} shaderScale={2.8}
+                        mask={paintPolishIcon} disableGlow normalizeHostStyles={false}>
+                        {polishButton}
+                      </MetalFx>
+                    </Suspense>
+                  </LazyLoadBoundary>
+                )}
+              </div>
+            )}
+            {costEstimate}
+            {isGenerating && onCancelGeneration ? (
+              <div className="prompt-submit-wrap">
+                <button
+                  type="button"
+                  className="prompt-btn prompt-stop-btn"
+                  data-tooltip={selectedProvider === 'workflow-api' ? t('停止等待') : t('终止 ComfyUI 任务')}
+                  aria-label={selectedProvider === 'workflow-api' ? t('停止等待') : t('终止 ComfyUI 任务')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCancelGeneration();
+                  }}
+                >
+                  {!performanceMode && (
+                    <span className="prompt-stop-orb" aria-hidden="true">
+                      <LazyLoadBoundary label={t('停止按钮动画')} errorFallback={generatingFallback}>
+                        <Suspense fallback={generatingFallback}>
+                          <ThinkingOrb state="composing" size={20} />
+                        </Suspense>
+                      </LazyLoadBoundary>
+                    </span>
+                  )}
+                  <svg className="prompt-stop-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="5" y="5" width="14" height="14" rx="2" />
+                  </svg>
+                </button>
+              </div>
+            ) : (
+              <div
+                ref={batchTriggerRef}
+                className={`prompt-submit-wrap${batchMenuOpen ? ' batch-open' : ''}`}
+                onContextMenu={openShortcutMenu}
+              >
+                {performanceMode || reduceMotion ? submitButton : (
+                  <LazyLoadBoundary label={t('生成按钮特效')} errorFallback={submitButton}>
+                    <Suspense fallback={submitButton}>
+                      <MetalFx
+                        className="ui-ai-input__send-metal prompt-send-metal"
+                        variant="circle"
+                        preset={appearanceMode === 'light' ? 'silver' : 'chromatic'}
+                        theme={appearanceMode}
+                        strength={appearanceMode === 'light' ? 0.65 : 0.81}
+                        paused={!canGenerate || !hasGenerationInput}
+                        normalizeHostStyles={false}
+                        innerShadow
+                      >
+                        {submitButton}
+                      </MetalFx>
+                    </Suspense>
+                  </LazyLoadBoundary>
+                )}
+                {batchSupported && (
+                  <div className="image-batch-clip">
+                    <div
+                      className="image-batch-menu"
+                      role="menu"
+                      aria-label={imageOutputsPerJob > 1 ? t('选择生成作业次数') : t('选择批量生成数量')}
+                      aria-hidden={!batchMenuOpen}
+                    >
+                      {imageBatchCounts.map((count) => (
+                        <button
+                          key={count}
+                          type="button"
+                          role="menuitem"
+                          tabIndex={batchMenuOpen ? 0 : -1}
+                          className={`image-batch-menu-item${batchCount === count ? ' active' : ''}`}
+                          aria-label={imageOutputsPerJob > 1
+                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
+                            : t('生成 {count} 张图片', { count })}
+                          title={imageOutputsPerJob > 1
+                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
+                            : count >= 4 ? t('生成 {count} 张，费用可能按张计算', { count }) : t('生成 {count} 张', { count })}
+                          onClick={handleBatchSelect(count)}
+                        >
+                          {count}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+    {shortcutMenuAnchor && <SendShortcutMenu anchor={shortcutMenuAnchor} value={submitShortcut}
+      onChange={chooseSubmitShortcut} onClose={closeShortcutMenu} disabled={!configHydrated} />}
+    {slashOpen && (
+      <SlashCommandMenu
+        nodeType={nodeType}
+        sourceNodeType={sourceNodeType}
+        currentPrompt={prompt}
+        anchorEl={slashAnchor}
+        userPresets={userPresets}
+        presetFolders={presetFolders}
+        skillOptions={skillOptions}
+        recentSkillIds={recentSkillIds}
+        onSelect={handleSlashSelect}
+        onRunAdvancedPreset={handleRunAdvancedPreset}
+        onSelectSkill={handleSkillSelect}
+        onUploadSkill={handleUploadSkill}
+        onManageSkills={handleManageSkills}
+        onClose={() => setSlashOpen(false)}
+        onManagePresets={handleManagePresets}
+      />
+    )}
+    <SkillManager open={skillManagerOpen} onClose={() => setSkillManagerOpen(false)} />
+    </>
+  );
+}

@@ -1,0 +1,567 @@
+# RunningHub 平台能力完善
+
+## 阶段与范围
+
+本任务属于平台能力。用户已批准阶段 A/B 的范围。阶段 A 已提交 243a629，随后确认继续阶段 B 标准模型扩展。不新增依赖、Store、IndexedDB object store 或原生权限；不删除文件，不调整 Tauri 安全配置。
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| A：工作流与 AI 应用 | 实现及离线验证完成，真实服务验收待补 | 定义导入、参数映射、节点/对话调用、官方上传、任务恢复与结果保存 |
+| B：标准模型 | 实现及范围内离线验证完成，真实服务验收待补 | 347 个媒体操作、7 个旧选择兼容、专属参数与标准任务恢复；33 个专项/弃用操作逐项记录 |
+
+## 阶段 A 的产品行为
+
+- 设置区分别管理工作流 API Key 与模型 API Key，连接测试使用只读账户接口。保存的云定义显式选择连接；运行时从现有凭据配置取 Key。
+- 工作流管理区支持本地 ComfyUI、RunningHub 工作流和 RunningHub AI 应用。可从官方链接/ID 读取，或导入 API JSON、curl 示例中的 JSON 请求体；不执行示例脚本，不保存原始定义或鉴权字段。
+- 云定义保存明确的远端 ID、输出类型、参数、素材映射、实例、队列和可选输出节点。长 ID 按字符串处理，数字和布尔参数保留 `0`、`false`；不明确的提示词或素材字段由用户核对映射。
+- 保存后在图像、视频、音频节点、预设和对话 `@model` 目录可选；独立对话窗口使用同一连接判断。Agent/MCP 可用 `media_workflow_parameters` 读取定义，再以 `media_generate.workflowInputs` 覆盖参数；既有模型引用与 Policy 不变。
+- 云工作流只展示自身参数；比例、分辨率、时长应映射到相应节点字段。通用媒体工具若显式传入这些通用选项会提示改用工作流参数，避免静默忽略。
+- 本地图片、视频、音频经 RunningHub 官方上传；按字段要求传返回的文件名或 URL，同次调用的相同素材复用上传。任务显示上传、排队、生成、保存阶段。
+- 按输出类型及可选输出节点筛选，保存全部匹配产物，首个产物作为节点/对话主结果。节点详情可查看其余产物。
+- 已知远端任务 ID 在断网和保存失败后保留，恢复只查询和保存，不重复提交。提交响应丢失时保留不确定状态；节点入口支持平台核对后补充 ID，或确认远端结束后清理本地记录。
+- 本地停止等待与远端取消分别处理。取消接口接受请求不等于任务已取消，只有查询到终态才清理记录；若已经生成完成则保留保存入口。
+- 恢复前复核项目、节点、工作流与画布 revision。纯对话任务回填原消息，不创建画布节点；画布先恢复、原对话后加载时等待消息加载再同步已有产物。
+
+## 源码与兼容边界
+
+### 快捷指令正文与字符串输入（2026-11-01）
+
+已实现，待用户验收。快捷指令沿用 `fillTemplate` 将本轮输入填入模板占位符，无占位符时拼接正文；保留素材引用，直接触发只覆盖本轮请求，不将整段模板写回输入框。共享 RH 导入器补充 `PrimitiveString.value` 和 `PrimitiveStringMultiline.value` 文本输入候选；旧定义仅对原版类名及标准中英文显示名、准确的 `value` 字段补候选，用户显式固定来源、枚举及其他字符串参数不改变。`@` 候选、默认徽章与实际提交共用同一解析结果，不自动变更已选默认节点。
+
+用户提供的“MJ风格3.0”JSON 中，`#714 / value` 同时连接 `#199`、`#231` 两路正面文本；截图所选的 `#232 / text` 连接二采的负面条件。桌面验收先在工作流列表将提示词星标设到 `#714 / value`，图片仍选 `#807 / image`；若旧条目采用标准名称，可直接展开新候选，其他自定义命名需重新读取 API 定义。输入框引用图片并填写人物描述后，执行“人物三视图＋双面部特写”，确认请求的 `714.value` 同时包含模板和本轮描述，`807.image` 使用本轮 RH 上传文件名，`232.text` 保留原负面词；输入框及默认选择不被执行动作改写。回归无占位符自定义模板、显式定向文本、无默认节点、旧记录和普通图片模型。本轮只完成源码、差异与 UTF-8 静态核对，已补导入、菜单拼接及生成入口回归源码，未运行测试、lint、类型检查、构建、桌面或真实服务验收。
+
+### 提示词正负用途标记（2026-11-01）
+
+已实现，待用户验收。工作流管理展开后的文本输入徽章显示“正面／负面／正负共用／未判定”。共享识别器从已知采样器或 Guider 的条件端口反向追踪，区分条件节点的输出槽，经过已知编码器继续追踪原版字符串输入；不以标题、现有正文或默认星标推断。正负两路均使用同一文本时合并为共用；`ConditioningZeroOut` 不继续传播文本用途。未知插件、断链、非 API 图及缺少证据的输入保留未判定，悬停可查看原因。仅供选择默认输入时参考，不自动调整星标、固定值、@ 路由或提交内容。
+
+本地 ComfyUI 旧记录直接分析现有 API 图。RH 完整 API 定义导入时仅保存可选 `promptRoles`（编码后的节点与字段身份 → 用途），不持久化原图；参数列表／AI 应用调用示例无连线时不猜用途。云端旧记录需在原条目重新读取完整 API 定义并保存，刷新后保留仍有效的默认节点；按旧字段身份保存元数据，手工改为其他节点或字段不会继承用途。旧版读取新记录前需备份并移除这一可选展示元数据。
+
+Tauri 桌面验收：在工作流管理编辑并重新读取“MJ风格3.0”的完整 API 定义，保存后展开原卡片，应按实际图显示 `#714/value` 正面、`#232/text` 负面，图片输入不显示提示词用途，原默认星标不移动；如平台只返回参数列表，应显示未判定。重新打开客户端核对标记；本地导入带正负条件的 API 图同样显示用途。回归共用文本、清零负面条件、ControlNet／Inpaint 的多输出槽、未支持插件、无连线旧记录、字段改名、默认节点设置和深浅主题。已补服务与组件回归源码；本次只做源码、差异和 UTF-8 静态核对，未运行测试、lint、类型检查、构建、桌面或真实服务验收。
+
+### 比例卡片与尺寸字段识别（2026-11-01）
+
+已实现，待用户验收。云参数比例枚举复用现有图像比例卡片，显示比例图标和短名称，点击仍提交工作流原始完整值；实际枚举优先，不补入未声明的“自适应”。缺少枚举的旧 `ResolutionSelector · aspect_ratio`／“分辨率选择器 · aspect_ratio”记录，按原版 ComfyUI `comfy_extras/nodes_resolution.py` 的八种比例补展示；不改写已保存定义或执行校验。未知节点缺少枚举时保留文本编辑，不根据当前值臆造允许列表；未知当前值保持原样，不自动选择首项。
+
+语义优先读取字段名，其次读取 `·`／`|` 后的字段标签，避免“分辨率选择器”节点名把 `multiple` 误判成分辨率。可识别原版节点缺少声明时，百万像素范围使用 0.1–16、步长 0.1；尺寸倍数使用数值输入 8–128、步长 4。工作流已有枚举、范围和步长优先，其他分辨率字段沿用原规则。
+
+RunningHub 和声明式工作流的参数浮层共用常用项排序：分辨率及宽高、比例、时长、步数、数量、引导强度、重绘、种子、采样器和调度器优先于模型加载及设备参数；同优先级沿用定义顺序。排序只作用于展示副本，编辑表单、已保存定义、参数键与提交值保持原规则。
+
+Tauri 桌面验收：打开已有“MJ风格3.0”节点（RH 工作流 `2116497847981006849`）的参数浮层，无需删除重建，常用项应置顶，比例应显示八张可点选卡片；将 21:9 切换为 16:9 后重开仍选中，参数值保留 `16:9 (Widescreen)`。倍数 16 不再显示 0.2–4 滑块；百万像素使用本节点范围。回归声明枚举只有两项／一项、自适应仅在真实枚举出现、未知当前值、禁用状态、恢复默认、深浅主题及窄窗口。已补充两份控件回归源码；实现阶段仅做调用链、差异与 UTF-8 静态核对，提交门禁由既有钩子执行完整前端 CI，Tauri 桌面及真实服务验收待补。远端页面未能通过公开抓取读取，源定义核对依据为用户导出的工作流与本机原版节点源码，远端生成仍待用户验收。
+
+### 输入节点、@ 与默认节点（2026-10-31）
+
+已实现，Tauri 桌面及真实服务验收待补。RH 工作流和 AI 应用从已声明的动态参数投影提示词、图片、视频、音频输入，复用工作流卡片与提及编辑器。标识为编码后的 `nodeId::fieldName`，不存原始远端图；普通固定值参数不进入输入列表。API 图中明确的 `CLIPTextEncode.text` 也可定向绑定，未绑定时保留其原固定值（如负面提示词），用户显式选为固定值后不再进入候选；旧定义缺少此信息时重新读取一次。
+
+- 新导入使用 `inputBindingMode: nodes`；旧记录缺省仍保留来源及同类型参考序号规则。点击默认徽章后启用节点绑定。各类型一个默认目标，显式 @ 的同类输入优先，不再写入该类型默认槽；单媒体槽多素材明确报错，不静默取第一份。
+- 正文先剥离完整 @wf 赋值，字段内容由共享执行器解析文本与素材引用，按当前连接站点上传。相同素材复用一次上传；缺失必填值、过期目标、类型不符和重复指定在提交前拦截。对话/MCP 的 workflowInputs 使用相同字段身份和执行规则。
+- 读取新定义时保留仍有效的默认目标，失效默认提示重选。切换工作流、关闭/重开、删除及旧本地 ComfyUI 语义保持原规则。
+
+桌面验收前置：在 Tauri 桌面端配置当前 cn/ai 站点的工作流 Key，准备本人可访问的 RH 工作流或 AI 应用。入口为「工作流管理 → RunningHub 云工作流／AI 应用」。导入包含两个图片字段及正文的视频 RH 工作流，展开卡片核对三个输入，设正文及首帧默认；不指定 @ 时正文和单图只写入默认槽；显式 @ 尾帧后默认首帧不重复接收。分别检查图片/视频/音频与嵌套文本引用、相同远端节点多个字段、同槽多素材、删掉芯片后赋值清理、未设默认、缺必填、旧映射、定义更新及重启。深浅主题与窄窗口复用既有徽章样式；付费生成需用户单独验收。
+
+已验证：11 个相关 Vitest 文件、613 项测试通过，覆盖三类生成入口、输入解析与上传、卡片默认选择、编辑草稿清理及持久化；`npm run typecheck`、`npm run test:typecheck` 和本批 TS/TSX 定向 ESLint 通过，25 个作用域文件 UTF-8 与差异空白检查正常。未运行全量 CI、生产构建、Rust 检查、Tauri 桌面验收或真实付费调用；本批尚未提交推送。
+
+后续增量（2026-10-31）：导入参数折叠标题将 `#节点ID` 放在名称之前，便于对照远端节点；空 ID 草稿不显示空编号。API 图按精确类名及字段识别 `H3OptionalPicture3.image` 为可选图片输入，空值仍保留，不把相似名称或其他字段猜成素材。已保存的旧参数需重新读取定义或手工改成图片来源后保存；未在 RH 保存的本地 JSON 不会改变远端 API 定义。此增量仅完成源码、差异与 UTF-8 静态核对，新增回归源码未运行，不计入上述 613 项已通过结果。桌面验收：先在 RH 保存含可选图片节点的工作流，再于导入页读取并展开参数，核对 `#807` 的 `image` 来源为图片、同节点多个字段均显示编号；保存后设为默认图片输入，分别检查未传图和单图引用。若仍只有旧文本节点，先核对工作流 ID 及远端已保存版本，不向不存在的节点提交。
+
+回滚：源码可独立撤销；已新增的输入元数据需要新版读取。若确需旧版读取新保存的记录，先备份并清理派生 `ioNodes`、`defaultNodes`、`inputBindingMode` 及参数 `inputType`，保留原参数和来源映射，不直接重置工作流库。
+
+定义刷新后的默认节点操作由 Store 在持久化队列内读取最新定义，只接收工作流及输入身份；旧卡片不再携带整份云参数回写。已删除或变更类型的输入拒绝设置，保存失败不改变现有列表。补充回归覆盖编辑读取后按原 ID 保存、保留有效默认并清理失效默认、新定义写入与旧卡片默认选择交错、落库失败及重启重载。已运行 `runninghubWorkflowImport`、`workflowEditorInteraction`、`workflowsPersistence`、`runninghubWorkflowService` 四个测试文件，70 项全部通过；`npm run typecheck`、`npm run test:typecheck` 及相关 8 个 TS/TSX 文件 ESLint 通过，UTF-8 和差异静态核对完成。提交门禁由现有钩子执行完整 `npm run ci`（全仓 ESLint、两套类型检查、全量测试及生产构建），不以定向结果代替。未运行真实服务调用，用户当次历史状态未复现。Tauri 桌面验收仍需在原条目上新增/移除参考图输入并读取、保存，确认右侧和 @ 候选同步；在保存期间操作旧默认徽章不得恢复旧定义，无需删除重建。
+
+### 动态素材导入兼容（2026-10-29）
+
+已实现，待用户 Tauri 桌面验收；实现阶段仅做源码、差异和 UTF-8 静态核对，提交阶段按仓库规则由既有钩子执行本次文件的定向 ESLint。未运行测试、类型检查、构建或真实上传/生成。
+
+- 官方定义中的图片、视频、音频 `fieldData` 文件候选不再作为固定枚举导入。旧定义已有候选时，动态来源同样不受候选限制；普通固定参数继续按原枚举、类型与数值范围校验，不改变用户显式选择的来源。
+- 导入编辑器仅为固定来源展示默认值控件。提示词与媒体来源改为说明使用本轮正文或按媒体类型编号的引用；保存动态来源不要求先选择示例文件，也不按旧默认文件的枚举拦截。整体 manifest 的类型、字段白名单及本地路径限制保持。
+- `LoadImage` 等文件读取节点选择“文件名”，URL 输入节点选择“URL”；格式仍由用户依据工作流输入选择，不猜测未知插件。两种格式都先走当前连接站点的 RunningHub 官方上传，再传返回的文件名或 URL；必填素材仍在生成前检查，可选空槽继续清空示例。
+- 主提示词标签兼容附带半角/全角括号说明，例如“提示词（可选, 描述你的画面, 默认不用填）”。新导入与旧记录的展示、摘要和执行共用识别：唯一明确的主字段绑定本轮节点正文，在参数浮层隐藏，旧参数覆盖和导入示例不代替正文；反向/负面、系统、风格等辅助字段仍列为独立可调参数。显式固定来源、枚举与多候选保留原决定，不使用包含“提示词”的模糊匹配。
+
+桌面验收：准备当前站点有效 Key，在工作流管理中重新读取应用 `2091092355226095617`；展开上传图片，保留“图片参考 / 1 / 文件名”并勾选必填，应显示本轮素材说明、无历史图片默认值下拉，能直接添加并重开编辑。对视频、音频及带旧候选的已存定义同样检查；改成固定值后默认值和下拉限制仍有效。用本轮素材生成时应使用新上传结果，缺少必填素材应在上传/提交前报错；另回归 URL 节点、普通下拉、`0/false`、来源切换、深浅主题与窄窗口。
+
+提示词补充验收：直接打开已存上述应用的节点参数浮层，附可选说明的主提示词不再出现，参数数目相应减少；在节点对话框输入新正文，实际任务应使用新正文。正文留空时不回落旧示例；含反向/负面字段的工作流应保留独立编辑入口并提交其本轮参数值。重开导入编辑页应显示主来源为“提示词”，无需删除或重新导入原记录。显式固定的主字段仍保持用户决定，可在导入页切换到“本次提示词”。本轮未运行测试或真实生成，待用户验收。
+
+回归测试源码位于 `tests/services/runninghubWorkflowService.test.ts`、`tests/services/runninghubWorkflow.test.ts`、`tests/components/runninghubWorkflowImport.test.tsx`。用户可在仓库根目录运行 `npx vitest run tests/services/runninghubWorkflowService.test.ts tests/services/runninghubWorkflow.test.ts tests/components/runninghubWorkflowImport.test.tsx`，本轮未执行。回滚只撤销导入校验与表单对应差异，不删除已存工作流、凭据或任务记录；无依赖、原生权限或数据库迁移。
+
+### 本轮节点输入与官方上传
+
+已实现，待用户桌面验收；2026-10-23 本轮未运行测试、类型检查、构建或真实上传/生成，提交阶段按仓库规则由钩子执行定向 ESLint。
+
+- 主提示词使用本轮节点正文。新导入与旧定义共用唯一明确的主提示词识别，排除负面、系统、风格、优化类辅助字段、枚举和多候选；导入页显式选择来源后记录 `sourceExplicit`，保留手动固定字段。普通标量覆盖键及 `0/false` 语义不变。
+- 提示词和参考素材不再在节点参数浮层重复展示；图片、视频、音频按本轮已选择引用分类型编号与绑定，不使用导入样例或旧 `workflowInputs` 的媒体 URL。可选未选槽传空串以清除远端示例，必填缺少素材在上传前拒绝。Agent/MCP 读取的参数来源使用同一解析规则，`workflowInputs` 仅覆盖普通 `source=value` 参数，正文和媒体用本次提示词及显式引用。
+- RH 图片、视频入口使用本地媒体引用及最终数组编号，同节点的图片已保存副本与旧来源地址去重，不合并不同节点的原图与标注图；视频不把媒体 URL 拼入正文。音频独立收集引用并保留语音正文剥离，避免朗读参考标签。共享编号逻辑位于 `referencePrompt.ts`，原视频导出继续兼容，其他厂商与本地 ComfyUI 的入口保留原语义。
+- 工作流和标准模型的本地/公网媒体均先上传当前连接站点；URL 字段也不再直传外站地址。按字段传返回的原始文件名或 `download_url`，同次请求按媒体类型与来源复用一次上传，失败不降级图床、不跨站重试。保留应用 100 MiB 上限和已有大小/类型校验；MOV、AVI、MKV、M4A 等按真实 MIME 使用后缀，未知二进制不伪装成 PNG/MP4/WAV。
+
+官方依据（2026-10-23 核对）：
+
+| 能力 | 国内站 | 国际站 | 合同与当前策略 |
+|---|---|---|---|
+| 新版素材上传 | [国内说明](https://www.runninghub.cn/runninghub-api-doc-cn/api-425749007) | [国际说明](https://www.runninghub.ai/runninghub-api-doc-en/api-425761098) | 各站 `POST /openapi/v2/media/upload/binary`，Bearer、multipart `file`；兼容业务码 `0/200` 及 `fileName/filename`，标准模型用 `download_url`，工作流文件槽用返回文件名 |
+| 工作流输出 | [国内说明](https://www.runninghub.cn/runninghub-api-doc-cn/api-425749004) | [国际说明](https://www.runninghub.ai/runninghub-api-doc-en/api-425761034) | 各站 `/task/openapi/outputs` 返回 `fileUrl/fileType/nodeId`，继续用于已有工作流筛选与恢复 |
+| v2 结果查询 | [国内说明](https://www.runninghub.cn/runninghub-api-doc-cn/api-425767306) | [国际说明](https://www.runninghub.ai/runninghub-api-doc-en/api-425767807) | `/openapi/v2/query` 返回顶层 `status/results`，标准模型已使用；不把缺少旧 `nodeId` 合同的新响应直接替换到工作流恢复链，国际页仍标开发中 |
+
+新版文档未给出统一最大文件大小；应用 100 MiB 是本地限制，不套用旧上传接口的 30 MB 限制。站点不通用 Key 或文件名；链接站点不覆盖用户已选择连接。
+
+桌面验收（前置：两站分别保存有效 Key，准备含示例提示词/多媒体槽的工作流及可用本地和公网素材）：
+
+1. 在已有节点输入新正文并引用两张图，打开参数浮层，应不再出现旧示例正文及媒体列表；提交后在 RH 任务中核对新正文、按序图像和空槽。删除/更换引用再提交新任务，不得带回旧图；已提交任务继续查询旧结果。
+2. 用负面提示词、多个不明确主字段、枚举与手动固定提示词的定义核对导入映射；显式来源保存并重开后保持。缺少必填素材应在上传/提交前报错，普通数值 `0` 和布尔 `false` 正常传递。
+3. 在国内/国际各跑图片、视频、音频工作流或对应标准模型，包含公网素材；核对上传 host 为当前站点，生成字段使用其返回文件名/地址，同类型同来源只上传一次。另一站未配置或上传失败应直接报错，不能使用其他站 Key 或通用图床；MOV/MKV/M4A 不应被重命名成错误媒体后缀。
+4. 中途停止、断网、保存失败后续查，不应重复提交；限定输出节点及多产物保存仍有效。回归其他厂商、声明式工作流 API、本地 ComfyUI 的提示词和媒体入口，核对深浅主题与参数浮层滑块间距。
+
+回归源码：`runninghubWorkflowService.test.ts`、`runninghubWorkflow.test.ts`、`runninghubWorkflowImport.test.tsx`、`runninghubMediaRouting.test.ts`、`runninghubClient.test.ts`、`runninghubMedia.test.ts`，均未执行。回滚可独立撤销本轮输入解析、浮层过滤与上传直传分支调整，无数据库迁移或原生权限变化；已保存的 `sourceExplicit` 等可选元数据继续保留读取兼容，不恢复旧严格白名单。
+
+### API 站点与语言前缀兼容
+
+已实现，待用户桌面验收；本轮未运行功能测试、类型检查、构建或真实账户调用。提交时按仓库钩子执行改动文件的定向 ESLint。
+
+- 官网链接支持 `/zh-cn/`、`/en/` 等语言前缀，继续校验官方域名与应用/工作流类型，长 ID 不转成 JavaScript 数字。业务码 901 显示应用不存在及站点核对提示，不能仅凭此码认定应用已被删除。
+- 「设置 → API Key → RunningHub → API 站点」显式选择国内 `.cn` 或国际 `.ai`。宽窗口的站点、模型 Key、工作流 Key 同排，窄窗口换行；两站各自保存模型与工作流密钥，切换只显示对应草稿，未配置站点不复制另一站的值。保存同时提交两站编辑和当前站点，取消弹窗不写入。
+- `runninghubSiteCredentials.ts` 维护四个独立的顶层凭据记录，统一由 `providerSecretService` 写入 Rust 安全存储；`runninghub` / `runninghub-model` 入口保留模型配置与当前地址，`apiKey` 只在内存按选中站点派生，不另外落原生共享槽，不回读旧共享槽作为兜底。Store Action、保存后合并与重启加载均重新派生，模型、工作流和恢复查询继续使用原入口 ID。删除 RunningHub 连接一并按既有条件删除流程回收两站记录与旧入口凭据。
+- 旧单组密钥只归入原配置地址对应站点，另一站保持空白；未知自定义地址不自动归类或搬迁。未读出的既有站点凭据记录不因空草稿而删除，旧单组密钥未读出时阻止迁移，保留原引用。源代码同时保留旧格式读取，不清空已有单站配置；首次保存新格式后以站点记录为准，旧共享原生条目不再用于调用，删除连接时回收。
+- 新提交任务只记录原站点标识，续查与取消使用该站凭据，切换站点不影响已有任务；原站凭据缺失时提示配置，不借用当前站密钥。旧待续记录缺少站点信息，仍需选择原站后再续查。
+- 导入页显示当前连接实际请求的 origin。读取定义、上传、执行与查询沿用所选连接；模型目录读取前的账户验证也使用当前表单地址。粘贴链接不改变请求站点，不把密钥跨站重试，不新建或迁移已有任务。
+- 桌面验收：选择国际站并填写对应站点密钥，保存后重开设置仍为国际站；在 AI 应用导入页确认请求站点是 `https://www.runninghub.ai`，粘贴带语言前缀的链接后应能进入定义请求。读取不提交生成任务；若仍返回 901，需进一步核对该站点的 API 访问权限或用网页的官方调用示例导入。
+- 额外桌面验收：国内站填写模型/工作流 Key，切到国际站应显示该站独立值或空白；输入另一套后往返切换，应各自保留。保存当前站点并重启，确认两套均恢复，当前无模型 Key 时模型调用提示配置，不能借用另一站。取消编辑应保留原选择；删除连接后重启不得恢复两站凭据。验证深浅主题和窄窗口，以及读取失败时保留引用、保存失败可重试。
+- 回归：默认国内站、纯 ID、工作流链接、仅工作流 Key；错类型和非官方域名仍拒绝。新增测试源码覆盖地址持久化、两站原生凭据隔离、空值拒绝回退、站点选择、国际站定义请求与不跨站重试。以下回归测试尚未执行；用户可在仓库根目录运行 `npx vitest run tests/services/runninghubSiteCredentials.test.ts tests/services/providerSecretService.test.ts tests/services/runninghubWorkflowService.test.ts tests/services/runninghubWorkflow.test.ts tests/services/testConnection.test.ts tests/components/providerConnectionForm.test.tsx tests/components/apiKeyDeletionPersistence.test.tsx tests/components/runninghubWorkflowImport.test.tsx tests/components/apiKeySettings.test.ts tests/services/configSecretStorage.test.ts tests/store/config.test.ts`。
+
+### 入口与既有合同
+
+| 入口 | 职责 |
+|---|---|
+| [runninghub.ts](../../src/types/runninghub.ts) | manifest、参数、产物和任务消息关联类型 |
+| [runninghubWorkflowService.ts](../../src/services/runninghubWorkflowService.ts) | 链接/定义导入、凭据字段过滤、参数校验 |
+| [workflowExecutionService.ts](../../src/services/workflowExecutionService.ts) | 工作流来源及凭据连接解析 |
+| [runninghubClient.ts](../../src/services/ai/providers/runninghubClient.ts) | 固定接口、HTTP 错误、官方上传及成功码合同 |
+| [runninghubWorkflow.ts](../../src/services/ai/providers/runninghubWorkflow.ts) | 提交、状态查询、输出、保存与取消 |
+| [RunningHubWorkflowImport.tsx](../../src/components/runninghub/RunningHubWorkflowImport.tsx) / [RunningHubParameterFields.tsx](../../src/components/nodes/shared/RunningHubParameterFields.tsx) | 定义管理和每次调用参数控件 |
+| [pollManager.ts](../../src/services/pollManager.ts) | 原节点及原对话的持久任务恢复 |
+
+`WorkflowDefinition`、IndexedDB 的工作流记录和节点数据仅增加可选字段；缺少 `adapterType` 的旧工作流继续作为 ComfyUI 执行，不升级 DB schema。原有 4 个只有 ID、没有可靠输入合同的内置云工作流保留 ID 定义，但不作为可执行菜单项展示，需要导入明确参数后使用。已有标准图片模型保持兼容，阶段 A 未新增标准模型，阶段 B 见下文。
+
+首批参数支持字符串、有限数字、布尔值及同类型枚举；复合值、访问密码、文本/3D 产物不在阶段 A 范围。原始工作流中的连接关系不作为可覆盖参数持久化。产物过期或远端不可访问仍可能无法恢复；纯对话任务需原消息所在会话重新加载后才能回填。浏览器模式没有桌面文件落盘保证。
+
+## 接口依据
+
+- [用户提供的说明书](https://runninghub.feishu.cn/wiki/Vc77w5EaUirOY5kyTQNcrr7GnUd)、[官方 API 索引](https://www.runninghub.cn/runninghub-api-doc-en/llms.txt)。
+- [工作流提交](https://www.runninghub.ai/runninghub-api-doc-en/api-425761093.md)、[读取 API 定义](https://www.runninghub.ai/runninghub-api-doc-en/api-425761094.md)、[AI 应用调用](https://www.runninghub.cn/runninghub-api-doc-en/api-425761096.md)、[取消任务](https://www.runninghub.cn/runninghub-api-doc-en/api-425761095.md)。
+- 提交/查询接口使用 `code=0`；`/openapi/v2/media/upload/binary` 使用 `code=200`，读取 `data.filename` 与 `data.download_url`。AI 应用定义通过 `/api/webapp/apiCallDemo` 读取；只提取参数，不采用返回脚本中的 URL 或鉴权配置。
+
+## 验证与验收缺口
+
+前端类型检查、测试类型检查、39 个改动代码/测试文件 ESLint、20 个测试文件的 209 项定向测试、前端生产构建均通过；差异和严格 UTF-8 检查通过。测试覆盖导入与持久化、长 ID、零值/布尔值、三类媒体上传、正确凭据、排队、取消、不确定提交、断网、保存失败、过期回写、对话延迟加载和本地 ComfyUI 兼容。Vitest 使用 `--exclude '.planning/**'` 排除任务临时目录中的仓库快照。
+
+离线浏览器预览使用真实组件及内存样例：检查明暗主题、320 px 参数面板、长名称换行、来源切换、空名称校验与编辑保存。未启动桌面软件，未使用真实密钥或执行付费生成，不能视为 RunningHub 真实账户及打包桌面验收通过。
+
+生产构建成功，仍有大 chunk、视频编辑模块及 RunningHub 恢复模块的静态/动态导入混用提示；后者是恢复入口使用动态 import，但适配器同时被生成入口静态引用，不能据此宣称实现了独立代码分包。
+
+阶段 A 的剩余验收：以用户可访问的工作流/应用，明确单次预算后验证真实定义权限、图片/视频/音频上传、任务状态、取消及桌面落盘。测试失败不得通过自动重复付费提交绕过。
+
+## 阶段 B：标准模型
+
+已对照官方全部 380 个操作/渠道条目。347 个操作接入现有媒体节点：图像 97、视频 214、音频 36。目录包括 Seedream 5、Qwen Image 3/Pro、Seedance 2.5、MiniMax H3/Max/Turbo、Speech 2.8、Music 2.6 等，详见下方逐条清单。保留原 7 个组合图片模型 ID，因此设置目录合计 354 项；旧组合模型依照图片引用选择生成/编辑，新操作固定执行其明确端点。已有启用选择不重置；缺省未保存选择时仍只启用旧 7 项，新操作通过模型管理勾选。
+
+- [runninghubModelManifest.ts](../../src/services/ai/providers/runninghubModelManifest.ts) 是模型目录、输入绑定、参数类型/范围及文档来源的共享来源。参数表单供节点与对话复用，不使用通用视频的 15 秒上限或其他平台同名模型限制。
+- [runninghubMedia.ts](../../src/services/ai/providers/runninghubMedia.ts) 注册到媒体 Registry，使用固定 `/openapi/v2/{operation}` 提交与 `/openapi/v2/query` 查询。标准响应可以是任务对象；兼容 `code=0/200` 的数据包装，保留长数字任务 ID。
+- 参数支持字符串、数值、布尔与字符串数组。节点保存 `runninghubModelParameters`；Agent/MCP 的只读 `media_model_parameters` 提供合同，`media_generate.modelParameters` 传递本轮覆盖值。零值/false 保持类型，未知字段、数量错误和非法地址在提交前拒绝。嵌套语义由官方使用字符串编码的字段承载，不执行 JSON 中的脚本。
+- 首尾帧、多参考、视频编辑/延长、动作控制及音频处理按所选操作映射素材；本地图片/视频/音频走官方上传，相同素材复用上传。输入数组上限、枚举、长度、数值范围与步长按 schema 校验；所有自然语言描述中的跨字段/媒体格式约束尚未自动化穷尽，仍可能由上游拒绝。
+- 标准任务网络中断、项目切换、保存失败时保留记录；不自动重复付费提交。每次批量提交发出前记录未知状态，收到 ID 后再确认；部分未知提交在已知任务保存完成后仍保留人工核对入口。标准模型未核实取消接口，只停止本地等待；工作流取消合同保持独立。
+- 保存所有媒体产物，首个作为主结果，节点详情展示全部；批量图片按同组节点回填。共享 `imageBatchService.ts` 增补复用已有落盘结果和回填新鲜度检查，避免重复下载。
+- 无有效类型/步长的官方默认值不自动写入请求；内联 Base64 与流式输出保持关闭。部分文档路径只在端点名标记 deprecated，也从可运行目录剔除。
+
+剩余 33 项包括 4 个弃用操作、14 个 3D 操作、7 个分层/Context IR/再生成专项操作、2 个歌词文本操作和 6 个资源身份操作。它们需要不同的产物或资源管理入口，不伪装成媒体生成。弃用 GPT Image 1.5 建议迁移 GPT Image 2；Sora 2 旧低价 Pro 端点需重新选择未弃用渠道。
+
+阶段 B 验证入口：[目录与兼容](../../tests/services/runninghubModelManifest.test.ts)、[参数及任务生命周期](../../tests/services/runninghubMedia.test.ts)、[对话透传](../../tests/services/generationRuntime.test.ts)、[批量图片](../../tests/services/imageBatchService.test.ts)。最终 24 个测试文件、616 项测试通过，347 个操作均覆盖声明类型转换。26 个改动代码/测试文件 ESLint、前端类型检查、本任务范围测试类型检查、前端生产构建、差异与严格 UTF-8 检查通过；真实组件完成明暗主题、320 px 面板、必填错误、H3 字符串时长、音频零值/布尔值及键盘折叠检查。可选默认参数支持显式不传，覆盖 Seedream 自定宽高与 resolution 的优先级场景。
+
+提交前按用户要求与 AutoDL 改动一并验证：前端类型、全仓测试类型、改动文件 ESLint、28 个文件的 700 项定向测试及生产构建通过；此前 AutoDL 测试样例缺少媒体角色的类型错误已不再出现。生产构建保留大 chunk 和静态/动态导入混用提示。真实服务仍需有效账户及明确预算；本次不执行付费请求、桌面打包或推送。
+
+## 回滚
+
+按阶段撤销本任务的明确差异；共享文件仅撤销 RunningHub 分支，保留并行 ComfyUI、APIMart 等改动。保留已有配置、模型选择和工作流记录，不重置数据。旧版本忽略新增可选字段；新增云定义回滚后暂不可执行，但不删除用户记录。阶段 A 已本地提交；阶段 B 按用户要求与当前 AutoDL 改动一起提交到本地 master，不推送或发布。
+
+返回[模型与生成模块](../模型与生成模块.md)。
+
+## 标准模型覆盖清单（2026-09-08）
+
+官方索引共 380 个操作/渠道条目，下表逐条保留。已接入表示本地路由、参数表单、类型校验和异步媒体结果合同已实现并通过离线测试，不表示全部条目已完成真实账户试跑。操作/渠道以完整 ID 区分，输入上限取官方 schema；更详细的媒体时长、编码和组合要求见对应官方文档与参数说明。
+
+| 模型/操作与官方文档 | 类型 | 输入及主要限制 | 覆盖状态 |
+|---|---|---|---|
+| [Vidu-start-end-to-video-q2-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184336.md)<br>`vidu/start-end-to-video-q2-turbo` | 视频 | prompt *: 提示词，≤4000 字符；firstImageUrl *: 图片；lastImageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [Vidu-start-end-to-video-q2-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184337.md)<br>`vidu/start-end-to-video-q2-pro` | 视频 | prompt *: 提示词，≤4000 字符；firstImageUrl *: 图片；lastImageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [Vidu-image-to-video-q2-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184338.md)<br>`vidu/image-to-video-q2-pro` | 视频 | prompt *: 提示词，≤4000 字符；imageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [Vidu-image-to-video-q2-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184339.md)<br>`vidu/image-to-video-q2-turbo` | 视频 | prompt *: 提示词，≤4000 字符；imageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [Vidu-image-to-video-q3-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184340.md)<br>`vidu/image-to-video-q3-pro` | 视频 | prompt *: 提示词，≤4000 字符；imageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16；resolution *: 360p/540p/720p/1080p/2k | 已接入（离线验证） |
+| [Vidu-image-to-video-q2-pro-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-448184341.md)<br>`vidu/image-to-video-q2-pro-fast` | 视频 | prompt *: 提示词，≤4000 字符；imageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10；resolution *: 720p/1080p | 已接入（离线验证） |
+| [Vidu-start-end-to-video-q2-pro-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-448184342.md)<br>`vidu/start-end-to-video-q2-pro-fast` | 视频 | prompt *: 提示词，≤4000 字符；firstImageUrl *: 图片；lastImageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8；resolution *: 720p/1080p | 已接入（离线验证） |
+| [Vidu-image-to-video-q3-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184343.md)<br>`vidu/image-to-video-q3-turbo` | 视频 | prompt *: 提示词，≤4000 字符；imageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [Vidu-start-end-to-video-q3-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184344.md)<br>`vidu/start-end-to-video-q3-turbo` | 视频 | prompt *: 提示词，≤4000 字符；firstImageUrl *: 图片；lastImageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [Vidu-start-end-to-video-q3-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184345.md)<br>`vidu/start-end-to-video-q3-pro` | 视频 | prompt *: 提示词，≤4000 字符；firstImageUrl *: 图片；lastImageUrl *: 图片；duration *: 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16；resolution *: 540p/720p/1080p | 已接入（离线验证） |
+| [kling-video-o1/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184346.md)<br>`kling-video-o1/image-to-video` | 视频 | prompt: 提示词，≤2000 字符；aspectRatio *: 1:1/9:16/16:9；duration *: 5/10；firstImageUrl *: 图片 | 已接入（离线验证） |
+| [kling-video-o1/start-to-end](https://www.runninghub.ai/runninghub-api-doc-en/api-448184347.md)<br>`kling-video-o1/start-to-end` | 视频 | prompt: 提示词，≤2000 字符；aspectRatio *: 1:1/9:16/16:9；duration *: 5/10；firstImageUrl *: 图片；lastImageUrl *: 图片 | 已接入（离线验证） |
+| [kling-elements](https://www.runninghub.ai/runninghub-api-doc-en/api-448184348.md)<br>`kling-elements` | 视频 | 见官方专项合同 | 返回资源身份，需专用资源管理入口 |
+| [kling-v2.5-turbo-std/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184349.md)<br>`kling-v2.5-turbo-std/image-to-video` | 视频 | prompt *: 提示词，≤2000 字符；duration *: 5/10；firstImageUrl *: 图片 | 已接入（离线验证） |
+| [kling-v2.5-turbo-pro/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184350.md)<br>`kling-v2.5-turbo-pro/image-to-video` | 视频 | prompt: 提示词，≤2000 字符；duration *: 5/10；firstImageUrl *: 图片；lastImageUrl: 图片 | 已接入（离线验证） |
+| [kling-video-o3-pro-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184351.md)<br>`kling-video-o3-pro/image-to-video` | 视频 | prompt *: 提示词，≤2500 字符；firstImageUrl *: 图片；lastImageUrl: 图片；duration *: 3–15 | 已接入（离线验证） |
+| [kling-v3.0-pro-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184352.md)<br>`kling-v3.0-pro/image-to-video` | 视频 | prompt *: 提示词，≤2500 字符；firstImageUrl *: 图片；lastImageUrl: 图片；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [kling-video-o3-std-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184353.md)<br>`kling-video-o3-std/image-to-video` | 视频 | prompt *: 提示词，≤2500 字符；firstImageUrl *: 图片；lastImageUrl: 图片；duration *: 3–15 | 已接入（离线验证） |
+| [kling-v3.0-std-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184354.md)<br>`kling-v3.0-std/image-to-video` | 视频 | prompt *: 提示词，≤2500 字符；firstImageUrl *: 图片；lastImageUrl: 图片；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [kling-v2.6-pro-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184355.md)<br>`kling-v2.6-pro/image-to-video` | 视频 | prompt *: 提示词，≤2000 字符；imageUrl *: 图片；duration *: 5/10 | 已接入（离线验证） |
+| [seedance-v1.5-pro-image-to-video-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-448184356.md)<br>`seedance-v1.5-pro/image-to-video-fast` | 视频 | prompt *: 提示词，≤5000 字符；firstImageUrl *: 图片；lastImageUrl: 图片；aspectRatio *: 16:9/9:16/1:1/4:3/3:4/21:9/adaptive；duration *: 4/5/6/7/8/9/10/11/12；resolution *: 720p/1080p | 已接入（离线验证） |
+| [seedance-v1.5-pro-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184357.md)<br>`seedance-v1.5-pro/image-to-video` | 视频 | prompt *: 提示词，≤5000 字符；firstImageUrl *: 图片；lastImageUrl: 图片；aspectRatio *: 16:9/9:16/1:1/4:3/3:4/21:9/adaptive；duration *: 4/5/6/7/8/9/10/11/12；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [seedance-2.0-global/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184358.md)<br>`bytedance/seedance-2.0-global/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/native4k/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-global-fast/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184359.md)<br>`bytedance/seedance-2.0-global-fast/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [hailuo-02-standard](https://www.runninghub.ai/runninghub-api-doc-en/api-448184360.md)<br>`minimax/hailuo-02/standard` | 视频 | prompt *: 提示词，≤2000 字符；firstImageUrl: 图片；lastImageUrl: 图片；duration *: 6/10 | 已接入（离线验证） |
+| [hailuo-02-i2v-standard](https://www.runninghub.ai/runninghub-api-doc-en/api-448184361.md)<br>`minimax/hailuo-02/i2v-standard` | 视频 | prompt: 提示词，≤2000 字符；firstImageUrl *: 图片；lastImageUrl: 图片；duration *: 6/10 | 已接入（离线验证） |
+| [hailuo-2.3/i2v-standard](https://www.runninghub.ai/runninghub-api-doc-en/api-448184362.md)<br>`minimax/hailuo-2.3/i2v-standard` | 视频 | prompt: 提示词，≤2000 字符；imageUrl *: 图片；duration *: 6/10 | 已接入（离线验证） |
+| [hailuo-2.3-fast/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184363.md)<br>`minimax/hailuo-2.3-fast/image-to-video` | 视频 | prompt *: 提示词，≤2000 字符；imageUrl *: 图片；duration *: 6/10 | 已接入（离线验证） |
+| [hailuo-2.3-fast-pro/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184364.md)<br>`minimax/hailuo-2.3-fast-pro/image-to-video` | 视频 | prompt *: 提示词，≤2000 字符；imageUrl *: 图片；duration *: 6 | 已接入（离线验证） |
+| [hailuo-2.3/i2v-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184365.md)<br>`minimax/hailuo-2.3/image-to-video-pro` | 视频 | prompt: 提示词，≤2000 字符；imageUrl *: 图片 | 已接入（离线验证） |
+| [hailuo-02-i2v-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184366.md)<br>`minimax/hailuo-02/i2v-pro` | 视频 | prompt: 提示词，≤2000 字符；firstImageUrl *: 图片；lastImageUrl: 图片 | 已接入（离线验证） |
+| [hailuo-02-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-448184367.md)<br>`minimax/hailuo-02/fast` | 视频 | prompt: 提示词，≤2000 字符；imageUrl *: 图片；duration *: 6/10 | 已接入（离线验证） |
+| [midjourney-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184368.md)<br>`youchuan/image-to-video` | 视频 | prompt *: 提示词，≤8192 字符；firstImageUrl *: 图片；lastImageUrl: 图片；resolution *: 480p/720p | 已接入（离线验证） |
+| [google/veo3.1-pro/image-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184369.md)<br>`rhart-video-v3.1-pro-official/image-to-video` | 视频 | prompt *: 提示词，≤8000 字符；imageUrl *: 图片；lastImageUrl: 图片；aspectRatio: 16:9/9:16；resolution *: 720p/1080p/4k；duration *: 4/6/8 | 已接入（离线验证） |
+| [google/veo3.1-pro/reference-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184370.md)<br>`rhart-video-v3.1-pro-official/reference-to-video` | 视频 | prompt *: 提示词，≤8000 字符；imageUrls *: 图片，字符串数组≤3；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-fast/image-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184371.md)<br>`rhart-video-v3.1-fast-official/image-to-video` | 视频 | prompt *: 提示词，≤8000 字符；imageUrl *: 图片；lastImageUrl: 图片；aspectRatio: 16:9/9:16；resolution *: 720p/1080p/4k；duration *: 4/6/8 | 已接入（离线验证） |
+| [google/veo3.1-pro/start-end-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184372.md)<br>`rhart-video-v3.1-pro/start-end-to-video` | 视频 | prompt *: 提示词，≤8000 字符；firstFrameUrl *: 图片；lastFrameUrl: 图片；aspectRatio *: 16:9/9:16；duration: 8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-fast/start-end-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184373.md)<br>`rhart-video-v3.1-fast/start-end-to-video` | 视频 | prompt *: 提示词，≤8000 字符；firstFrameUrl *: 图片；lastFrameUrl: 图片；aspectRatio *: 16:9/9:16；duration: 8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-fast/image-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184374.md)<br>`rhart-video-v3.1-fast/image-to-video` | 视频 | prompt *: 提示词，≤8000 字符；aspectRatio *: 16:9/9:16；imageUrls *: 图片，字符串数组≤3；duration: 8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-lite/image-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184375.md)<br>`rhart-video-v3.1-lite-official/image-to-video` | 视频 | prompt *: 提示词，≤20000 字符；imageUrl *: 图片；aspectRatio: 16:9/9:16；duration *: 4/6/8；resolution *: 720p/1080p | 已接入（离线验证） |
+| [sora-2/image-to-video-realistic-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184376.md)<br>`rhart-video-s-official/image-to-video-realistic` | 视频 | prompt *: 提示词；duration *: 4/8/12；imageUrl *: 图片 | 已接入（离线验证） |
+| [sora-2/text-to-video-pro-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184377.md)<br>`rhart-video-s-official/text-to-video-pro` | 视频 | prompt *: 提示词；size *: 720x1280/1280x720/1024x1792/1792x1024/1080x1920/1920x1080；duration *: 4/8/12/16/20 | 已接入（离线验证） |
+| [sora-2/image-to-video-pro-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184378.md)<br>`rhart-video-s-official/image-to-video-pro` | 视频 | prompt *: 提示词；resolution *: 720p/1080p；duration *: 4/8/12/16/20；imageUrl *: 图片 | 已接入（离线验证） |
+| [sora-2/image-to-video-pro-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184379.md)<br>`rhart-video-s/image-to-video-pro-deprecated` | 视频 | 见官方专项合同 | 端点标记 deprecated，迁移同系列未弃用渠道 |
+| [sora-2/image-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184380.md)<br>`rhart-video-s-official/image-to-video` | 视频 | prompt *: 提示词；duration *: 4/8/12；imageUrl *: 图片 | 已接入（离线验证） |
+| [sora-2/image-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184381.md)<br>`rhart-video-s/image-to-video` | 视频 | imageUrl *: 图片；duration *: 10/15；aspectRatio *: 9:16/16:9；prompt *: 提示词，≤4000 字符 | 已接入（离线验证） |
+| [wan-2.2-video/start-to-end](https://www.runninghub.ai/runninghub-api-doc-en/api-448184382.md)<br>`rhart-video/wan-2.2/start-to-end` | 视频 | 219##image *: 图片；222##image *: 图片；183##text *: 提示词 | 已接入（离线验证） |
+| [wan-2.6-reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184383.md)<br>`alibaba/wan-2.6/reference-to-video` | 视频 | prompt *: 提示词；videoUrls: 视频，字符串数组≤3；imageUrls: 图片，字符串数组≤5；size *: 1280*720/720*1280/960*960/1088*832/832*1088/1920*1080/1080*1920/1440*1440/1632*1248/1248*1632；duration *: 2/3/4/5/6/7/8/9/10 | 已接入（离线验证） |
+| [wan-2.6-reference-to-video-flash](https://www.runninghub.ai/runninghub-api-doc-en/api-448184384.md)<br>`alibaba/wan-2.6/reference-to-video-flash` | 视频 | prompt *: 提示词；videoUrls: 视频，字符串数组≤3；imageUrls: 图片，字符串数组≤5；size *: 1280*720/720*1280/960*960/1088*832/832*1088/1920*1080/1080*1920/1440*1440/1632*1248/1248*1632；duration *: 2/3/4/5/6/7/8/9/10 | 已接入（离线验证） |
+| [wan-2.6-image-to-video-flash](https://www.runninghub.ai/runninghub-api-doc-en/api-448184385.md)<br>`alibaba/wan-2.6/image-to-video-flash` | 视频 | prompt *: 提示词；imageUrl *: 图片；audioUrl: 音频；resolution *: 720p/1080p；duration *: 2/3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [wan-2.2/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184386.md)<br>`rhart-video/wan-2.2/image-to-video` | 视频 | 219##image *: 图片；183##text *: 提示词，≤20000 字符 | 已接入（离线验证） |
+| [wan-2.7/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184387.md)<br>`alibaba/wan-2.7/image-to-video` | 视频 | prompt: 提示词，≤5000 字符；firstImageUrl *: 图片；lastImageUrl: 图片；audioUrl: 音频；resolution *: 720P/1080P；duration *: 2/3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [wan-2.5-preview/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184388.md)<br>`alibaba/wan-2.5-preview/image-to-video` | 视频 | prompt: 提示词，≤1500 字符；imageUrl *: 图片；audioUrl: 音频；duration *: 5/10；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [ltx-2.3/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184389.md)<br>`rhart-video/ltx-2.3/image-to-video` | 视频 | 98##image *: 图片；200##prompt *: 提示词 | 已接入（离线验证） |
+| [ltx-2.3/image-to-video-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184390.md)<br>`rhart-video/ltx-2.3/image-to-video-lora` | 视频 | 98##image *: 图片；269##prompt *: 提示词 | 已接入（离线验证） |
+| [xai/grok-imagine/image-to-video-channel-low-price-v1.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448184391.md)<br>`rhart-video-g/image-to-video` | 视频 | prompt *: 提示词，≤20000 字符；aspectRatio *: 2:3/3:2/1:1/16:9/9:16；imageUrls: 图片，字符串数组≤7；resolution *: 720p/480p；duration *: 6–30 | 已接入（离线验证） |
+| [xai/grok-imagine/image-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184392.md)<br>`rhart-video-g-official/image-to-video` | 视频 | prompt *: 提示词，≤800 字符；imageUrl *: 图片；resolution *: 720p/480p；duration *: 6/10 | 已接入（离线验证） |
+| [alibaba/wan-2.6/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184393.md)<br>`alibaba/wan-2.6/image-to-video` | 视频 | imageUrl *: 图片；prompt: 提示词；resolution *: 720p/1080p；duration *: 5/10/15 | 已接入（离线验证） |
+| [pixverse-v6/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184394.md)<br>`pixverse-v6/image-to-video` | 视频 | imageUrl *: 图片；prompt *: 提示词，≤2048 字符；resolution *: 360p/540p/720p/1080p；duration *: 1–15 | 已接入（离线验证） |
+| [Vidu-reference-to-video-q2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184395.md)<br>`vidu/reference-to-video-q2` | 视频 | prompt *: 提示词，≤4000 字符；imageUrls *: 图片，字符串数组≤7；aspectRatio *: 16:9/9:16/4:3/3:4/1:1；resolution *: 540p/720p/1080p；duration *: 1/2/3/4/5/6/7/8/9/10 | 已接入（离线验证） |
+| [kling-video-o1-std/refrence-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184396.md)<br>`kling-video-o1-std/refrence-to-video` | 视频 | prompt *: 提示词，≤2000 字符；aspectRatio *: 1:1/9:16/16:9；duration *: 5/10；imageUrls: 图片，字符串数组≤7；videoUrl: 视频 | 已接入（离线验证） |
+| [seedance-v1-lite-reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184397.md)<br>`seedance-v1-lite/reference-to-video` | 视频 | prompt *: 提示词，≤5000 字符；imageUrls *: 图片，字符串数组≤4；duration *: 2/3/4/5/6/7/8/9/10/11/12；resolution *: 720p/480p；aspectRatio *: 16:9/9:16/4:3/3:4/21:9/1:1 | 已接入（离线验证） |
+| [Vidu-reference-to-video-q3-mix](https://www.runninghub.ai/runninghub-api-doc-en/api-448184398.md)<br>`vidu/reference-to-video-q3-mix` | 视频 | prompt *: 提示词，≤5000 字符；imageUrls *: 图片，字符串数组≤7；duration *: 1–16；resolution *: 720p/1080p；aspectRatio: 16:9/9:16/4:3/3:4/1:1/auto | 已接入（离线验证） |
+| [Vidu-reference-to-video-q3](https://www.runninghub.ai/runninghub-api-doc-en/api-448184399.md)<br>`vidu/reference-to-video-q3` | 视频 | prompt *: 提示词，≤5000 字符；imageUrls *: 图片，字符串数组≤7；duration *: 3–16；resolution *: 540p/720p/1080p；aspectRatio: 16:9/9:16/4:3/3:4/1:1/auto | 已接入（离线验证） |
+| [wan-2.7-reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184400.md)<br>`alibaba/wan-2.7/reference-to-video` | 视频 | prompt *: 提示词，≤5000 字符；videoUrls: 视频，字符串数组≤5；imageUrls: 图片，字符串数组≤5；audioUrl: 音频；resolution *: 720P/1080P；duration *: 2/3/4/5/6/7/8/9/10；aspectRatio *: 16:9/9:16/1:1/4:3/3:4 | 已接入（离线验证） |
+| [kling-video-o3-pro/reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184401.md)<br>`kling-video-o3-pro/reference-to-video` | 视频 | prompt *: 提示词，≤2500 字符；videoUrl: 视频；imageUrls: 图片，字符串数组≤7；aspectRatio: 16:9/9:16/1:1；duration *: 3–15 | 已接入（离线验证） |
+| [kling-video-o3-std/reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184402.md)<br>`kling-video-o3-std/reference-to-video` | 视频 | prompt *: 提示词，≤2500 字符；videoUrl: 视频；imageUrls: 图片，字符串数组≤7；aspectRatio: 16:9/9:16/1:1；duration *: 3–15 | 已接入（离线验证） |
+| [xai/grok-imagine-video/reference-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184403.md)<br>`rhart-video-g-official/reference-to-video` | 视频 | imageUrls *: 图片，字符串数组≤7；prompt *: 提示词，≤2048 字符；duration *: 6/10；resolution *: 720p/480p | 已接入（离线验证） |
+| [seedance-2.0-global/multimodal-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184404.md)<br>`bytedance/seedance-2.0-global/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/native4k/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-global-fast/multimodal-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184405.md)<br>`bytedance/seedance-2.0-global-fast/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [Vidu-text-to-video-q2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184406.md)<br>`vidu/text-to-video` | 视频 | prompt *: 提示词，≤4000 字符；aspectRatio *: 4:3/3:4/16:9/9:16/1:1；resolution *: 540p/720p/1080p；duration *: 1/2/3/4/5/6/7/8/9/10 | 已接入（离线验证） |
+| [Vidu-text-to-video-q3-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184407.md)<br>`vidu/text-to-video-q3-pro` | 视频 | prompt *: 提示词，≤4000 字符；aspectRatio *: 4:3/3:4/16:9/9:16/1:1；resolution *: 360p/540p/720p/1080p；duration *: 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16 | 已接入（离线验证） |
+| [Vidu-text-to-video-q3-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184408.md)<br>`vidu/text-to-video-q3-turbo` | 视频 | prompt *: 提示词，≤4000 字符；aspectRatio *: 4:3/3:4/16:9/9:16/1:1；resolution *: 540p/720p/1080p；duration *: 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16 | 已接入（离线验证） |
+| [kling-video-o1/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184409.md)<br>`kling-video-o1/text-to-video` | 视频 | prompt: 提示词，≤2000 字符；aspectRatio *: 1:1/9:16/16:9；duration *: 5/10 | 已接入（离线验证） |
+| [kling-v2.5-turbo-pro/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184410.md)<br>`kling-v2.5-turbo-pro/text-to-video` | 视频 | prompt *: 提示词，≤2000 字符；duration *: 5/10；aspectRatio *: 1:1/16:9/9:16 | 已接入（离线验证） |
+| [kling-v2.6-pro-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184411.md)<br>`kling-v2.6-pro/text-to-video` | 视频 | prompt *: 提示词，≤2000 字符；aspectRatio *: 1:1/16:9/9:16；duration *: 5/10 | 已接入（离线验证） |
+| [kling-video-o3-std-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184412.md)<br>`kling-video-o3-std/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；aspectRatio: 1:1/16:9/9:16；duration *: 3–15 | 已接入（离线验证） |
+| [kling-video-o3-pro-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184413.md)<br>`kling-video-o3-pro/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；aspectRatio: 1:1/16:9/9:16；duration *: 3–15 | 已接入（离线验证） |
+| [kling-v3.0-pro-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184414.md)<br>`kling-v3.0-pro/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 1:1/16:9/9:16 | 已接入（离线验证） |
+| [kling-v3.0-std-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184415.md)<br>`kling-v3.0-std/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 1:1/16:9/9:16 | 已接入（离线验证） |
+| [seedance-v1.5-pro-text-to-video-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-448184416.md)<br>`seedance-v1.5-pro/text-to-video-fast` | 视频 | prompt *: 提示词，≤5000 字符；aspectRatio *: 16:9/9:16/4:3/3:4/1:1/21:9；duration *: 4/5/6/7/8/9/10/11/12；resolution *: 720p/1080p | 已接入（离线验证） |
+| [seedance-v1.5-pro-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184417.md)<br>`seedance-v1.5-pro/text-to-video` | 视频 | prompt *: 提示词，≤5000 字符；aspectRatio *: 16:9/9:16/4:3/3:4/1:1/21:9；duration *: 4/5/6/7/8/9/10/11/12；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [seedance-2.0-global/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184418.md)<br>`bytedance/seedance-2.0-global/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/native4k/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-global-fast/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184419.md)<br>`bytedance/seedance-2.0-global-fast/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [hailuo-02-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184420.md)<br>`minimax/hailuo-02/pro` | 视频 | prompt *: 提示词，≤2000 字符；firstImageUrl: 图片；lastImageUrl: 图片；duration *: 6 | 已接入（离线验证） |
+| [hailuo-02-t2v-standard](https://www.runninghub.ai/runninghub-api-doc-en/api-448184421.md)<br>`minimax/hailuo-02/t2v-standard` | 视频 | prompt *: 提示词，≤2000 字符；duration *: 6/10 | 已接入（离线验证） |
+| [hailuo-2.3-t2v-standard](https://www.runninghub.ai/runninghub-api-doc-en/api-448184422.md)<br>`minimax/hailuo-2.3/t2v-standard` | 视频 | prompt *: 提示词，≤2000 字符；duration *: 6/10 | 已接入（离线验证） |
+| [hailuo-2.3-t2v-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184423.md)<br>`minimax/hailuo-2.3/t2v-pro` | 视频 | prompt *: 提示词，≤2000 字符 | 已接入（离线验证） |
+| [hailuo-02-t2v-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184424.md)<br>`minimax/hailuo-02/t2v-pro` | 视频 | prompt *: 提示词，≤2000 字符 | 已接入（离线验证） |
+| [google/veo3.1-pro/text-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184425.md)<br>`rhart-video-v3.1-pro/text-to-video` | 视频 | prompt *: 提示词，≤8000 字符；aspectRatio *: 16:9/9:16；duration: 8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-pro/text-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184426.md)<br>`rhart-video-v3.1-pro-official/text-to-video` | 视频 | prompt *: 提示词，≤8000 字符；aspectRatio: 16:9/9:16；duration *: 4/6/8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-fast/video-extend-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184427.md)<br>`rhart-video-v3.1-fast-official/video-extend` | 视频 | video *: 视频；prompt: 提示词，≤8000 字符；resolution *: 720p/1080p | 已接入（离线验证） |
+| [google/veo3.1-pro/video-extend-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184428.md)<br>`rhart-video-v3.1-pro-official/video-extend` | 视频 | video *: 视频；prompt: 提示词，≤8000 字符；resolution *: 720p/1080p | 已接入（离线验证） |
+| [google/veo3.1-fast/text-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184429.md)<br>`rhart-video-v3.1-fast/text-to-video` | 视频 | prompt *: 提示词，≤8000 字符；aspectRatio *: 16:9/9:16；duration: 8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-fast/text-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184430.md)<br>`rhart-video-v3.1-fast-official/text-to-video` | 视频 | prompt *: 提示词，≤8000 字符；aspectRatio: 16:9/9:16；duration *: 4/6/8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [google/veo3.1-lite/start-end-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184431.md)<br>`rhart-video-v3.1-lite-official/start-end-to-video` | 视频 | prompt *: 提示词，≤20000 字符；firstImageUrl *: 图片；lastImageUrl *: 图片；aspectRatio: 16:9/9:16；resolution *: 720p/1080p | 已接入（离线验证） |
+| [google/veo3.1-lite/text-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184432.md)<br>`rhart-video-v3.1-lite-official/text-to-video` | 视频 | prompt *: 提示词，≤20000 字符；aspectRatio: 16:9/9:16；resolution *: 720p/1080p；duration *: 4/6/8 | 已接入（离线验证） |
+| [xai/grok-imagine/text-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184433.md)<br>`rhart-video-g-official/text-to-video` | 视频 | prompt *: 提示词，≤800 字符；aspectRatio *: 16:9/9:16/1:1；resolution *: 720p/480p；duration *: 6/10 | 已接入（离线验证） |
+| [xai/grok-imagine/text-to-video-channel-low-price-v1.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448184434.md)<br>`rhart-video-g/text-to-video` | 视频 | prompt *: 提示词，≤20000 字符；aspectRatio *: 2:3/3:2/1:1/16:9/9:16；resolution *: 720p/480p；duration *: 6–30 | 已接入（离线验证） |
+| [wan-2.2/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184435.md)<br>`rhart-video/wan-2.2/text-to-video` | 视频 | 14##positive_prompt *: 提示词，≤20000 字符 | 已接入（离线验证） |
+| [wan-2.7/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184436.md)<br>`alibaba/wan-2.7/text-to-video` | 视频 | prompt *: 提示词，≤5000 字符；audioUrl: 音频；duration *: 2/3/4/5/6/7/8/9/10/11/12/13/14/15；resolution *: 720P/1080P；aspectRatio *: 16:9/9:16/1:1/4:3/3:4 | 已接入（离线验证） |
+| [wan-2.5-preview/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184437.md)<br>`alibaba/wan-2.5-preview/text-to-video` | 视频 | prompt *: 提示词，≤1500 字符；audioUrl: 音频；duration *: 5/10；size *: 832*480/480*832/624*624/1280*720/720*1280/960*960/1088*832/832*1088/1920*1080/1080*1920/1440*1440/1632*1248/1248*1632 | 已接入（离线验证） |
+| [ltx-2.3/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184438.md)<br>`rhart-video/ltx-2.3/text-to-video` | 视频 | 188##prompt *: 提示词 | 已接入（离线验证） |
+| [ltx-2.3/text-to-video-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184439.md)<br>`rhart-video/ltx-2.3/text-to-video-lora` | 视频 | 188##prompt *: 提示词 | 已接入（离线验证） |
+| [alibaba/wan-2.6/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184440.md)<br>`alibaba/wan-2.6/text-to-video` | 视频 | prompt *: 提示词，≤5000 字符；duration *: 5/10/15；resolution *: 1280*720/720*1280/1920*1080/1080*1920 | 已接入（离线验证） |
+| [sora-2/text-to-video-pro-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184441.md)<br>`rhart-video-s/text-to-video-pro-deprecated` | 视频 | 见官方专项合同 | 端点标记 deprecated，迁移同系列未弃用渠道 |
+| [sora-2/text-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184442.md)<br>`rhart-video-s-official/text-to-video` | 视频 | prompt *: 提示词；size *: 720x1280/1280x720；duration *: 4/8/12 | 已接入（离线验证） |
+| [sora-2/text-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184443.md)<br>`rhart-video-s/text-to-video` | 视频 | duration *: 10/15；prompt *: 提示词，≤4000 字符；aspectRatio *: 9:16/16:9 | 已接入（离线验证） |
+| [pixverse-v6/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184444.md)<br>`pixverse-v6/text-to-video` | 视频 | prompt *: 提示词，≤2048 字符；resolution *: 360p/540p/720p/1080p；duration *: 1–15；aspectRatio: 16:9/4:3/1:1/3:4/9:16/2:3/3:2/21:9 | 已接入（离线验证） |
+| [kling-video-o1-std/edit-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184445.md)<br>`kling-video-o1-std/edit-video` | 视频 | prompt *: 提示词，≤2000 字符；imageUrls: 图片，字符串数组≤7；videoUrl *: 视频 | 已接入（离线验证） |
+| [xai/grok-imagine/edit-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184446.md)<br>`rhart-video-g-official/edit-video` | 视频 | prompt *: 提示词，≤800 字符；videoUrl *: 视频；resolution *: 720p/480p | 已接入（离线验证） |
+| [wan-2.7/video-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184447.md)<br>`alibaba/wan-2.7/video-edit` | 视频 | prompt *: 提示词，≤5000 字符；videoUrl: 视频；imageUrls *: 图片，字符串数组≤3；resolution *: 720P/1080P；duration *: 0/2/3/4/5/6/7/8/9/10；aspectRatio *: 16:9/9:16/1:1/4:3/3:4 | 已接入（离线验证） |
+| [kling-video-o3-pro/video-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184448.md)<br>`kling-video-o3-pro/video-edit` | 视频 | prompt *: 提示词，≤2500 字符；videoUrl *: 视频；imageUrls: 图片，字符串数组≤4 | 已接入（离线验证） |
+| [kling-video-o3-std/video-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184449.md)<br>`kling-video-o3-std/video-edit` | 视频 | prompt *: 提示词，≤2500 字符；videoUrl *: 视频；imageUrls: 图片，字符串数组≤4 | 已接入（离线验证） |
+| [sora-upload-character-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184450.md)<br>`rhart-video-s/sora-upload-character` | 视频 | 见官方专项合同 | 返回资源身份，需专用资源管理入口 |
+| [pixverse-v6/extend](https://www.runninghub.ai/runninghub-api-doc-en/api-448184451.md)<br>`pixverse-v6/extend` | 视频 | prompt *: 提示词，≤2048 字符；videoUrl *: 视频；resolution *: 360p/540p/720p/1080p；duration *: 1–15 | 已接入（离线验证） |
+| [pixverse-v6/transition](https://www.runninghub.ai/runninghub-api-doc-en/api-448184452.md)<br>`pixverse-v6/transition` | 视频 | prompt *: 提示词，≤2048 字符；firstImageUrl *: 图片；endImageUrl *: 图片；resolution *: 360p/540p/720p/1080p；duration *: 1–15；aspectRatio: 16:9/4:3/1:1/3:4/9:16/2:3/3:2/21:9 | 已接入（离线验证） |
+| [rh-video-fps-increaser](https://www.runninghub.ai/runninghub-api-doc-en/api-448184453.md)<br>`rhart-video/video-fps-increaser` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [rh-video-upscaler](https://www.runninghub.ai/runninghub-api-doc-en/api-448184454.md)<br>`rhart-video/video-upscaler` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [bytedance/dreamactor-v2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184455.md)<br>`bytedance/dreamactor-v2` | 视频 | imageUrl *: 图片；videoUrl *: 视频 | 已接入（离线验证） |
+| [kling-v3.0-pro-motion-control](https://www.runninghub.ai/runninghub-api-doc-en/api-448184456.md)<br>`kling-v3.0-pro/motion-control` | 视频 | imageUrl *: 图片；videoUrl *: 视频；prompt: 提示词，≤2500 字符 | 已接入（离线验证） |
+| [kling-v3.0-std-motion-control](https://www.runninghub.ai/runninghub-api-doc-en/api-448184457.md)<br>`kling-v3.0-std/motion-control` | 视频 | imageUrl *: 图片；videoUrl *: 视频；prompt: 提示词，≤2500 字符 | 已接入（离线验证） |
+| [kling-v2.6-pro-motion-control](https://www.runninghub.ai/runninghub-api-doc-en/api-448184458.md)<br>`kling-v2.6-pro/motion-control` | 视频 | imageUrl *: 图片；videoUrl *: 视频；prompt: 提示词，≤2500 字符 | 已接入（离线验证） |
+| [kling-v2.6-std-motion-control](https://www.runninghub.ai/runninghub-api-doc-en/api-448184459.md)<br>`kling-v2.6-std/motion-control` | 视频 | imageUrl *: 图片；videoUrl *: 视频；prompt: 提示词，≤2500 字符 | 已接入（离线验证） |
+| [kling-lip-sync/lip-sync-video](https://www.runninghub.ai/runninghub-api-doc-en/api-448184460.md)<br>`kling-lip-sync/lip-sync-video` | 视频 | sessionId *: 按表单填写；faceId *: 按表单填写；audioUrl: 音频；soundStartTime *: 0–不限；soundEndTime *: 按表单填写；soundInsertTime *: 0–不限 | 已接入（离线验证） |
+| [kling-lip-sync/identify-face](https://www.runninghub.ai/runninghub-api-doc-en/api-448184461.md)<br>`kling-lip-sync/identify-face` | 视频 | videoUrl: 视频 | 已接入（离线验证） |
+| [wan-2.7/video-extend](https://www.runninghub.ai/runninghub-api-doc-en/api-448184462.md)<br>`alibaba/wan-2.7/video-extend` | 视频 | prompt: 提示词，≤5000 字符；videoUrl *: 视频；audioUrl: 音频；resolution *: 720P/1080P；duration *: 2/3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [xai/grok-imagine-video/video-extend-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184463.md)<br>`rhart-video-g-official/video-extend` | 视频 | videoUrl *: 视频；prompt *: 提示词，≤2048 字符；duration *: 6/10 | 已接入（离线验证） |
+| [hunyuan3d-v3.1/text-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184464.md)<br>`hunyuan3d-v3.1/text-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hunyuan3d-v3.1/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184465.md)<br>`hunyuan3d-v3.1/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-v2/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184466.md)<br>`hitem3d-v2/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-v15/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184467.md)<br>`hitem3d-v15/multi-image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-v2/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184468.md)<br>`hitem3d-v2/multi-image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-portrait-v21/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184469.md)<br>`hitem3d-portrait-v21/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-portrait-v21/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184470.md)<br>`hitem3d-portrait-v21/multi-image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-portrait-v20/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184471.md)<br>`hitem3d-portrait-v20/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-portrait-v20/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184472.md)<br>`hitem3d-portrait-v20/multi-image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-portrait-v15/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184473.md)<br>`hitem3d-portrait-v15/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-portrait-v15/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184474.md)<br>`hitem3d-portrait-v15/multi-image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [hitem3d-v15/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-448184475.md)<br>`hitem3d-v15/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [seedream-v5-lite/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184476.md)<br>`seedream-v5-lite/image-to-image` | 图像 | prompt *: 提示词，≤2000 字符；width: 1600–4704；height: 1344–4096；imageUrls *: 图片，字符串数组≤10；resolution: 2k/3k | 已接入（离线验证） |
+| [seedream-v4/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184477.md)<br>`seedream-v4/image-to-image` | 图像 | prompt *: 提示词，≤2000 字符；width: 512–8192；height: 512–8192；imageUrls *: 图片，字符串数组≤10；resolution: 1k/2k/4k | 已接入（离线验证） |
+| [seedream-v4.5/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184478.md)<br>`seedream-v4.5/image-to-image` | 图像 | prompt *: 提示词，≤2000 字符；width: 512–8192；height: 512–8192；imageUrls *: 图片，字符串数组≤10；resolution: 2k/4k | 已接入（离线验证） |
+| [grok-image/image-to-image/channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184479.md)<br>`rhart-image-g/image-to-image` | 图像 | prompt *: 提示词；imageUrl: 图片 | 已接入（离线验证） |
+| [f-kontext-dev-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184480.md)<br>`rhart-video/f-kontext/dev-lora` | 图像 | 15##image *: 图片；4##text *: 提示词 | 已接入（离线验证） |
+| [f-2-dev/edit-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184481.md)<br>`rhart-image/f-2-dev/edit-lora` | 图像 | 51##image *: 图片；16##text *: 按表单填写 | 已接入（离线验证） |
+| [f-2-dev/edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184482.md)<br>`rhart-image/f-2-dev/edit` | 图像 | 20##image *: 图片；17##text *: 提示词 | 已接入（离线验证） |
+| [f-2-klein-9b/edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184483.md)<br>`rhart-image/f-2-klein-9b/edit` | 图像 | 53##image *: 图片；54##text *: 提示词 | 已接入（离线验证） |
+| [f-2-klein-4b/edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184484.md)<br>`rhart-image/f-2-klein-4b/edit` | 图像 | 19##image *: 图片；17##text *: 提示词；47##select *: 1/2/3/4/5/6/7 | 已接入（离线验证） |
+| [f-2-klein-4b/edit-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184485.md)<br>`rhart-image/f-2-klein-4b/edit-lora` | 图像 | 41##image *: 图片；37##select *: 7/6/5/4/3/2/1；16##text *: 提示词 | 已接入（离线验证） |
+| [qwen-image/edit-2511-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184486.md)<br>`rhart-image/qwen-image/edit-2511-lora` | 图像 | 44##image *: 图片；38##text *: 提示词；32##select *: 7/6/5/4/3/2/1 | 已接入（离线验证） |
+| [qwen-image/edit-2511](https://www.runninghub.ai/runninghub-api-doc-en/api-448184487.md)<br>`rhart-image/qwen-image/edit-2511` | 图像 | 57##image *: 图片；58##image: 图片；59##image: 图片；53##text *: 提示词；28##select *: 7/6/5/4/3/2/1 | 已接入（离线验证） |
+| [qwen-image-2.0/image-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184488.md)<br>`alibaba/qwen-image-2.0/image-edit` | 图像 | imageUrls *: 图片，字符串数组≤3；prompt *: 提示词，≤800 字符；size: 1024*1024/1536*1536/768*1152/1024*1536/1152*768/1536*1024/960*1280/1080*1440/1280*960/1440*1080/720*1280/1080*1920/1280*720/1920*1080/1344*576/2048*872；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [qwen-image-2.0-pro/image-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184489.md)<br>`alibaba/qwen-image-2.0-pro/image-edit` | 图像 | imageUrls *: 图片，字符串数组≤3；prompt: 提示词，≤800 字符；size: 1024*1024/1536*1536/768*1152/1024*1536/1152*768/1536*1024/960*1280/1080*1440/1280*960/1440*1080/720*1280/1080*1920/1280*720/1920*1080/1344*576/2048*872；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [z-image-turbo/image-to-image-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184490.md)<br>`rhart-image/z-image-turbo/image-to-image-lora` | 图像 | 44##image *: 图片；18##text *: 提示词；41##select *: 7/6/5/4/3/2/1 | 已接入（离线验证） |
+| [z-image-turbo/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184491.md)<br>`rhart-image/z-image-turbo/image-to-image` | 图像 | 66##image *: 图片；41##text *: 提示词；64##select *: 7/6/5/4/3/2/1 | 已接入（离线验证） |
+| [wan-2.2/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184492.md)<br>`rhart-video/wan-2.2/image-to-image` | 图像 | 272##image *: 图片；79##text *: 提示词 | 已接入（离线验证） |
+| [wan-2.5-preview/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184493.md)<br>`alibaba/wan-2.5-preview/image-to-image` | 图像 | prompt *: 提示词，≤2000 字符；imageUrls *: 图片，字符串数组≤3；size: 1280*1280/1024*1024/800*1200/1200*800/960*1280/1280*960/720*1280/1280*720/1344*576；n *: 1–4 | 已接入（离线验证） |
+| [midjourney-text-to-image-v6](https://www.runninghub.ai/runninghub-api-doc-en/api-448184494.md)<br>`youchuan/text-to-image-v6` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；cref: 手动图片 URL；sref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [nano-banana/edit-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184495.md)<br>`rhart-image-v1-official/edit` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio *: auto/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9；imageUrls *: 图片，字符串数组≤5 | 已接入（离线验证） |
+| [nano-banana-pro/edit-ultra-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184496.md)<br>`rhart-image-n-pro-official/edit-ultra` | 图像 | imageUrls *: 图片，字符串数组≤10；prompt *: 提示词，≤20000 字符；resolution *: 4k/8k；aspectRatio: 1:1/3:2/2:3/3:4/4:3/4:5/5:4/9:16/16:9/21:9 | 已接入（离线验证） |
+| [nano-banana-pro/edit-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184497.md)<br>`rhart-image-n-pro-official/edit` | 图像 | imageUrls *: 图片，字符串数组≤10；prompt *: 提示词，≤20000 字符；resolution *: 1k/2k/4k；aspectRatio: 1:1/3:2/2:3/3:4/4:3/4:5/5:4/9:16/16:9/21:9 | 已接入（离线验证） |
+| [nano-banana/edit-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184498.md)<br>`rhart-image-v1/edit` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio *: auto/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9；imageUrls *: 图片，字符串数组≤5 | 已接入（离线验证） |
+| [nano-banana-pro/edit-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184499.md)<br>`rhart-image-n-pro/edit` | 图像 | imageUrls *: 图片，字符串数组≤10；prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [nano-banana2-gemini31flash/image-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184500.md)<br>`rhart-image-n-g31-flash/image-to-image` | 图像 | imageUrls *: 图片，字符串数组≤10；prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/1:4/4:1/1:8/8:1；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [nano-banana2-gemini31flash/image-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184501.md)<br>`rhart-image-n-g31-flash-official/image-to-image` | 图像 | imageUrls *: 图片，字符串数组≤14；prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/1:4/4:1/1:8/8:1；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [gpt-image-1.5/edit-channel-low-price-[Deprecated] Please use gpt-image-2 instead](https://www.runninghub.ai/runninghub-api-doc-en/api-448184502.md)<br>`rhart-image-g-1.5/edit-[Deprecated]` | 图像 | 见官方专项合同 | 官方标记弃用，使用 GPT Image 2 |
+| [gpt-image-1.5/image-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184503.md)<br>`rhart-image-g-1.5-official/image-to-image` | 图像 | prompt *: 提示词；imageUrls *: 图片，字符串数组≤10；size *: 1024*1024/1024*1536/1536*1024 | 已接入（离线验证） |
+| [gpt-image-2.0/edit-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md)<br>`rhart-image-g-2/image-to-image` | 图像 | prompt *: 提示词，≤20000 字符；imageUrls *: 图片，字符串数组≤10；aspectRatio: 1:1/2:3/3:2/4:5/5:4/4:3/3:4/16:9/9:16/21:9/9:21/2:1/1:2/3:1/1:3；resolution: 1k/2k/4k | 已接入（离线验证） |
+| [seedream-v4/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184505.md)<br>`seedream-v4/text-to-image` | 图像 | prompt *: 提示词，≤2000 字符；width: 512–8192；height: 512–8192；resolution: 1k/2k/4k | 已接入（离线验证） |
+| [seedream-v4.5/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184506.md)<br>`seedream-v4.5/text-to-image` | 图像 | prompt *: 提示词，≤2000 字符；width: 512–8192；height: 512–8192；resolution: 2k/4k | 已接入（离线验证） |
+| [seedream-v5-lite/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184507.md)<br>`seedream-v5-lite/text-to-image` | 图像 | prompt *: 提示词，≤2000 字符；width: 1600–4704；height: 1344–4096；resolution: 2k/3k | 已接入（离线验证） |
+| [grok-image/text-to-image/channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184508.md)<br>`rhart-image-g/text-to-image` | 图像 | prompt *: 提示词；aspectRatio: 960x960/720x1280/1280x720/1168x784/784x1168 | 已接入（离线验证） |
+| [qwen-image/text-to-image-2512-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184509.md)<br>`rhart-image/qwen-image/text-to-image-2512-lora` | 图像 | 24##select *: 7/6/5/4/3/2/1；6##text *: 提示词 | 已接入（离线验证） |
+| [qwen-image/text-to-image-2512](https://www.runninghub.ai/runninghub-api-doc-en/api-448184510.md)<br>`rhart-image/qwen-image/text-to-image-2512` | 图像 | 3##text *: 提示词 | 已接入（离线验证） |
+| [qwen-image-2.0/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184511.md)<br>`alibaba/qwen-image-2.0/text-to-image` | 图像 | prompt *: 提示词，≤800 字符；size: 1024*1024/1536*1536/768*1152/1024*1536/1152*768/1536*1024/960*1280/1080*1440/1280*960/1440*1080/720*1280/1080*1920/1280*720/1920*1080/1344*576/2048*872；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [qwen-image-2.0-pro/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184512.md)<br>`alibaba/qwen-image-2.0-pro/text-to-image` | 图像 | prompt *: 提示词，≤800 字符；size: 1024*1024/1536*1536/768*1152/1024*1536/1152*768/1536*1024/960*1280/1080*1440/1280*960/1440*1080/720*1280/1080*1920/1280*720/1920*1080/1344*576/2048*872；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [z-image/turbo-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184513.md)<br>`rhart-image/z-image/turbo-lora` | 图像 | 6##text *: 提示词；30##select *: 1/2/3/4/5/6/7 | 已接入（离线验证） |
+| [z-image/turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184514.md)<br>`rhart-image/z-image/turbo` | 图像 | 10##text *: 提示词；28##select *: 1/2/3/4/5/6/7 | 已接入（离线验证） |
+| [f-krea-dev-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184515.md)<br>`rhart-image/f-krea-dev-lora` | 图像 | 133##select *: 1/2/3/4/5/6/7；45##text *: 提示词 | 已接入（离线验证） |
+| [f-dev-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184516.md)<br>`rhart-image/f-dev-lora` | 图像 | 104##select *: 1/2/3/4/5/6/7；105##text *: 提示词 | 已接入（离线验证） |
+| [f-2-dev/text-to-image-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184517.md)<br>`rhart-image/f-2-dev/text-to-image-lora` | 图像 | 12##text *: 提示词 | 已接入（离线验证） |
+| [f-2-dev/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184518.md)<br>`rhart-image/f-2-dev/text-to-image` | 图像 | 12##text *: 提示词 | 已接入（离线验证） |
+| [f-2-klein-9b/text-to-image-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184519.md)<br>`rhart-image/f-2-klein-9b/text-to-image-lora` | 图像 | 37##text *: 提示词 | 已接入（离线验证） |
+| [f-2-klein-9b/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184520.md)<br>`rhart-image/f-2-klein-9b/text-to-image` | 图像 | 36##text *: 提示词 | 已接入（离线验证） |
+| [f-2-klein-4b/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184521.md)<br>`rhart-image/f-2-klein-4b/text-to-image` | 图像 | 9##text *: 提示词 | 已接入（离线验证） |
+| [f-2-klein-4b/text-to-image-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184522.md)<br>`rhart-image/f-2-klein-4b/text-to-image-lora` | 图像 | 9##text *: 提示词；33##select *: 7/6/5/4/3/2/1 | 已接入（离线验证） |
+| [f-dev](https://www.runninghub.ai/runninghub-api-doc-en/api-448184523.md)<br>`rhart-image/f-dev` | 图像 | 23##text *: 提示词 | 已接入（离线验证） |
+| [wan-2.2/text-to-image-lora](https://www.runninghub.ai/runninghub-api-doc-en/api-448184524.md)<br>`rhart-video/wan-2.2/text-to-image-lora` | 图像 | 79##text *: 提示词 | 已接入（离线验证） |
+| [wan-2.7/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184525.md)<br>`alibaba/wan-2.7/text-to-image` | 图像 | prompt *: 提示词，≤5000 字符；width: 512–4096；height: 512–4096 | 已接入（离线验证） |
+| [wan-2.5-preview/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-448184526.md)<br>`alibaba/wan-2.5-preview/text-to-image` | 图像 | prompt *: 提示词，≤2000 字符；size *: 1280*1280/1104*1472/1472*1104/960*1696/1696*960；n: 1–4 | 已接入（离线验证） |
+| [wan-2.7/text-to-image-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184527.md)<br>`alibaba/wan-2.7/text-to-image-pro` | 图像 | prompt *: 提示词，≤5000 字符；width: 512–8192；height: 512–8192 | 已接入（离线验证） |
+| [midjourney-text-to-image-niji7](https://www.runninghub.ai/runninghub-api-doc-en/api-448184528.md)<br>`youchuan/text-to-image-niji7` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；sref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [midjourney-text-to-image-niji6](https://www.runninghub.ai/runninghub-api-doc-en/api-448184529.md)<br>`youchuan/text-to-image-niji6` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；cref: 手动图片 URL；sref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [midjourney-text-to-image-v61](https://www.runninghub.ai/runninghub-api-doc-en/api-448184530.md)<br>`youchuan/text-to-image-v61` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；cref: 手动图片 URL；sref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [midjourney-text-to-image-v7](https://www.runninghub.ai/runninghub-api-doc-en/api-448184531.md)<br>`youchuan/text-to-image-v7` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；sref: 手动图片 URL；oref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [nano-banana/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184532.md)<br>`rhart-image-v1-official/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio *: auto/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9 | 已接入（离线验证） |
+| [nano-banana-pro/text-to-image-ultra-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184533.md)<br>`rhart-image-n-pro-official/text-to-image-ultra` | 图像 | prompt *: 提示词，≤20000 字符；resolution *: 4k/8k；aspectRatio: 1:1/3:2/2:3/3:4/4:3/4:5/5:4/9:16/16:9/21:9 | 已接入（离线验证） |
+| [nano-banana-pro/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184534.md)<br>`rhart-image-n-pro-official/text-to-image` | 图像 | resolution *: 1k/2k/4k；prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/3:2/2:3/3:4/4:3/4:5/5:4/9:16/16:9/21:9 | 已接入（离线验证） |
+| [nano-banana/text-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184535.md)<br>`rhart-image-v1/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio *: auto/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9 | 已接入（离线验证） |
+| [nano-banana-pro/text-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184536.md)<br>`rhart-image-n-pro/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [nano-banana2-gemini31flash/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184537.md)<br>`rhart-image-n-g31-flash-official/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/1:4/4:1/1:8/8:1；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [nano-banana2-gemini31flash/text-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184538.md)<br>`rhart-image-n-g31-flash/text-to-image` | 图像 | prompt *: 提示词；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/1:4/4:1/1:8/8:1；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [gpt-image-1.5/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448184539.md)<br>`rhart-image-g-1.5-official/text-to-image` | 图像 | prompt *: 提示词；size *: 1024*1024/1024*1536/1536*1024 | 已接入（离线验证） |
+| [gpt-image-1.5/text-to-image-channel-low-price-[Deprecated] Please use gpt-image-2 instead](https://www.runninghub.ai/runninghub-api-doc-en/api-448184540.md)<br>`rhart-image-g-1.5/text-to-image-[Deprecated]` | 图像 | 见官方专项合同 | 官方标记弃用，使用 GPT Image 2 |
+| [gpt-image-2.0/text-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-448184541.md)<br>`rhart-image-g-2/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/3:2/2:3/5:4/4:5/16:9/9:16/21:9/3:4/4:3/9:21/21:9/1:2/2:1/1:3/3:1；resolution: 1k/2k/4k | 已接入（离线验证） |
+| [wan-2.7/image-edit-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184542.md)<br>`alibaba/wan-2.7/image-edit-pro` | 图像 | imageUrls *: 图片，字符串数组≤9；prompt *: 提示词，≤2048 字符；width: 512–4096；height: 512–4096 | 已接入（离线验证） |
+| [wan-2.7/image-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-448184543.md)<br>`alibaba/wan-2.7/image-edit` | 图像 | imageUrls *: 图片，字符串数组≤9；prompt *: 提示词，≤2048 字符；width: 512–4096；height: 512–4096 | 已接入（离线验证） |
+| [Vidu-reference-to-video-q2-pro](https://www.runninghub.ai/runninghub-api-doc-en/api-448184544.md)<br>`vidu/reference-to-video-q2-pro` | 图像 | prompt *: 提示词，≤2000 字符；imageUrls: 图片，字符串数组≤7；videos: 视频，字符串数组≤2；aspectRatio: 16:9/9:16/4:3/3:4/1:1；resolution: 540p/720p/1080p；duration: 1/2/3/4/5/6/7/8/9/10 | 已接入（离线验证） |
+| [minimax/speech-2.8-hd](https://www.runninghub.ai/runninghub-api-doc-en/api-448184545.md)<br>`rhart-audio/text-to-audio/speech-2.8-hd` | 音频 | text *: 提示词；speed: 0.5–2；volume: 0.1–10；pitch: -12–12 | 已接入（离线验证） |
+| [minimax/speech-2.6-hd](https://www.runninghub.ai/runninghub-api-doc-en/api-448184546.md)<br>`rhart-audio/text-to-audio/speech-2.6-hd` | 音频 | text *: 提示词；speed: 0.5–2；volume: 0.1–10；pitch: -12–12 | 已接入（离线验证） |
+| [minimax/speech-2.6-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184547.md)<br>`rhart-audio/text-to-audio/speech-2.6-turbo` | 音频 | text *: 提示词；speed: 0.5–2；volume: 0.1–10；pitch: -12–12 | 已接入（离线验证） |
+| [minimax/speech-2.8-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184548.md)<br>`rhart-audio/text-to-audio/speech-2.8-turbo` | 音频 | text *: 提示词；speed: 0.5–2；volume: 0.1–10；pitch: -12–12 | 已接入（离线验证） |
+| [minimax/music-2.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448184549.md)<br>`rhart-audio/text-to-audio/music-2.5` | 音频 | prompt *: 提示词；lyrics *: 按表单填写 | 已接入（离线验证） |
+| [kling-lip-sync/tts](https://www.runninghub.ai/runninghub-api-doc-en/api-448184550.md)<br>`kling-lip-sync/tts` | 音频 | text *: 提示词，≤1000 字符 | 已接入（离线验证） |
+| [minimax/voice-clone](https://www.runninghub.ai/runninghub-api-doc-en/api-448184551.md)<br>`rhart-audio/text-to-audio/voice-clone` | 音频 | 见官方专项合同 | 返回资源身份，需专用资源管理入口 |
+| [minimax/speech-02-hd](https://www.runninghub.ai/runninghub-api-doc-en/api-448184552.md)<br>`rhart-audio/text-to-audio/speech-02-hd` | 音频 | text *: 提示词；speed: 0.5–2；volume: 0.1–10；pitch: -12–12 | 已接入（离线验证） |
+| [minimax/speech-02-turbo](https://www.runninghub.ai/runninghub-api-doc-en/api-448184553.md)<br>`rhart-audio/text-to-audio/speech-02-turbo` | 音频 | text *: 提示词；speed: 0.5–2；volume: 0.1–10；pitch: -12–12 | 已接入（离线验证） |
+| [suno-single-v5.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448969329.md)<br>`rhart-audio/suno-v5.5/single` | 音频 | description *: ≤400 字符 | 已接入（离线验证） |
+| [suno-custom-v5.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448969330.md)<br>`rhart-audio/suno-v5.5/custom` | 音频 | title *: ≤80 字符；prompt *: 提示词，≤5000 字符；tags *: ≤1000 字符 | 已接入（离线验证） |
+| [suno-single-v5](https://www.runninghub.ai/runninghub-api-doc-en/api-448969331.md)<br>`rhart-audio/suno-v5/single` | 音频 | description *: ≤400 字符 | 已接入（离线验证） |
+| [suno-custom-v5](https://www.runninghub.ai/runninghub-api-doc-en/api-448969332.md)<br>`rhart-audio/suno-v5/custom` | 音频 | title *: ≤80 字符；prompt *: 提示词，≤5000 字符；tags *: ≤1000 字符 | 已接入（离线验证） |
+| [suno-single-v4.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448969333.md)<br>`rhart-audio/suno-v4.5/single` | 音频 | description *: ≤400 字符 | 已接入（离线验证） |
+| [suno-custom-v4.5](https://www.runninghub.ai/runninghub-api-doc-en/api-448969334.md)<br>`rhart-audio/suno-v4.5/custom` | 音频 | title *: ≤80 字符；prompt *: 提示词，≤5000 字符；tags *: ≤1000 字符 | 已接入（离线验证） |
+| [suno-lyrics](https://www.runninghub.ai/runninghub-api-doc-en/api-448969335.md)<br>`rhart-audio/suno/lyrics` | 音频 | 见官方专项合同 | 返回歌词文本，需歌词步骤入口 |
+| [gpt-image-2/image-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448969336.md)<br>`rhart-image-g-2-official/image-to-image` | 图像 | prompt *: 提示词，≤20000 字符；imageUrls *: 图片，字符串数组≤10；aspectRatio: 1:1/1:2/2:1/1:3/3:1/2:3/3:2/3:4/4:3/4:5/5:4/9:16/21:9/9:21/16:9；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [xai/grok-imagine-image/edit-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448969337.md)<br>`rhart-image-x-official/edit` | 图像 | prompt *: 提示词，≤20000 字符；image *: 图片 | 已接入（离线验证） |
+| [gpt-image-2/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448969338.md)<br>`rhart-image-g-2-official/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/1:2/2:1/1:3/3:1/2:3/3:2/3:4/4:3/4:5/5:4/9:16/21:9/9:21/16:9；resolution *: 1k/2k/4k | 已接入（离线验证） |
+| [xai/grok-imagine-image/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-448969339.md)<br>`rhart-image-x-official/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio: 2:1/20:9/16:9/4:3/3:2/1:1/2:3/3:4/9:16/9:20/1:2 | 已接入（离线验证） |
+| [kling-video-o3-4k-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-449426876.md)<br>`kling-video-o3-4k/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；aspectRatio: 16:9/9:16/1:1；duration *: 3–15 | 已接入（离线验证） |
+| [kling-v3-4k-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-449426877.md)<br>`kling-v3-4k/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 16:9/9:16/1:1 | 已接入（离线验证） |
+| [kling-video-o3-4k-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-449426878.md)<br>`kling-video-o3-4k/image-to-video` | 视频 | prompt *: 提示词，≤2500 字符；firstImageUrl *: 图片；lastImageUrl: 图片；duration *: 3–15 | 已接入（离线验证） |
+| [kling-v3.0-4k-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-449426879.md)<br>`kling-v3-4k/image-to-video` | 视频 | imageUrl *: 图片；prompt: 提示词，≤2500 字符；endImageUrl: 图片；duration *: 3–15 | 已接入（离线验证） |
+| [kling-video-o3-4k-reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-449426880.md)<br>`kling-video-o3-4k/reference-to-video` | 视频 | prompt *: 提示词，≤2500 字符；imageUrls: 图片，字符串数组≤7；aspectRatio: 16:9/9:16/1:1；duration *: 3–15 | 已接入（离线验证） |
+| [happyhorse-1.0/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-450326932.md)<br>`alibaba/happyhorse-1.0/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；resolution *: 720p/1080p；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 16:9/9:16/1:1/4:3/3:4 | 已接入（离线验证） |
+| [happyhorse-1.0/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-450326933.md)<br>`alibaba/happyhorse-1.0/image-to-video` | 视频 | imageUrl *: 图片；prompt: 提示词，≤2500 字符；resolution *: 720p/1080p；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [happyhorse-1.0/video-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-450573658.md)<br>`alibaba/happyhorse-1.0/video-edit` | 视频 | videoUrl *: 视频；imageUrls: 图片，字符串数组≤5；prompt *: 提示词，≤2500 字符；resolution *: 720p/1080p | 已接入（离线验证） |
+| [happyhorse-1.0/reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-450573659.md)<br>`alibaba/happyhorse-1.0/reference-to-video` | 视频 | prompt *: 提示词，≤2500 字符；imageUrls *: 图片，字符串数组≤9；resolution *: 720p/1080p；aspectRatio: 16:9/9:16/3:4/4:3/1:1；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [kling-v2.5-turbo-std/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-452094100.md)<br>`kling-v2.5-turbo-std/text-to-video` | 视频 | prompt *: 提示词，≤2000 字符；duration *: 5/10；aspectRatio *: 1:1/16:9/9:16 | 已接入（离线验证） |
+| [skyreels-v4/omni-reference-std](https://www.runninghub.ai/runninghub-api-doc-en/api-454760424.md)<br>`skyreels-v4/omni-reference-std` | 视频 | prompt *: 提示词，≤2500 字符；aspectRatio: 16:9/9:16/1:1/4:3/3:4；duration: 3–15；refImages: 图片，字符串数组≤3；refVideos: 视频；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [skyreels-v4/omni-reference-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-454760425.md)<br>`skyreels-v4/omni-reference-fast` | 视频 | prompt *: 提示词，≤2500 字符；aspectRatio: 16:9/9:16/1:1/4:3/3:4；duration: 3–15；refImages: 图片，字符串数组≤3；refVideos: 视频；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [skyreels-v4/image-to-video-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-454760426.md)<br>`skyreels-v4/image-to-video-fast` | 视频 | prompt *: 提示词，≤2048 字符；firstImageUrl *: 图片；duration: 3–15；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [skyreels-v4/image-to-video-std](https://www.runninghub.ai/runninghub-api-doc-en/api-454760427.md)<br>`skyreels-v4/image-to-video-std` | 视频 | prompt *: 提示词，≤2048 字符；firstImageUrl *: 图片；duration: 3–15；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [skyreels-v4/text-to-video-fast](https://www.runninghub.ai/runninghub-api-doc-en/api-454760428.md)<br>`skyreels-v4/text-to-video-fast` | 视频 | prompt *: 提示词，≤2048 字符；duration: 3–15；aspectRatio: 16:9/9:16/1:1/4:3/3:4；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [skyreels-v4/text-to-video-std](https://www.runninghub.ai/runninghub-api-doc-en/api-454760429.md)<br>`skyreels-v4/text-to-video-std` | 视频 | prompt *: 提示词，≤2048 字符；duration: 3–15；aspectRatio: 16:9/9:16/1:1/4:3/3:4；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [midjourney-text-to-image-v8.1](https://www.runninghub.ai/runninghub-api-doc-en/api-454760430.md)<br>`youchuan/text-to-image-v81` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；sref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [kling-o3/element](https://www.runninghub.ai/runninghub-api-doc-en/api-458073906.md)<br>`kling-elements-advanced` | 视频 | 见官方专项合同 | 返回资源身份，需专用资源管理入口 |
+| [xai/rhart-imagine-image-quality/edit-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-459580544.md)<br>`rhart-imagine-image-quality/edit` | 图像 | prompt *: 提示词，≤4000 字符；imageUrl *: 图片，字符串数组≤3；aspectRatio: auto/1:1/16:9/9:16/4:3/3:4/3:2/2:3；resolution *: 1k/2k | 已接入（离线验证） |
+| [xai/rhart-imagine-image-quality/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-459580545.md)<br>`rhart-imagine-image-quality/text-to-image` | 图像 | prompt *: 提示词，≤4000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3；resolution *: 1k/2k | 已接入（离线验证） |
+| [google/veo3.1-fast/reference-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-459865193.md)<br>`rhart-video-v3.1-fast-official/reference-to-video` | 视频 | prompt *: 提示词，≤8000 字符；imageUrls *: 图片，字符串数组≤3；aspectRatio: 16:9/9:16；resolution *: 720p/1080p | 已接入（离线验证） |
+| [gemini-omni-flash/image-to-video/channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-462492098.md)<br>`gemini-omni-flash/image-to-video` | 视频 | prompt *: 提示词，≤2048 字符；imageUrls *: 图片，字符串数组≤3；duration *: 4/6/8/10；resolution *: 720p/1080p/4k；aspectRatio: 16:9/9:16 | 已接入（离线验证） |
+| [gemini-omni-flash/text-to-video/channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-462492099.md)<br>`gemini-omni-flash/text-to-video` | 视频 | prompt *: 提示词，≤2048 字符；duration *: 4/6/8/10；resolution *: 720p/1080p/4k；aspectRatio: 16:9/9:16 | 已接入（离线验证） |
+| [bytedance/jimeng-4.6/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-465292102.md)<br>`bytedance/jimeng-4.6/image-to-image` | 图像 | prompt *: 提示词，≤800 字符；imageUrls *: 图片，字符串数组≤14；width: 900–6197；height: 768–4096 | 已接入（离线验证） |
+| [bytedance/jimeng-4.6/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-465292103.md)<br>`bytedance/jimeng-4.6/text-to-image` | 图像 | prompt *: 提示词，≤800 字符；width: 900–6197；height: 768–4096 | 已接入（离线验证） |
+| [gemini-omni-flash/video-edit/channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-465292104.md)<br>`gemini-omni-flash/video-edit` | 视频 | prompt *: 提示词，≤2048 字符；imageUrls: 图片，字符串数组≤3；resolution *: 720p/1080p/4k；aspectRatio: 16:9/9:16；videoUrl *: 视频 | 已接入（离线验证） |
+| [volc-subtitle-erase/video(Refined version)](https://www.runninghub.ai/runninghub-api-doc-en/api-465573721.md)<br>`volc-subtitle-erase-pro/video` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [volc-subtitle-erase/video(Standard Version)](https://www.runninghub.ai/runninghub-api-doc-en/api-465573722.md)<br>`volc-subtitle-erase/video` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [Separate audio Other](https://www.runninghub.ai/runninghub-api-doc-en/api-465888683.md)<br>`rhart-audio/extract-background` | 音频 | 2##file *: 视频 | 已接入（离线验证） |
+| [Separate audio Vocals](https://www.runninghub.ai/runninghub-api-doc-en/api-465888684.md)<br>`rhart-audio/extract-vocal` | 音频 | 3##file *: 视频 | 已接入（离线验证） |
+| [Separate audio](https://www.runninghub.ai/runninghub-api-doc-en/api-465888685.md)<br>`rhart-audio/source-separation` | 音频 | 3##file *: 视频 | 已接入（离线验证） |
+| [Wan2.2 Character Motion Transfer](https://www.runninghub.ai/runninghub-api-doc-en/api-469373161.md)<br>`rhart-video/wan2.2/character-motion-transfer` | 视频 | 299##image *: 图片；275##video *: 视频 | 已接入（离线验证） |
+| [google/veo3.1-pro/image-to-video-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-471297125.md)<br>`rhart-video-v3.1-pro/image-to-video` | 视频 | prompt *: 提示词，≤8000 字符；aspectRatio *: 16:9/9:16；imageUrl *: 图片；duration: 8；resolution *: 720p/1080p/4k | 已接入（离线验证） |
+| [minimax/music-2.6/text-to-instrumental](https://www.runninghub.ai/runninghub-api-doc-en/api-471297126.md)<br>`minimax/music-2.6/text-to-instrumental` | 音频 | prompt *: 提示词，≤2000 字符 | 已接入（离线验证） |
+| [minimax/music-2.6/text-to-music](https://www.runninghub.ai/runninghub-api-doc-en/api-471297127.md)<br>`minimax/music-2.6/text-to-music` | 音频 | prompt: 提示词，≤2000 字符；lyrics *: ≤3500 字符 | 已接入（离线验证） |
+| [seedream-v5-pro/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-494859257.md)<br>`seedream-v5-pro/text-to-image` | 图像 | prompt *: 提示词，≤5000 字符；width: 240–8192；height: 240–8192；resolution: 1k/2k | 已接入（离线验证） |
+| [qwen-image-3.0-pro/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-494859258.md)<br>`alibaba/qwen-image-3.0-pro/text-to-image` | 图像 | prompt *: 提示词，≤3000 字符；size: 按表单填写；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [midjourney-text-to-image-v8.2-preview](https://www.runninghub.ai/runninghub-api-doc-en/api-494859259.md)<br>`youchuan/text-to-image-v82` | 图像 | prompt *: 提示词，≤8192 字符；imageUrl: 图片；sref: 手动图片 URL；aspectRatio: 1:1/4:3/3:2/16:9/3:4/2:3/9:16 | 已接入（离线验证） |
+| [nano-banana2-gemini31flash-lite/text-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-494859260.md)<br>`rhart-image-n-g31-flash-lite-official/text-to-image` | 图像 | prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/4:1/1:4/8:1/1:8 | 已接入（离线验证） |
+| [nano-banana2-gemini31flash-lite/text-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-494859261.md)<br>`rhart-image-n-g31-flash-lite/text-to-image` | 图像 | prompt *: 提示词；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/1:4/4:1/1:8/8:1 | 已接入（离线验证） |
+| [Dola-Seedream-5.0-pro/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-494859262.md)<br>`dola-Seedream-5.0-pro/text-to-image` | 图像 | prompt *: 提示词，≤5000 字符；width: 240–8192；height: 240–8192；resolution: 1k/2k | 已接入（离线验证） |
+| [seedream-v5-pro/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-494859263.md)<br>`seedream-v5-pro/image-to-image` | 图像 | prompt *: 提示词，≤5000 字符；width: 240–8192；height: 240–8192；imageUrls *: 图片，字符串数组≤10；resolution: 1k/2k | 已接入（离线验证） |
+| [qwen-image-3.0-pro/image-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-494859264.md)<br>`alibaba/qwen-image-3.0-pro/image-edit` | 图像 | imageUrls *: 图片，字符串数组≤3；prompt *: 提示词，≤3000 字符；size: 按表单填写；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [nano-banana2-gemini31flash-lite/image-to-image-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-494859265.md)<br>`rhart-image-n-g31-flash-lite-official/image-to-image` | 图像 | imageUrls *: 图片，字符串数组≤4；prompt *: 提示词，≤20000 字符；aspectRatio: auto/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/4:1/1:4/8:1/1:8 | 已接入（离线验证） |
+| [nano-banana2-gemini31flash-lite/image-to-image-channel-low-price](https://www.runninghub.ai/runninghub-api-doc-en/api-494859266.md)<br>`rhart-image-n-g31-flash-lite/image-to-image` | 图像 | imageUrls *: 图片，字符串数组≤10；prompt *: 提示词，≤20000 字符；aspectRatio: 1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/21:9/1:4/4:1/1:8/8:1 | 已接入（离线验证） |
+| [Dola-Seedream-5.0-pro/image-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-494859267.md)<br>`dola-Seedream-5.0-pro/image-to-image` | 图像 | prompt *: 提示词，≤5000 字符；width: 240–8192；height: 240–8192；imageUrls *: 图片，字符串数组≤10；resolution: 1k/2k | 已接入（离线验证） |
+| [seedance-2.0-global-mini/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859268.md)<br>`bytedance/seedance-2.0-global-mini/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-mini/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859269.md)<br>`rhart-video/sparkvideo-2.0-mini/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-fast/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859270.md)<br>`rhart-video/sparkvideo-2.0-fast/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859271.md)<br>`rhart-video/sparkvideo-2.0/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/native4k/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [happyhorse-1.1/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859272.md)<br>`alibaba/happyhorse-1.1/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；resolution *: 720p/1080p；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 16:9/9:16/1:1/4:3/3:4/4:5/5:4/9:21/21:9 | 已接入（离线验证） |
+| [kling-v2.6-std-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859273.md)<br>`kling-v2.6-std/text-to-video` | 视频 | prompt *: 提示词，≤2000 字符；aspectRatio *: 1:1/16:9/9:16；duration *: 5/10 | 已接入（离线验证） |
+| [kling-v3-turbo-std-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859274.md)<br>`kling-v3-turbo-std/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 1:1/16:9/9:16 | 已接入（离线验证） |
+| [kling-v3-turbo-pro-text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859275.md)<br>`kling-v3-turbo-pro/text-to-video` | 视频 | prompt *: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15；aspectRatio: 1:1/16:9/9:16 | 已接入（离线验证） |
+| [happyhorse-1.1/reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859276.md)<br>`alibaba/happyhorse-1.1/reference-to-video` | 视频 | prompt *: 提示词，≤2500 字符；imageUrls *: 图片，字符串数组≤9；resolution *: 720p/1080p；aspectRatio: 16:9/9:16/3:4/4:3/1:1/4:5/5:4/9:21/21:9；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [Vidu-reference-to-video-q3-drama](https://www.runninghub.ai/runninghub-api-doc-en/api-494859277.md)<br>`vidu/reference-to-video-q3-drama` | 视频 | prompt *: 提示词，≤5000 字符；imageUrls *: 图片，字符串数组≤7；duration *: 2–15；resolution *: 1080p；aspectRatio: 16:9/9:16/4:3/3:4/1:1/auto | 已接入（离线验证） |
+| [seedance-2.0-global-mini/multimodal-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859278.md)<br>`bytedance/seedance-2.0-global-mini/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-mini/multimodal-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859279.md)<br>`rhart-video/sparkvideo-2.0-mini/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [Vidu-reference-to-video-q3-ad](https://www.runninghub.ai/runninghub-api-doc-en/api-494859280.md)<br>`vidu/reference-to-video-q3-ad` | 视频 | prompt *: 提示词，≤5000 字符；imageUrls *: 图片，字符串数组≤7；duration *: 3–16；resolution *: 720p/1080p；aspectRatio: 16:9/9:16/4:3/3:4/1:1/auto | 已接入（离线验证） |
+| [seedance-2.0-fast/multimodal-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859281.md)<br>`rhart-video/sparkvideo-2.0-fast/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0/multimodal-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859282.md)<br>`rhart-video/sparkvideo-2.0/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/native4k/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [wan-2.7-spicy/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859283.md)<br>`alibaba/wan-2.7-spicy/image-to-video` | 视频 | prompt: 提示词，≤5000 字符；imageUrl *: 图片；audioUrl: 音频；resolution *: 720p/1080p；duration *: 2–15 | 已接入（离线验证） |
+| [happyhorse-1.1/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859284.md)<br>`alibaba/happyhorse-1.1/image-to-video` | 视频 | imageUrl *: 图片；prompt: 提示词，≤2500 字符；resolution *: 720p/1080p；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [seedance-2.0-global-mini/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859285.md)<br>`bytedance/seedance-2.0-global-mini/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-mini/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859286.md)<br>`rhart-video/sparkvideo-2.0-mini/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0-fast/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859287.md)<br>`rhart-video/sparkvideo-2.0-fast/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.0/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859288.md)<br>`rhart-video/sparkvideo-2.0/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/native4k/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [xai/grok-imagine-video-v1.5/image-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-494859289.md)<br>`rhart-video-g-official/image-to-video-v1.5` | 视频 | prompt *: 提示词，≤2048 字符；imageUrl *: 图片；duration *: 1–15；resolution *: 480p/720p | 已接入（离线验证） |
+| [kling-v2.6-std-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859290.md)<br>`kling-v2.6-std/image-to-video` | 视频 | prompt *: 提示词，≤2000 字符；imageUrl *: 图片；duration *: 5/10 | 已接入（离线验证） |
+| [kling-v3-turbo-std-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859291.md)<br>`kling-v3-turbo-std/image-to-video` | 视频 | firstImageUrl *: 图片；prompt: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [kling-v3-turbo-pro-image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859292.md)<br>`kling-v3-turbo-pro/image-to-video` | 视频 | firstImageUrl *: 图片；prompt: 提示词，≤2500 字符；duration *: 3/4/5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [Stephen Chow IP Video Gen(Seedance 2.0)](https://www.runninghub.ai/runninghub-api-doc-en/api-494859293.md)<br>`rhart-video/sparkvideo-2.0/multimodal-video-star` | 视频 | resolution *: 480p/720p/1080p/native1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9；imageUrl: 图片 | 已接入（离线验证） |
+| [Stephen Chow IP Video Gen-Fast (Seedance 2.0 Fast)](https://www.runninghub.ai/runninghub-api-doc-en/api-494859294.md)<br>`rhart-video/sparkvideo-2.0/multimodal-video-star-fast` | 视频 | resolution *: 480p/720p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9；imageUrl: 图片 | 已接入（离线验证） |
+| [vidu/short-play-q3-drama](https://www.runninghub.ai/runninghub-api-doc-en/api-494859295.md)<br>`vidu/short-play-q3-drama` | 视频 | scriptName *: ≤20 字符；scriptContent *: ≤2000 字符；assets *: 字符串数组≤14；uploadImageUrl: 手动图片 URL；duration *: 0/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；resolution *: 1080p；aspectRatio: 9:16/16:9 | 已接入（离线验证） |
+| [vidu/short-play-q3-ad](https://www.runninghub.ai/runninghub-api-doc-en/api-494859296.md)<br>`vidu/short-play-q3-ad` | 视频 | scriptName *: ≤20 字符；scriptContent *: ≤2000 字符；assets *: 字符串数组≤14；resolution *: 1080p；aspectRatio: 9:16/16:9 | 已接入（离线验证） |
+| [kling-v2-ai-avatar-standard/image-audio-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859297.md)<br>`kling-v2-ai-avatar-standard/image-audio-to-video` | 视频 | imageUrl *: 图片；audioUrl *: 音频；prompt: 提示词，≤2048 字符 | 已接入（离线验证） |
+| [kling-v2-ai-avatar-pro/image-audio-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-494859298.md)<br>`kling-v2-ai-avatar-pro/image-audio-to-video` | 视频 | imageUrl *: 图片；audioUrl *: 音频；prompt: 提示词，≤2048 字符 | 已接入（离线验证） |
+| [minimax/music-cover](https://www.runninghub.ai/runninghub-api-doc-en/api-494859299.md)<br>`minimax/music-cover` | 音频 | prompt *: 提示词，≤2000 字符；audioUrl *: 音频；lyrics: ≤1000 字符 | 已接入（离线验证） |
+| [minimax/music-cover-preprocess](https://www.runninghub.ai/runninghub-api-doc-en/api-494859300.md)<br>`minimax/music-cover-preprocess` | 音频 | audioUrl *: 音频 | 已接入（离线验证） |
+| [minimax/music-2.6](https://www.runninghub.ai/runninghub-api-doc-en/api-494859301.md)<br>`minimax/music-2.6` | 音频 | prompt: 提示词，≤2000 字符；lyrics: ≤3500 字符 | 已接入（离线验证） |
+| [doubao-seed-tts-2.0](https://www.runninghub.ai/runninghub-api-doc-en/api-494859302.md)<br>`bytedance/doubao-seed-tts-2.0` | 音频 | text *: 提示词，≤10000 字符；pitch: 按表单填写 | 已接入（离线验证） |
+| [doubao-seed-audio-1.0](https://www.runninghub.ai/runninghub-api-doc-en/api-494859303.md)<br>`bytedance/doubao-seed-audio-1.0` | 音频 | text_prompt *: 提示词，≤3000 字符；audio_url: 音频，字符串数组≤3；image_url: 图片 | 已接入（离线验证） |
+| [mureka-v9/generate-bgm](https://www.runninghub.ai/runninghub-api-doc-en/api-494859304.md)<br>`mureka-ai/mureka-v9/generate-bgm` | 音频 | prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-v7.6/generate-bgm](https://www.runninghub.ai/runninghub-api-doc-en/api-494859305.md)<br>`mureka-ai/mureka-v7.6/generate-bgm` | 音频 | prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-v8/generate-bgm](https://www.runninghub.ai/runninghub-api-doc-en/api-494859306.md)<br>`mureka-ai/mureka-v8/generate-bgm` | 音频 | prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-v7.6/generate-song](https://www.runninghub.ai/runninghub-api-doc-en/api-494859307.md)<br>`mureka-ai/mureka-v7.6/generate-song` | 音频 | lyrics *: ≤3000 字符；prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-o2/generate-song](https://www.runninghub.ai/runninghub-api-doc-en/api-494859308.md)<br>`mureka-ai/mureka-o2/generate-song` | 音频 | lyrics *: ≤3000 字符；prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-v8/generate-song](https://www.runninghub.ai/runninghub-api-doc-en/api-494859309.md)<br>`mureka-ai/mureka-v8/generate-song` | 音频 | lyrics *: ≤3000 字符；prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-v9/generate-song](https://www.runninghub.ai/runninghub-api-doc-en/api-494859310.md)<br>`mureka-ai/mureka-v9/generate-song` | 音频 | lyrics *: ≤3000 字符；prompt: 提示词，≤1024 字符；n *: 1–3 | 已接入（离线验证） |
+| [mureka-ai/generate-lyrics](https://www.runninghub.ai/runninghub-api-doc-en/api-494859311.md)<br>`mureka-ai/generate-lyrics` | 音频 | 见官方专项合同 | 返回歌词文本，需歌词步骤入口 |
+| [mureka-ai/files-upload](https://www.runninghub.ai/runninghub-api-doc-en/api-494859312.md)<br>`mureka-ai/files-upload` | 音频 | 见官方专项合同 | 返回资源身份，需专用资源管理入口 |
+| [mureka-v7.6/extend-song](https://www.runninghub.ai/runninghub-api-doc-en/api-494859313.md)<br>`mureka-ai/mureka-v7.6/extend-song` | 音频 | lyrics *: ≤3000 字符；fileUrl *: 手动音频 URL | 已接入（离线验证） |
+| [mureka-v8/extend-song](https://www.runninghub.ai/runninghub-api-doc-en/api-494859314.md)<br>`mureka-ai/mureka-v8/extend-song` | 音频 | lyrics *: ≤3000 字符；fileUrl *: 手动音频 URL | 已接入（离线验证） |
+| [mureka-ai/vocal-clone](https://www.runninghub.ai/runninghub-api-doc-en/api-494859315.md)<br>`mureka-ai/vocal-clone` | 音频 | 见官方专项合同 | 返回资源身份，需专用资源管理入口 |
+| [MiniMax-H3 Multimodal Reference-to-Video](https://www.runninghub.ai/runninghub-api-doc-en/api-495380675.md)<br>`minimax/hailuo-h3/multimodal-to-video` | 视频 | prompt *: 提示词，≤20480 字符；imageUrls: 图片，字符串数组≤9；videoUrls: 视频，字符串数组≤3；audioUrls: 音频，字符串数组≤3；resolution *: 2K/768P；duration *: 5/6/7/8/9/10/11/12/13/14/15；ratio: adaptive/21:9/16:9/4:3/1:1/3:4/9:16 | 已接入（离线验证） |
+| [MiniMax-H3 Image-to-Video (first/last frame)](https://www.runninghub.ai/runninghub-api-doc-en/api-495380676.md)<br>`minimax/hailuo-h3/image-to-video` | 视频 | prompt *: 提示词，≤20480 字符；firstFrameUrl: 图片；lastFrameUrl: 图片；resolution *: 2K/768P；duration *: 5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [MiniMax-H3 Text-to-Video](https://www.runninghub.ai/runninghub-api-doc-en/api-495380677.md)<br>`minimax/hailuo-h3/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 2K/768P；duration *: 5/6/7/8/9/10/11/12/13/14/15；ratio: 21:9/16:9/4:3/1:1/3:4/9:16 | 已接入（离线验证） |
+| [topazlabs-image-gigapixel-text-and-shapes](https://www.runninghub.ai/runninghub-api-doc-en/api-495680089.md)<br>`topazlabs/image-gigapixel-text-and-shapes` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-gigapixel-low-resolution-2](https://www.runninghub.ai/runninghub-api-doc-en/api-495680090.md)<br>`topazlabs/image-gigapixel-low-resolution-2` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-gigapixel-standard-2](https://www.runninghub.ai/runninghub-api-doc-en/api-495680091.md)<br>`topazlabs/image-gigapixel-standard-2` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-gigapixel-high-fidelity-2](https://www.runninghub.ai/runninghub-api-doc-en/api-495680092.md)<br>`topazlabs/image-gigapixel-high-fidelity-2` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-gigapixel-art-and-cgi](https://www.runninghub.ai/runninghub-api-doc-en/api-495680093.md)<br>`topazlabs/image-gigapixel-art-and-cgi` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-upscale-transparent](https://www.runninghub.ai/runninghub-api-doc-en/api-495680094.md)<br>`topazlabs/image-upscale-transparent` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-upscale-detail-faces](https://www.runninghub.ai/runninghub-api-doc-en/api-495680095.md)<br>`topazlabs/image-upscale-detail-faces` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-image-upscale-high-fidelity-v3](https://www.runninghub.ai/runninghub-api-doc-en/api-495680096.md)<br>`topazlabs/image-upscale-high-fidelity-v3` | 图像 | imageUrl *: 图片 | 已接入（离线验证） |
+| [topazlabs-video-frame-interpolation](https://www.runninghub.ai/runninghub-api-doc-en/api-495680097.md)<br>`topazlabs/video-frame-interpolation` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [topazlabs-video-astra](https://www.runninghub.ai/runninghub-api-doc-en/api-495680098.md)<br>`topazlabs/video-astra` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [topazlabs-video-denoise](https://www.runninghub.ai/runninghub-api-doc-en/api-495680099.md)<br>`topazlabs/video-denoise` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [topazlabs-video-starlight](https://www.runninghub.ai/runninghub-api-doc-en/api-495680100.md)<br>`topazlabs/video-starlight` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [topazlabs-video-proteus](https://www.runninghub.ai/runninghub-api-doc-en/api-495680101.md)<br>`topazlabs/video-proteus` | 视频 | videoUrl *: 视频 | 已接入（离线验证） |
+| [qwen3-tts-instruct-flash](https://www.runninghub.ai/runninghub-api-doc-en/api-495680102.md)<br>`alibaba/qwen3-tts-instruct-flash` | 音频 | text *: 提示词，≤600 字符 | 已接入（离线验证） |
+| [qwen3-tts-flash](https://www.runninghub.ai/runninghub-api-doc-en/api-495680103.md)<br>`alibaba/qwen3-tts-flash` | 音频 | text *: 提示词，≤600 字符 | 已接入（离线验证） |
+| [qwen-image-3.0/text-to-image](https://www.runninghub.ai/runninghub-api-doc-en/api-497874394.md)<br>`alibaba/qwen-image-3.0/text-to-image` | 图像 | prompt *: 提示词，≤3000 字符；size: 按表单填写；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [qwen-image-3.0/image-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-497874395.md)<br>`alibaba/qwen-image-3.0/image-edit` | 图像 | imageUrls *: 图片，字符串数组≤3；prompt *: 提示词，≤3000 字符；size: 按表单填写；imageNum: 1/2/3/4/5/6 | 已接入（离线验证） |
+| [seedream-v5-pro/layer-decomposition](https://www.runninghub.ai/runninghub-api-doc-en/api-498427798.md)<br>`seedream-v5-pro/layer-decomposition` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [MiniMax-H3-Context-IR (i2va)](https://www.runninghub.ai/runninghub-api-doc-en/api-498427799.md)<br>`minimax/hailuo-h3/context-ir-image` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [MiniMax-H3-Context-IR (t2va)](https://www.runninghub.ai/runninghub-api-doc-en/api-498427800.md)<br>`minimax/hailuo-h3/context-ir-text` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [MiniMax-H3-Context-IR (r2va)](https://www.runninghub.ai/runninghub-api-doc-en/api-498427801.md)<br>`minimax/hailuo-h3/context-ir-multimodal` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [MiniMax-H3 Multimodal Reference-to-Video Regeneration (768P-&gt;2K)](https://www.runninghub.ai/runninghub-api-doc-en/api-498427802.md)<br>`minimax/hailuo-h3/regeneration-multimodal-to-video` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [MiniMax-H3 Image-to-Video Regeneration (768P-&gt;2K)](https://www.runninghub.ai/runninghub-api-doc-en/api-498427803.md)<br>`minimax/hailuo-h3/regeneration-image-to-video` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [MiniMax-H3 Text-to-Video Regeneration (768P-&gt;2K)](https://www.runninghub.ai/runninghub-api-doc-en/api-498427804.md)<br>`minimax/hailuo-h3/regeneration-text-to-video` | 专项 | 见官方专项合同 | 需要分层、提示词或再生成专项入口 |
+| [seedance-2.5-global/multimodal-video Token](https://www.runninghub.ai/runninghub-api-doc-en/api-498749512.md)<br>`bytedance/seedance-2.5-global-token/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；imageUrls: 图片，字符串数组≤30；videoUrls: 视频，字符串数组≤10；audioUrls: 音频，字符串数组≤10；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.5/multimodal-video Token](https://www.runninghub.ai/runninghub-api-doc-en/api-498749513.md)<br>`bytedance/seedance-2.5-token/multimodal-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；imageUrls: 图片，字符串数组≤30；videoUrls: 视频，字符串数组≤10；audioUrls: 音频，字符串数组≤10；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [xai/grok-imagine-video-v1.5/reference-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-498749514.md)<br>`rhart-video-g-official/reference-to-video-v1.5` | 视频 | prompt *: 提示词，≤2048 字符；referenceImages *: 图片，字符串数组≤7；duration *: 1–15；aspectRatio: 16:9/1:1/9:16/3:2/2:3；resolution *: 480p/720p | 已接入（离线验证） |
+| [seedance-2.5-global/image-to-video Token](https://www.runninghub.ai/runninghub-api-doc-en/api-498749515.md)<br>`bytedance/seedance-2.5-global-token/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive | 已接入（离线验证） |
+| [seedance-2.5/image-to-video Token](https://www.runninghub.ai/runninghub-api-doc-en/api-498749516.md)<br>`bytedance/seedance-2.5-token/image-to-video` | 视频 | prompt: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；firstFrameUrl *: 图片；lastFrameUrl: 图片；ratio: adaptive | 已接入（离线验证） |
+| [flux-3-video/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-498749517.md)<br>`rhart-video-flux3/image-to-video` | 视频 | prompt *: 提示词，≤20480 字符；keyframes *: 图片，字符串数组≤10；aspectRatio: auto/21:9/2:1/16:9/4:3/1:1/3:4/9:16；duration: 5–20；resolution *: hd/fhd | 已接入（离线验证） |
+| [seedance-2.5-global/text-to-video Token](https://www.runninghub.ai/runninghub-api-doc-en/api-498749518.md)<br>`bytedance/seedance-2.5-global-token/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [seedance-2.5/text-to-video Token](https://www.runninghub.ai/runninghub-api-doc-en/api-498749519.md)<br>`bytedance/seedance-2.5-token/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480p/720p/native1080p/1080p/2k/4k；duration *: -1/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30；ratio: adaptive/16:9/4:3/1:1/3:4/9:16/21:9 | 已接入（离线验证） |
+| [xai / grok-imagine-video-v1.5 / text-to-video-official-stable](https://www.runninghub.ai/runninghub-api-doc-en/api-498749520.md)<br>`rhart-video-g-official/text-to-video-v1.5` | 视频 | prompt *: 提示词，≤2048 字符；duration *: 1–15；aspectRatio: 16:9/1:1/9:16/3:2/2:3；resolution *: 480p/720p/1080p | 已接入（离线验证） |
+| [flux-3-video/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-498749521.md)<br>`rhart-video-flux3/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；aspectRatio: auto/21:9/2:1/16:9/4:3/1:1/3:4/9:16；duration: 5–20；resolution *: hd/fhd | 已接入（离线验证） |
+| [flux-3-video/draft-enhance](https://www.runninghub.ai/runninghub-api-doc-en/api-498749522.md)<br>`rhart-video-flux3/draft-enhance` | 视频 | draftCache *: ≤2000000 字符；resolution *: hd/fhd | 已接入（离线验证） |
+| [flux-3-video/video-continuation](https://www.runninghub.ai/runninghub-api-doc-en/api-498749523.md)<br>`rhart-video-flux3/video-to-video` | 视频 | prompt *: 提示词，≤20480 字符；startVideo *: 视频；aspectRatio: auto/21:9/2:1/16:9/4:3/1:1/3:4/9:16；duration: 5–20；resolution *: hd/fhd | 已接入（离线验证） |
+| [MiniMax H3 fl2va RH插件流 支持文生、图生、首尾帧](https://www.runninghub.ai/runninghub-api-doc-en/api-502119462.md)<br>`rhart-video/minimax-h3-oss/fl2va` | 视频 | 136##image: 图片；152##image: 图片；144##prompt: 提示词，≤20000 字符 | 已接入（离线验证） |
+| [MiniMax H3 ref2va RH插件流 支持多参](https://www.runninghub.ai/runninghub-api-doc-en/api-502119463.md)<br>`rhart-video/minimax-h3-oss/fl2va-advanced` | 视频 | 170##image: 图片；171##image: 图片；172##image: 图片；173##image: 图片；174##image: 图片；175##image: 图片；176##image: 图片；177##image: 图片；178##image: 图片；179##file: 视频；180##file: 视频；181##file: 视频；182##audio: 音频；183##audio: 音频；184##audio: 音频；144##prompt: 提示词，≤20000 字符 | 已接入（离线验证） |
+| [wan-3.0-reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-505575334.md)<br>`alibaba/wan-3.0/reference-to-video` | 视频 | prompt *: 提示词，≤20000 字符；videoUrls: 视频，字符串数组≤5；imageUrls: 图片，字符串数组≤10；audioUrls: 音频，字符串数组≤5；resolution *: 480P/720P/1080P；aspectRatio *: adaptive/16:9/4:3/1:1/3:4/9:16；duration *: auto/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30 | 已接入（离线验证） |
+| [wan-3.0/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-505575335.md)<br>`alibaba/wan-3.0/image-to-video` | 视频 | prompt: 提示词，≤20000 字符；firstFrameUrl *: 图片；lastFrameUrl: 图片；resolution *: 480P/720P/1080P；aspectRatio *: adaptive/16:9/4:3/1:1/3:4/9:16；duration *: auto/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30 | 已接入（离线验证） |
+| [wan-3.0-prime/reference-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-505922313.md)<br>`alibaba/wan-3.0-prime/reference-to-video` | 视频 | prompt *: 提示词，≤20000 字符；videoUrls: 视频，字符串数组≤5；imageUrls: 图片，字符串数组≤10；audioUrls: 音频，字符串数组≤5；resolution *: 480P/720P/1080P；aspectRatio *: adaptive/16:9/4:3/1:1/3:4/9:16；duration *: auto/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30 | 已接入（离线验证） |
+| [wan-3.0-prime/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-505922314.md)<br>`alibaba/wan-3.0-prime/image-to-video` | 视频 | prompt: 提示词，≤20000 字符；firstFrameUrl *: 图片；lastFrameUrl: 图片；resolution *: 480P/720P/1080P；aspectRatio *: adaptive/16:9/4:3/1:1/3:4/9:16；duration *: auto/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30 | 已接入（离线验证） |
+| [Qwen3 TTS Sound Design](https://www.runninghub.ai/runninghub-api-doc-en/api-508112799.md)<br>`rhart-audio/qwen3-tts/voice-design` | 音频 | 见官方专项合同 | 已接入（离线验证） |
+| [gemini-omni-1.1-flash/text-to-video/stable](https://www.runninghub.ai/runninghub-api-doc-en/api-508886443.md)<br>`google/gemini-omni-1.1-flash/text-to-video` | 视频 | prompt *: 提示词，≤2048 字符；duration *: 3–10；aspectRatio: 16:9/9:16；resolution *: 360p/720p/1080p/4k | 已接入（离线验证） |
+| [gemini-omni-1.1-flash/image-to-video/stable](https://www.runninghub.ai/runninghub-api-doc-en/api-508886444.md)<br>`google/gemini-omni-1.1-flash/image-to-video` | 视频 | imageUrl *: 图片；lastImageUrl: 图片；prompt *: 提示词，≤2048 字符；duration *: 3–10；aspectRatio: 16:9/9:16；resolution *: 360p/720p/1080p/4k | 已接入（离线验证） |
+| [gemini-omni-1.1-flash/reference-to-video/stable](https://www.runninghub.ai/runninghub-api-doc-en/api-508886445.md)<br>`google/gemini-omni-1.1-flash/reference-to-video` | 视频 | prompt *: 提示词，≤2048 字符；imageUrls: 图片，字符串数组≤10；videoUrls: 视频，字符串数组≤3；duration *: 3–10；aspectRatio: 16:9/9:16；resolution *: 360p/720p/1080p/4k | 已接入（离线验证） |
+| [meshy6/image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-509122419.md)<br>`meshy6/image-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [meshy6/text-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-509122420.md)<br>`meshy6/text-to-3d` | 专项 | 见官方专项合同 | 需要 3D 产物节点 |
+| [MiniMax-H3-Max Image-to-Video (first/last frame)](https://www.runninghub.ai/runninghub-api-doc-en/api-509445864.md)<br>`minimax/hailuo-h3-max/image-to-video` | 视频 | prompt *: 提示词，≤20480 字符；firstFrameUrl: 图片；lastFrameUrl: 图片；resolution *: 480P/768P；duration *: 5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [MiniMax-H3-Max Text-to-Video](https://www.runninghub.ai/runninghub-api-doc-en/api-509445865.md)<br>`minimax/hailuo-h3-max/text-to-video` | 视频 | prompt *: 提示词，≤20480 字符；resolution *: 480P/768P；duration *: 5/6/7/8/9/10/11/12/13/14/15；ratio *: 21:9/16:9/4:3/1:1/3:4/9:16 | 已接入（离线验证） |
+| [gemini-omni-1.1-flash/video-edit](https://www.runninghub.ai/runninghub-api-doc-en/api-510034450.md)<br>`google/gemini-omni-1.1-flash/video-edit` | 视频 | videoUrl *: 视频；prompt *: 提示词，≤2048 字符；resolution *: 360p/720p/1080p/4k | 已接入（离线验证） |
+| [rh-video-to-depth](https://www.runninghub.ai/runninghub-api-doc-en/api-510573734.md)<br>`rhart-video/video-depth-converter` | 视频 | 9##video *: 视频；4##colormap *: 1 | 已接入（离线验证） |
+| [minimax-h3-max-turbo/image-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-510773979.md)<br>`minimax/h3-max-turbo/image-to-video` | 视频 | prompt *: 提示词，≤2048 字符；firstFrameUrl *: 图片；lastFrameUrl: 图片；resolution *: 480p/768p；duration *: 5/6/7/8/9/10/11/12/13/14/15 | 已接入（离线验证） |
+| [minimax-h3-max-turbo/text-to-video](https://www.runninghub.ai/runninghub-api-doc-en/api-510773980.md)<br>`minimax/h3-max-turbo/text-to-video` | 视频 | prompt *: 提示词，≤2048 字符；resolution *: 480p/768p；duration *: 5/6/7/8/9/10/11/12/13/14/15；aspectRatio *: 21:9/16:9/4:3/1:1/3:4/9:16 | 已接入（离线验证） |

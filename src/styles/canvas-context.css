@@ -1,0 +1,124 @@
+﻿/* ============================================
+   Canvas Right-click Context Menu
+   ============================================ */
+
+.canvas-ctx-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 176px;
+  padding: 4px;
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid transparent;
+  border-radius: 10px;
+  box-shadow: var(--glass-shadow-menu);
+  transform-origin: top left;
+  animation: ctxFadeIn var(--dur-normal) var(--ease-spring);
+}
+
+@keyframes ctxFadeIn {
+  from { opacity: 0; transform: scale(0.9) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Scoped under canvas-ctx-menu to avoid collision with sidebar.css .menu-row */
+.canvas-ctx-menu .menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--theme-text-secondary);
+  cursor: var(--cursor-pointer, pointer);
+  white-space: nowrap;
+  user-select: none;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.canvas-ctx-menu .menu-row:hover {
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+.canvas-ctx-menu .menu-row:active {
+  background: var(--brand-alpha-15);
+  transform: scale(0.98);
+  transition: transform 60ms var(--ease-out-quart);
+}
+
+.canvas-ctx-menu .menu-row.disabled {
+  opacity: 0.35;
+  cursor: var(--cursor-default, default);
+}
+
+.canvas-ctx-menu .menu-row.disabled:hover {
+  background: transparent;
+  color: var(--theme-text-secondary);
+}
+
+.canvas-ctx-menu .menu-row-split {
+  justify-content: space-between;
+}
+
+.canvas-ctx-menu .menu-rowlabel {
+  flex: 1;
+}
+
+.canvas-ctx-menu .menu-arrow {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  margin-top: 1px;
+}
+
+.canvas-ctx-menu .menu-arrow-ml8 {
+  margin-left: 8px;
+}
+
+.canvas-ctx-menu .menu-row:hover .menu-arrow {
+  color: var(--theme-text-secondary);
+}
+
+.canvas-ctx-menu .menu-kbd {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  letter-spacing: 0.02em;
+}
+
+.canvas-ctx-menu .menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border-subtle);
+}
+
+/* Submenu positioning */
+.canvas-ctx-menu .submenu {
+  animation: ctxFadeIn var(--dur-fast) var(--ease-out-expo);
+}
+
+/* Submenu hover highlight on parent */
+.canvas-ctx-menu .menu-row.highlight {
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+.canvas-ctx-menu .menu-row.highlight .menu-arrow {
+  color: var(--theme-text-secondary);
+}
+
+.canvas-ctx-menu .menu-row-danger {
+  color: var(--danger-light);
+}
+
+.canvas-ctx-menu .menu-row-danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger-pale);
+}

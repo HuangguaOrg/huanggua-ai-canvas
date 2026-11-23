@@ -1,0 +1,64 @@
+/* ============================================
+   自定义 Tooltip — body 单例浮层
+   用法：<div data-tooltip="提示文字">
+   可选位置：data-tooltip-pos="top" | "bottom" | "left" | "right"，默认 top
+   ============================================ */
+
+[data-tooltip] {
+  position: relative;
+}
+
+.app-tooltip {
+  position: fixed;
+  z-index: 2147483647;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 4px 10px;
+  border: 1px solid var(--theme-border, #2a2a3a);
+  border-radius: 6px;
+  background: var(--theme-surface, #14141c);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  color: var(--theme-text, #e8e8ed);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0s linear 0.15s;
+}
+
+.app-tooltip[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.app-tooltip[data-structured="true"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.app-tooltip__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-tooltip__action {
+  flex: 0 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.app-tooltip__hint {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent-amber-text);
+  white-space: pre-line;
+}
+
+.app-tooltip__body {
+  display: block;
+  white-space: pre-line;
+}

@@ -1,0 +1,324 @@
+/**
+ * 解析并渲染消息中的节点、模型、Skill 和快捷指令引用，提供定位画布与查看详情交互。
+ */
+import { useEffect, useRef, type MouseEvent } from 'react';
+import { Icon } from '@iconify/react';
+import { useAppStore, type AppState } from '../../store/useAppStore';
+import { t as translate, useT } from '../../i18n';
+
+type ReferenceTokenKind = 'node' | 'model' | 'skill' | 'drama' | 'slash';
+
+interface ReferenceToken {
+  kind: ReferenceTokenKind;
+  raw: string;
+  label: string;
+  id?: string;
+  displayId?: number;
+  start: number;
+  end: number;
+}
+
+interface ChatReferenceTextProps {
+  value: string;
+  compact?: boolean;
+}
+
+export interface ChatReferenceHandlers {
+  onNodeActivate?: (nodeId: string) => void;
+  onNodeHover?: (nodeId: string | null) => void;
+  onModelActivate?: (modelId: string) => void;
+}
+
+type InteractiveChatReferenceTextProps = ChatReferenceTextProps & ChatReferenceHandlers;
+
+const TOKEN_PATTERN = /@\{([^:}\r\n]+):([^}\r\n]+)\}|@model\{([^|}\r\n]+)\|([^}\r\n]*)\}|@skill\{([^|}\r\n]+)\|([^}\r\n]*)\}|@drama\{([^:}\r\n]+):([^}\r\n]+)\}|\/[^\s/]*/g;
+
+type NodeDisplayIdMap = ReadonlyMap<string, number | undefined>;
+
+let cachedNodeDisplayIdSource: AppState['nodes'] | undefined;
+let cachedNodeDisplayIds: NodeDisplayIdMap = new Map();
+
+/**
+ * Canvas drag and selection updates replace the nodes array on every frame while
+ * node ids and display ids usually remain unchanged. Keep this derived snapshot
+ * stable so every rendered chat reference does not subscribe to transient canvas state.
+ */
+// Exported for the selector regression test; it has no module initialization side effects.
+// eslint-disable-next-line react-refresh/only-export-components
+export function selectNodeDisplayIds(state: Pick<AppState, 'nodes'>): NodeDisplayIdMap {
+  if (state.nodes === cachedNodeDisplayIdSource) return cachedNodeDisplayIds;
+
+  let changed = state.nodes.length !== cachedNodeDisplayIds.size;
+  if (!changed) {
+    changed = state.nodes.some((node) => (
+      !cachedNodeDisplayIds.has(node.id)
+      || cachedNodeDisplayIds.get(node.id) !== node.data.displayId
+    ));
+  }
+
+  cachedNodeDisplayIdSource = state.nodes;
+  if (changed) {
+    cachedNodeDisplayIds = new Map(
+      state.nodes.map((node) => [node.id, node.data.displayId]),
+    );
+  }
+  return cachedNodeDisplayIds;
+}
+
+function decodeLabel(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseReferenceTokens(
+  value: string,
+  nodeDisplayIds: ReadonlyMap<string, number | undefined>,
+): ReferenceToken[] {
+  const tokens: ReferenceToken[] = [];
+  for (const match of value.matchAll(TOKEN_PATTERN)) {
+    const raw = match[0];
+    const start = match.index;
+    if (start == null) continue;
+
+    if (raw.startsWith('/') && start > 0 && !/\s/.test(value[start - 1])) {
+      continue;
+    }
+
+    const kind: ReferenceTokenKind = raw.startsWith('@{')
+      ? 'node'
+      : raw.startsWith('@model{')
+        ? 'model'
+      : raw.startsWith('@skill{')
+        ? 'skill'
+      : raw.startsWith('@drama{')
+        ? 'drama'
+        : 'slash';
+    const label = kind === 'node'
+      ? match[2]
+      : kind === 'model'
+        ? match[4] || translate('模型')
+      : kind === 'skill'
+        ? decodeLabel(match[6]) || 'Skill'
+      : kind === 'drama'
+        ? match[8] || translate('资产')
+        : raw.slice(1);
+    const id = kind === 'node'
+      ? match[1]
+      : kind === 'model'
+        ? match[3]
+        : kind === 'skill'
+          ? match[5]
+          : kind === 'drama'
+            ? match[7]
+            : undefined;
+    tokens.push({
+      kind,
+      raw,
+      label,
+      id,
+      displayId: kind === 'node' && id ? nodeDisplayIds.get(id) : undefined,
+      start,
+      end: start + raw.length,
+    });
+  }
+  return tokens;
+}
+
+const INPUT_TOKEN_CLASSES: Record<ReferenceTokenKind, string> = {
+  node: 'rounded-[5px] bg-indigo-400/15 text-indigo-200 ring-1 ring-inset ring-indigo-400/25',
+  model: 'rounded-[5px] bg-sky-400/15 text-sky-200 ring-1 ring-inset ring-sky-400/20',
+  skill: 'rounded-[5px] bg-emerald-400/15 text-emerald-200 ring-1 ring-inset ring-emerald-400/20',
+  drama: 'rounded-[5px] bg-violet-400/15 text-violet-200 ring-1 ring-inset ring-violet-400/20',
+  slash: 'rounded-[4px] bg-emerald-400/10 text-emerald-200',
+};
+
+const COMPACT_TOKEN_CLASSES: Record<ReferenceTokenKind, string> = {
+  node: 'border-indigo-400/25 bg-indigo-400/10 text-canvas-text',
+  model: 'border-sky-400/25 bg-sky-400/10 text-canvas-text',
+  skill: 'border-emerald-400/25 bg-emerald-400/10 text-canvas-text',
+  drama: 'border-violet-400/25 bg-violet-400/10 text-canvas-text',
+  slash: 'border-emerald-400/20 bg-emerald-400/10 text-canvas-text',
+};
+
+const ACCENT_CLASSES: Record<ReferenceTokenKind, string> = {
+  node: 'bg-indigo-300/70',
+  model: 'bg-sky-300/70',
+  skill: 'bg-emerald-300/70',
+  drama: 'bg-violet-300/70',
+  slash: 'bg-emerald-300/70',
+};
+
+interface CompactTokenProps extends ChatReferenceHandlers {
+  token: ReferenceToken;
+  missing?: boolean;
+  onMissingNode: () => void;
+}
+
+function referenceAttributes(token: ReferenceToken) {
+  return {
+    'data-chat-reference': token.kind === 'slash' ? undefined : token.kind,
+    'data-chat-reference-raw': token.kind === 'slash' ? undefined : token.raw,
+    'data-ref-id': token.kind === 'node' ? token.id : undefined,
+    'data-ref-label': token.kind === 'node' ? token.label : undefined,
+    'data-drama-id': token.kind === 'drama' ? token.id : undefined,
+    'data-drama-label': token.kind === 'drama' ? token.label : undefined,
+    'data-skill-id': token.kind === 'skill' ? token.id : undefined,
+    'data-skill-name': token.kind === 'skill' ? token.label : undefined,
+    'data-model-ref-id': token.kind === 'model' ? token.id : undefined,
+    'data-model-ref-label': token.kind === 'model' ? token.label : undefined,
+  };
+}
+
+function CompactToken({
+  token,
+  missing = false,
+  onMissingNode,
+  onNodeActivate,
+  onNodeHover,
+  onModelActivate,
+}: CompactTokenProps) {
+  const t = useT();
+  const modelClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (modelClickTimer.current !== null) clearTimeout(modelClickTimer.current);
+  }, []);
+  const label = token.kind === 'skill' || token.kind === 'slash' ? `/${token.label}` : token.label;
+  const interactive = token.kind === 'node' || token.kind === 'model';
+  const activate = () => {
+    if (token.kind === 'node' && token.id) {
+      if (missing) onMissingNode();
+      else onNodeActivate?.(token.id);
+    }
+    if (token.kind === 'model' && token.id) onModelActivate?.(token.id);
+  };
+  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    if (token.kind !== 'model' || event.detail === 0) {
+      activate();
+      return;
+    }
+    if (modelClickTimer.current !== null) clearTimeout(modelClickTimer.current);
+    modelClickTimer.current = null;
+    if (event.detail > 1) return;
+    // 第二次 click 早于 dblclick，先取消单击菜单，双击留给统一引用预览入口。
+    modelClickTimer.current = setTimeout(() => {
+      modelClickTimer.current = null;
+      activate();
+    }, 300);
+  };
+  const content = (
+    <>
+      <span
+        aria-hidden="true"
+        className={`mr-1.5 h-3 w-0.5 shrink-0 rounded-full ${missing ? 'bg-red-300/65' : ACCENT_CLASSES[token.kind]}`}
+      />
+      <span className="truncate">{label || '/'}</span>
+      {token.kind === 'node' && token.displayId != null && (
+        <span className="ml-1.5 shrink-0 border-l border-indigo-300/20 pl-1.5 text-[0.84em] font-semibold tabular-nums text-canvas-text-secondary">
+          #{token.displayId}
+        </span>
+      )}
+      {missing && <Icon icon="mdi:link-variant-off" width="12" className="ml-1.5 shrink-0" />}
+    </>
+  );
+
+  if (interactive) {
+    return (
+      <button
+        type="button"
+        {...referenceAttributes(token)}
+        onClick={handleClick}
+        onMouseEnter={() => token.kind === 'node' && !missing && token.id && onNodeHover?.(token.id)}
+        onMouseLeave={() => token.kind === 'node' && onNodeHover?.(null)}
+        aria-label={missing
+          ? t('{label}，节点已不存在', { label })
+          : token.kind === 'node'
+            ? t('定位节点 {label}', { label })
+            : t('重新选择模型，当前为 {label}', { label })}
+        data-tooltip={missing ? t('节点已不存在') : token.kind === 'node' ? t('在画布中定位') : t('重新选择模型')}
+        className={`mx-0.5 inline-flex max-w-full items-center rounded-[7px] border px-2 py-1 align-middle text-[0.92em] font-medium leading-none shadow-sm transition-[border-color,background-color,color,transform]
+          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 active:scale-[0.98]
+          ${missing
+            ? 'border-red-400/25 bg-red-400/10 text-canvas-text'
+            : `${COMPACT_TOKEN_CLASSES[token.kind]} hover:border-current hover:bg-canvas-hover/80`}`}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <span
+      {...referenceAttributes(token)}
+      role={token.kind === 'slash' ? undefined : 'button'}
+      tabIndex={token.kind === 'slash' ? undefined : 0}
+      className={`mx-0.5 inline-flex max-w-full items-center rounded-[7px] border px-2 py-1 align-middle text-[0.92em] font-medium leading-none shadow-sm ${COMPACT_TOKEN_CLASSES[token.kind]}`}
+    >
+      {content}
+    </span>
+  );
+}
+
+export default function ChatReferenceText({
+  value,
+  compact = false,
+  onNodeActivate,
+  onNodeHover,
+  onModelActivate,
+}: InteractiveChatReferenceTextProps) {
+  const t = useT();
+  const nodeDisplayIds = useAppStore(selectNodeDisplayIds);
+  const currentProjectId = useAppStore((state) => state.currentProjectId);
+  const showToast = useAppStore((state) => state.showToast);
+  const setHoveredMentionNodeId = useAppStore((state) => state.setHoveredMentionNodeId);
+  const tokens = parseReferenceTokens(value, nodeDisplayIds);
+  if (tokens.length === 0) return <>{value}</>;
+
+  const activateNode = onNodeActivate ?? ((nodeId: string) => {
+    window.dispatchEvent(new CustomEvent('canvas-focus-node', { detail: { nodeId } }));
+  });
+  const hoverNode = onNodeHover ?? setHoveredMentionNodeId;
+  const activateModel = onModelActivate ?? ((modelId: string) => {
+    window.dispatchEvent(new CustomEvent('chat-open-reference-menu', {
+      detail: { kind: 'model', modelId },
+    }));
+  });
+
+  const content: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const token of tokens) {
+    if (token.start > cursor) content.push(value.slice(cursor, token.start));
+    const missing = token.kind === 'node'
+      && !!currentProjectId
+      && !!token.id
+      && !nodeDisplayIds.has(token.id);
+    content.push(compact
+      ? (
+          <CompactToken
+            key={`${token.start}-${token.raw}`}
+            token={token}
+            missing={missing}
+            onMissingNode={() => showToast(t('引用的节点已不存在'), 'error')}
+            onNodeActivate={activateNode}
+            onNodeHover={hoverNode}
+            onModelActivate={activateModel}
+          />
+        )
+      : (
+          <span
+            key={`${token.start}-${token.raw}`}
+            {...referenceAttributes(token)}
+            role={token.kind === 'slash' ? undefined : 'button'}
+            tabIndex={token.kind === 'slash' ? undefined : 0}
+            className={INPUT_TOKEN_CLASSES[token.kind]}
+          >
+            {token.raw}
+          </span>
+        ));
+    cursor = token.end;
+  }
+  if (cursor < value.length) content.push(value.slice(cursor));
+  return <>{content}</>;
+}

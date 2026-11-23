@@ -1,0 +1,326 @@
+/* ============================================
+   Model Selector
+   ============================================ */
+.model-selector {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.model-selector.model-selector--sm > .model-selector-trigger {
+  height: var(--ui-control-h-sm);
+  padding: 0 var(--ui-pad-sm);
+  border-radius: var(--button-radius-sm);
+  font-size: var(--ui-font-sm);
+}
+.model-selector-trigger:not(.prompt-btn) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  cursor: var(--cursor-pointer, pointer);
+  transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
+}
+.model-selector-trigger:not(.prompt-btn):hover {
+  color: var(--theme-text);
+  background: var(--white-alpha-03);
+}
+.model-selector-trigger.has-model:not(.prompt-btn) {
+  color: var(--theme-text-secondary);
+}
+.model-selector-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+.model-selector-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-selector .caret {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform var(--transition-smooth);
+}
+
+/* Workflow trigger state */
+.model-selector-trigger.has-workflow:not(.prompt-btn) {
+  color: var(--brand-light);
+  border-color: color-mix(in srgb, var(--brand) 20%, transparent);
+  background: var(--brand-alpha-08);
+}
+.model-selector-trigger.has-workflow .model-selector-icon {
+  color: var(--brand-light);
+}
+.model-selector-trigger.has-workflow-editor .model-selector-label {
+  padding-right: 24px;
+}
+.model-selector .model-workflow-edit {
+  position: absolute;
+  top: 50%;
+  right: 24px;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--brand-light);
+}
+.model-selector .model-workflow-edit:hover:not(:disabled) {
+  background: transparent;
+}
+
+/* 提示词栏模型入口复用同栏 prompt-btn；此处只适配可变宽内容与独立操作。 */
+.model-selector--pill {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+.model-selector--pill > .model-selector-trigger.prompt-btn {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
+  padding: 0 4px;
+}
+.model-selector--pill:has(> .model-selector-clear:hover) > .model-selector-trigger {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+.model-selector--pill > .model-selector-trigger:focus-visible,
+.model-selector--pill > .model-selector-clear:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.model-selector--pill .model-selector-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: calc(var(--ui-control-h) - 12px);
+  height: calc(var(--ui-control-h) - 12px);
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-secondary);
+}
+.model-selector--pill .model-selector-clear:hover:not(:disabled) {
+  background: transparent;
+  color: var(--theme-text);
+}
+.model-selector--pill .model-selector-clear:active:not(:disabled) {
+  transform: translateY(-50%);
+}
+.model-selector--pill .has-workflow-editor .ui-model-pill__label {
+  padding-right: 24px;
+}
+.model-selector--pill .model-workflow-edit {
+  right: 36px;
+  width: 20px;
+  height: 20px;
+  background: transparent;
+}
+.model-selector--pill .model-workflow-edit:hover:not(:disabled) {
+  background: transparent;
+}
+.model-workflow-edit--toolbar.prompt-btn,
+.model-workflow-edit--toolbar.prompt-btn:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: var(--brand-light);
+}
+
+/* Text Model Icon */
+.text-model-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.text-model-icon-badge {
+  background: var(--theme-border);
+  color: var(--theme-text-secondary);
+}
+.text-model-icon-mini {
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+  background: var(--theme-border);
+  color: var(--theme-text-secondary);
+}
+/* Vendor badges carry their own brand hue; tint and glyph are both derived from
+   --badge-hue so the light theme can darken the glyph without losing the identity.
+   厂商徽标各带品牌色，底色与字形都由 --badge-hue 推导，浅色主题下可只压暗字形而保留辨识度。 */
+.text-model-icon-badge[data-badge],
+.text-model-icon-mini[data-badge] {
+  background: color-mix(in srgb, var(--badge-hue) 18%, transparent);
+  color: var(--badge-hue);
+}
+[data-theme='light'] .text-model-icon-badge[data-badge],
+[data-theme='light'] .text-model-icon-mini[data-badge] {
+  background: color-mix(in srgb, var(--badge-hue) 22%, transparent);
+  color: color-mix(in srgb, var(--badge-hue) 62%, var(--theme-text));
+}
+.text-model-icon-badge[data-badge="OA"] { --badge-hue: #818cf8; }
+.text-model-icon-badge[data-badge="M"]  { --badge-hue: #a855f7; }
+.text-model-icon-badge[data-badge="AM"] { --badge-hue: #4ade80; }
+.text-model-icon-mini[data-badge="OA"]  { --badge-hue: #818cf8; }
+.text-model-icon-mini[data-badge="M"]   { --badge-hue: #a855f7; }
+.text-model-icon-mini[data-badge="AM"]  { --badge-hue: #4ade80; }
+.text-model-icon-mini[data-badge="PP"]  { --badge-hue: #fbbf24; }
+.text-model-icon-mini[data-badge="MX"]  { --badge-hue: #34d399; }
+.text-model-icon-mini[data-badge="QW"]  { --badge-hue: #60a5fa; }
+.text-model-icon-mini[data-badge="DS"]  { --badge-hue: #a78bfa; }
+.text-model-icon-mini[data-badge="KM"]  { --badge-hue: #fb923c; }
+.text-model-icon-mini[data-badge="NB"]  { --badge-hue: #22c55e; }
+.text-model-icon-mini[data-badge="NP"]  { --badge-hue: #10b981; }
+.text-model-icon-mini[data-badge="ND"]  { --badge-hue: #059669; }
+.text-model-icon-mini[data-badge="SD"]  { --badge-hue: #818cf8; }
+.text-model-icon-mini[data-badge="DB"]  { --badge-hue: #60a5fa; }
+.text-model-icon-mini[data-badge="DL"]  { --badge-hue: #93c5fd; }
+.text-model-icon-mini[data-badge="V"]   { --badge-hue: #10b981; }
+.text-model-icon-mini[data-badge="GR"]  { --badge-hue: #f472b6; }
+.text-model-icon-mini[data-badge="JM"]  { --badge-hue: #fbbf24; }
+.text-model-icon-mini[data-badge="RH"]  { --badge-hue: #8b5cf6; }
+.text-model-icon-mini[data-badge="BP"]  { --badge-hue: #06b6d4; }
+.text-model-icon-mini[data-badge="B2"]  { --badge-hue: #0ea5e9; }
+.text-model-icon-mini[data-badge="RW"]  { --badge-hue: #a5b4fc; }
+
+/* Workflow icon in trigger */
+.model-selector-icon svg {
+  display: block;
+}
+
+/* Workflow icon badge */
+.text-model-icon-wf {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--brand-alpha-15);
+  color: var(--brand-pale);
+}
+
+/* Workflow section empty state */
+.model-wf-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  color: var(--theme-text-muted);
+  font-size: 12px;
+}
+
+/* Workflow item dots */
+.wf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand-light);
+  margin: 5px;
+}
+.wf-none-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--theme-text-muted);
+  margin: 5px;
+}
+
+/* 菜单展示样式已提升到 UI Kit；这里仅保留宿主相对定位。 */
+.model-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  transform-origin: bottom left;
+}
+/* 向上空间不足时 → 向下弹出 */
+.model-dropdown.drop-down {
+  bottom: auto;
+  top: 100%;
+  margin-bottom: 0;
+  margin-top: 4px;
+  transform-origin: top left;
+}
+
+/* 右边界溢出时 → 右对齐 */
+.model-dropdown.drop-align-right {
+  left: auto;
+  right: 0;
+  transform-origin: bottom right;
+}
+.model-dropdown.drop-down.drop-align-right {
+  transform-origin: top right;
+}
+
+/* ============================================
+   Chat Panel — Model Menu
+   输入栏触发器共用节点的 pill 外观；这里只保留助手菜单的紧凑排版。
+   ============================================ */
+
+/* 对话菜单沿用横向列表宽度，仅限制高度。 */
+.chat-panel-input-toolbar .model-dropdown {
+  max-height: 280px;
+  transform-origin: bottom left;
+  animation: popoverIn var(--dur-normal) var(--ease-out-expo);
+}
+
+/* 分组标题缩小 */
+.chat-panel-input-toolbar .model-group-header {
+  padding: 6px 7px;
+  gap: 4px;
+}
+.chat-panel-input-toolbar .model-group-name {
+  font-size: 11px;
+}
+.chat-panel-input-toolbar .model-group-desc {
+  font-size: 11px;
+}
+
+/* 分组子项缩进减半 */
+.chat-panel-input-toolbar .model-group-items {
+  padding-left: 14px;
+}
+
+.model-group-items-models,
+.chat-panel-input-toolbar .model-group-items-models {
+  padding-left: 4px;
+}
+
+/* 模型项缩小 */
+.chat-panel-input-toolbar .model-item {
+  min-height: 32px;
+  padding: 6px 7px;
+  gap: 4px;
+}
+.chat-panel-input-toolbar .model-item-name {
+  font-size: 11px;
+}
+.chat-panel-input-toolbar .model-item-desc {
+  font-size: 11px;
+}
+

@@ -1,0 +1,85 @@
+/* ============================================
+   Text Node — compact output, edit, wordcount, toolbar, fullscreen
+   ============================================ */
+
+.text-output-content.compact {
+  align-self: stretch;
+  display: block;
+  overflow-y: auto;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--theme-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px;
+  cursor: var(--cursor-text, text);
+  border-radius: var(--appearance-node-radius-inner, max(0px, calc(var(--appearance-node-radius, 12px) - 4px)));
+  transition: background var(--transition-base), box-shadow var(--transition-base);
+}
+
+.text-output-content.compact:hover {
+  background: var(--brand-alpha-05);
+  box-shadow: inset 0 0 0 1px var(--brand-alpha-10);
+}
+
+/* Edit mode textarea */
+.text-output-edit {
+  align-self: stretch;
+  width: 100%;
+  min-height: 100%;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--theme-text);
+  background: var(--theme-bg);
+  border: 1px solid var(--node-text);
+  border-radius: var(--appearance-node-radius-inner, max(0px, calc(var(--appearance-node-radius, 12px) - 4px)));
+  resize: none;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px;
+  font-family: inherit;
+}
+
+.text-output-edit::placeholder {
+  color: var(--theme-text-muted);
+}
+
+.text-node-empty-editable {
+  cursor: var(--cursor-text, text);
+  transition: color var(--transition-base), background var(--transition-base);
+}
+
+.text-node-empty-editable:hover {
+  color: var(--theme-text-secondary);
+  background: var(--brand-alpha-05);
+}
+
+.text-node-edit-hint {
+  font-size: 9px;
+  color: var(--theme-text-muted);
+  opacity: 0.72;
+}
+
+/* Character count — bottom-right inside text node */
+.text-node-wordcount {
+  position: absolute;
+  right: 5px;
+  bottom: -12px;
+  font-size: 8px;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  z-index: 2;
+}
+
+/* ============================================
+   Text Toolbar — above selected TextNode
+   ============================================ */
+.text-toolbar {
+  top: -40px !important;
+  left: 50%;
+  margin: 0 auto;
+  gap: 4px;
+}

@@ -1,0 +1,454 @@
+/**
+ * Chat 类型定义 — 对话助手相关的 CommandId、Selector AST、CommandIntent、
+ * CommandPlan、CommandResult、ChatMessage、ChatConversation 等核心类型
+ */
+import type { AgentMode, AgentTask, ProviderModelCatalogSummary } from './agent';
+import type { AssistantExecutionSelection } from './agentTeam';
+
+export type ChatPanelView = 'chat' | 'list' | 'tasks';
+
+import type { NodeType } from './index';
+import type {
+  CanvasMaterializationStatus,
+  MediaGenerationResult,
+  MediaGenerationStatus,
+} from './media';
+
+// ============================================
+// 命令 ID
+// ============================================
+
+export type CommandId =
+  | 'query'
+  | 'select'
+  | 'deleteNodes'
+  | 'undo'
+  | 'redo'
+  | 'connect'
+  | 'groupByType'
+  | 'translatePrompt'
+  | 'regenerate'
+  | 'describe'
+  | 'cancelTask';
+
+// ============================================
+// Selector AST — 目标选择器
+// ============================================
+
+export type NodeSelector =
+  | { op: 'selected' }
+  | { op: 'displayId'; value: number }
+  | { op: 'type'; value: NodeType }
+  | { op: 'status'; value: 'idle' | 'loading' | 'success' | 'error' }
+  | { op: 'and'; items: NodeSelector[] }
+  | { op: 'or'; items: NodeSelector[] }
+  | { op: 'not'; item: NodeSelector };
+
+// ============================================
+// CommandIntent — AI/规则引擎产出的意图
+// ============================================
+
+export interface CommandIntent {
+  commandId: CommandId;
+  selector?: NodeSelector;
+  params?: unknown;
+  parseSource: 'rule' | 'llm';
+  confidence: number;
+}
+
+// ============================================
+// CommandPlan — 规划器生成的执行计划
+// ============================================
+
+export interface CommandPlan<TParams = unknown> {
+  id: string;
+  projectId: string;
+  baseRevision: number;
+  commandId: CommandId;
+  targetNodeIds: string[];
+  params: TParams;
+  summary: string;
+  risk: 'read' | 'low' | 'destructive' | 'external';
+  requiresConfirm: boolean;
+  externalDataDisclosure?: ExternalDataDisclosure;
+}
+
+export interface ExternalDataDisclosure {
+  modelId?: string;
+  providerName?: string;
+  fieldsSent: string[];
+  mediaSent: boolean;
+  estimatedCost: string;
+}
+
+// ============================================
+// CommandResult — 命令执行结果
+// ============================================
+
+export interface CommandResult {
+  planId: string;
+  status: 'success' | 'partial' | 'rejected' | 'failed';
+  affectedNodeIds: string[];
+  message: string;
+  errorCode?: string;
+  historyIndex?: number;
+}
+
+// ============================================
+// 流事件协议
+// ============================================
+
+export type StreamPhase = 'connecting' | 'responding' | 'planning';
+export type FinishReason = 'stop' | 'length' | 'canceled' | 'error';
+
+export type AssistantStreamEvent =
+  | { type: 'start'; requestId: string; modelId: string }
+  | { type: 'text.delta'; delta: string }
+  | { type: 'reasoning.delta'; delta: string; source: 'openai-compatible' | 'anthropic-compatible' | 'gemini-native' }
+  | { type: 'status'; phase: StreamPhase; message?: string }
+  | { type: 'conversation.title'; title: string }
+  | { type: 'tool.call.delta'; callId: string; delta: string }
+  | { type: 'tool.call.final'; call: ProposedToolCall }
+  | { type: 'tool.result'; result: ToolResultSummary }
+  | { type: 'intent.final'; intents: CommandIntent[] }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  | { type: 'error'; code: string; message: string; retryable: boolean }
+  | { type: 'done'; finishReason: FinishReason };
+
+// ============================================
+// 工具调用（P1）
+// ============================================
+
+export interface ProposedToolCall {
+  callId: string;
+  toolId: string;
+  input: unknown;
+}
+
+export interface ToolResultSummary {
+  callId: string;
+  toolId: string;
+  status: 'success' | 'error' | 'denied';
+  summary: string;
+  errorCode?: string;
+  truncated: boolean;
+  sources?: WebSource[];
+  resultReference?: import('./agentResult').AgentResultReference;
+}
+
+export interface WebSource {
+  id: string;
+  citationId?: string;
+  title: string;
+  url: string;
+  domain: string;
+  snippet?: string;
+  fetchedAt: number;
+  sourceType: 'search' | 'page';
+}
+
+/** 读取完整性只描述本次有界读取，不代表整站内容已遍历完毕。 */
+export type WebReadIssue =
+  | 'page_limit' | 'body_limit' | 'text_limit' | 'timeout'
+  | 'navigation_failed' | 'duplicate_page' | 'empty_page' | 'render_failed'
+  | 'catalog_fallback';
+
+export interface WebReadStatus {
+  readMethod: 'static' | 'rendered' | 'catalog';
+  complete: boolean;
+  issues: WebReadIssue[];
+}
+
+/** 以下正文类型仅用于瞬时读取，不能挂到消息、任务摘要或其他持久化类型上。 */
+export interface NativeWebReadPage {
+  url: string;
+  title?: string | null;
+  contentType: string;
+  body: string;
+  truncated?: boolean;
+}
+
+export interface NativeWebReadResponse {
+  url: string;
+  contentType: string;
+  /** 旧版本或静态读取的单页正文；新动态响应通过 pages 返回，不重复拼接正文。 */
+  body: string;
+  fetchedAt: number;
+  pages?: NativeWebReadPage[];
+  readMethod?: 'static' | 'rendered';
+  complete?: boolean;
+  issues?: WebReadIssue[];
+}
+
+export interface WebPageLink {
+  title: string;
+  url: string;
+}
+
+export interface WebReadPage {
+  source: WebSource;
+  text: string;
+  links: WebPageLink[];
+  truncated: boolean;
+}
+
+/** 宿主提供的读取作用域，不能由工具输入指定。 */
+export interface WebReadAccessScope {
+  projectId: string;
+  conversationId: string;
+  taskId: string;
+}
+
+export interface WebReadSection {
+  id: string;
+  title: string;
+  offset: number;
+  url: string;
+}
+
+/** 完整正文仅供有界内存快照使用，不可持久化。 */
+export interface WebReadDocument extends WebReadStatus {
+  pages: WebReadPage[];
+  catalog?: ProviderModelCatalogSummary;
+}
+
+export interface WebReadContinuation {
+  readSessionId?: string;
+  cursor?: string;
+  offset?: number;
+  section?: string;
+}
+
+export interface WebPageResult extends WebReadStatus {
+  /** 与旧调用方兼容，始终指向第一份有效正文的来源。 */
+  source: WebSource;
+  pages: WebReadPage[];
+  text: string;
+  truncated: boolean;
+  links: WebPageLink[];
+  readSessionId?: string;
+  nextCursor?: string;
+  nextOffset?: number;
+  totalTextChars?: number;
+  sections?: WebReadSection[];
+  catalog?: ProviderModelCatalogSummary;
+}
+
+// ============================================
+// 聊天消息状态
+// ============================================
+
+export type ChatMessageStatus =
+  | 'queued'
+  | 'parsing'
+  | 'streaming'
+  | 'clarifying'
+  | 'preview'
+  | 'executing'
+  | 'done'
+  | 'partial'
+  | 'interrupted'
+  | 'error'
+  | 'canceled';
+
+// ============================================
+// 聊天消息
+// ============================================
+
+/** 待发送参考图仅保存项目内文件名和展示信息，原图不进入消息或任务。 */
+export interface ChatImageReference {
+  fileName: string;
+  label: string;
+  size: number;
+}
+
+export interface ChatMessage {
+  /** Bounded, sanitized provider-returned reasoning; transient, excluded from model history. */
+  reasoning?: string;
+  reasoningTruncated?: boolean;
+  responseError?: string;
+  activity?: 'connecting' | 'responding' | 'planning' | 'compressing';
+  activityStartedAt?: number;
+  id: string;
+  /** 所属会话 ID */
+  conversationId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: number;
+  status: ChatMessageStatus;
+  /** AI 请求 ID（assistant 消息使用） */
+  requestId?: string;
+  /** 关联的 Agent 任务，用于时间线和后台状态恢复。 */
+  agentTaskId?: string;
+  /** 使用的模型 ID */
+  modelId?: string;
+  /** 关联的解析指令 */
+  commands?: CommandIntent[];
+  /** 执行结果 */
+  executionResults?: CommandResult[];
+  /** 流结束原因 */
+  finishReason?: FinishReason;
+  /** 媒体生成与文本回答使用独立状态，避免互相覆盖。 */
+  mediaStatus?: MediaGenerationStatus;
+  mediaError?: string;
+  mediaResult?: MediaGenerationResult;
+  canvasStatus?: CanvasMaterializationStatus;
+  canvasNodeId?: string;
+  canvasError?: string;
+  /** 联网工具返回的可追溯来源；不包含网页正文。 */
+  sources?: WebSource[];
+}
+
+// ============================================
+// 持久化消息
+// ============================================
+
+export interface PersistedChatMessage {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  sequence: number;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  status: ChatMessageStatus;
+  requestId?: string;
+  agentTaskId?: string;
+  modelId?: string;
+  createdAt: number;
+  updatedAt: number;
+  finishReason?: FinishReason;
+  commands?: CommandIntent[];
+  executionResults?: CommandResult[];
+  mediaStatus?: MediaGenerationStatus;
+  mediaError?: string;
+  mediaResult?: MediaGenerationResult;
+  canvasStatus?: CanvasMaterializationStatus;
+  canvasNodeId?: string;
+  canvasError?: string;
+  sources?: WebSource[];
+}
+
+// ============================================
+// 会话
+// ============================================
+
+/**
+ * 会话上下文压缩摘要（P3-D1）。
+ * 只影响发送给模型的上下文组装，不删除原始消息。
+ */
+export interface ConversationContextSummary {
+  /** 摘要正文；需保留目标、约束、决定、未完成计划、节点 ID、工具来源和失败原因 */
+  text: string;
+  /** 已被摘要覆盖的最后一条消息 ID */
+  coveredUntilMessageId: string;
+  /** 已被摘要覆盖的最后一条消息时间戳；组装时早于等于该时间的消息用摘要替代 */
+  coveredUntilTimestamp: number;
+  /** 被摘要覆盖的消息条数 */
+  coveredMessageCount: number;
+  /** 摘要自身的估算 token 数 */
+  estimatedTokens: number;
+  updatedAt: number;
+  /** P4 结构化摘要格式版本；旧摘要缺省时按 v1 读取。 */
+  formatVersion?: 2;
+}
+
+export interface ChatConversation {
+  id: string;
+  projectId: string;
+  /** 主窗口建立的工作台会话持续绑定分集；任务清理后仍保留只读创作范围。 */
+  workbenchTarget?: AgentTask['workbenchTarget'];
+  title: string;
+  /** 标题来源：auto=自动生成，user=用户手动命名 */
+  titleSource: 'auto' | 'user';
+  pinned: boolean;
+  archived: boolean;
+  /** 当前会话的 Agent 自治模式；旧会话读取时回填 collaborative。 */
+  agentMode: AgentMode;
+  /** 执行方式独立于 Plan/B/C 权限；旧会话缺省为单模型。 */
+  executionSelection?: AssistantExecutionSelection;
+  creationProfile?: import('./creationProfile').CreationProfileSelection;
+  creationProfileRevision?: number;
+  teamProfileOverride?: import('./agentTeam').AgentTeamProfile;
+  /** 用户为本会话显式启用的外部 MCP 连接；默认全部关闭。 */
+  mcpServerIds?: string[];
+  /** 每次选择变化均轮换，撤销后重新勾选不能复活旧审批。 */
+  mcpSelectionRevision?: string;
+  /** 上下文压缩摘要；不存在表示尚未压缩过 */
+  contextSummary?: ConversationContextSummary;
+  createdAt: number;
+  updatedAt: number;
+  lastMessageAt?: number;
+  /** 最近一条消息预览文本 */
+  lastMessagePreview?: string;
+  messageCount: number;
+  branchSource?: ConversationBranchSource;
+  /** 软删除时间戳，存在则在回收站中 */
+  deletedAt?: number;
+}
+
+export interface ConversationBranchSource {
+  conversationId: string;
+  messageId: string;
+  sequence: number;
+  createdAt: number;
+}
+
+// ============================================
+// 操作日志
+// ============================================
+
+export interface OperationLog {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  timestamp: number;
+  /** 命令 ID */
+  commandId: CommandId;
+  /** 人类可读摘要 */
+  summary: string;
+  /** 受影响的节点 */
+  targetNodeIds: string[];
+  /** 解析来源 */
+  parseSource: 'rule' | 'llm';
+  /** AI 请求 ID（如果有） */
+  requestId?: string;
+  /** 模型 ID */
+  modelId?: string;
+  /** 执行结果 */
+  status: 'success' | 'partial' | 'failed';
+  /** 对应历史索引 */
+  historyIndex?: number;
+  /** 是否仍可撤销 */
+  undoable: boolean;
+  /** 耗时毫秒 */
+  duration?: number;
+  /** 错误码 */
+  errorCode?: string;
+}
+
+// ============================================
+// 上下文脱敏
+// ============================================
+
+export interface CanvasNodeSummary {
+  id: string;
+  type: NodeType;
+  status: 'idle' | 'loading' | 'success' | 'error';
+  displayId?: number;
+  selected: boolean;
+}
+
+export interface CanvasContext {
+  projectId: string;
+  totalNodes: number;
+  totalEdges: number;
+  selectedNodeIds: string[];
+  nodes: CanvasNodeSummary[];
+}
+
+// ============================================
+// Store revision 模式
+// ============================================
+
+/** Revision 计数模式 */
+export type RevisionScope = 'project' | 'global';

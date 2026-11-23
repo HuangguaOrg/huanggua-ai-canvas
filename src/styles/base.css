@@ -1,0 +1,1275 @@
+/**
+ * base — 基础主题变量、字体与全局重置的样式定义。
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   AI Canvas - CSS Variables & Tokens / CSS 变量与设计令牌
+   ========================================================================== */
+
+/* ════════════════════════════════════════════════════════════════════════
+   Dark Theme (default) / 暗色主题（默认）
+   ════════════════════════════════════════════════════════════════════════ */
+:root {
+  color-scheme: dark;
+
+  /* Theme Layer / 主题层 ── */
+  /* 外框用独立的玻璃色，避免跟着面板底色变成实心边条。 */
+  --window-glass-rgb: 255 255 255;
+  --window-glass-tint: rgb(var(--window-glass-rgb) / 0.20);
+
+  --theme-bg: #0a0a0f;
+  /* 开屏遮罩在自定义透明背景下仍须遮住未就绪的画布。 */
+  --splash-base-bg: #0a0a0f;
+  --theme-surface: #14141c;
+  --dialog-surface-bg: var(--theme-surface);
+  --appearance-surface-image: none;
+  --theme-card: #1a1a26;
+  --theme-border: #2a2a3a;
+  --theme-hover: #252535;
+  --theme-text: #dddde4;
+  --theme-text-secondary: #8888a0;
+  --theme-text-muted: #7d7d91;
+  --theme-input-bg: rgba(0, 0, 0, 0.25);
+  --canvas-edge: #33334a;
+
+  /* Brand (Indigo) / 品牌色（靛蓝）── */
+  --brand: #6366f1;
+  --brand-light: #818cf8;
+  --brand-hover: #818cf8;
+  --brand-pale: #a5b4fc;
+  --brand-contrast: #ffffff;
+  --brand-alpha-04: rgba(99, 102, 241, 0.04);
+  --brand-alpha-05: rgba(99, 102, 241, 0.05);
+  --brand-alpha-08: rgba(99, 102, 241, 0.08);
+  --brand-alpha-10: rgba(99, 102, 241, 0.10);
+  --brand-alpha-12: rgba(99, 102, 241, 0.12);
+  --brand-alpha-15: rgba(99, 102, 241, 0.15);
+  --brand-alpha-20: rgba(99, 102, 241, 0.20);
+  --brand-alpha-25: rgba(99, 102, 241, 0.25);
+  --brand-alpha-30: rgba(99, 102, 241, 0.30);
+
+  /* Button component tokens / 按钮令牌；默认配色随主题，自定义由外观运行时覆盖。 */
+  --button-radius: 7px;
+  --button-radius-sm: 6px;
+  --button-radius-lg: 12px;
+  --button-border-width: 1px;
+  --button-bg: var(--white-alpha-04);
+  --button-hover-bg: var(--white-alpha-08);
+  --button-text: var(--theme-text);
+  --button-border: var(--white-alpha-08);
+  --button-hover-border: var(--white-alpha-12);
+  --button-secondary-bg: var(--theme-surface);
+  --button-secondary-hover-bg: var(--theme-hover);
+  --button-secondary-border: var(--theme-border);
+  --button-secondary-hover-border: var(--border-secondary);
+  --button-primary-bg: var(--brand);
+  --button-primary-hover-bg: var(--brand-hover);
+  --button-primary-text: var(--brand-contrast);
+  --button-primary-border: color-mix(in srgb, var(--brand) 80%, var(--theme-text));
+  --button-primary-hover-border: var(--brand-hover);
+
+  /* Node Type Colors / 节点类型颜色 ── */
+  --node-text: #6366f1;
+  --node-text-light: #818cf8;
+  --node-text-bg: rgba(99, 102, 241, 0.15);
+  --node-image: #22c55e;
+  --node-image-light: #4ade80;
+  --node-image-bg: rgba(16, 185, 129, 0.15);
+  --node-image-text: #34d399;
+  --node-video: #3b82f6;
+  --node-video-light: #60a5fa;
+  --node-video-bg: rgba(59, 130, 246, 0.15);
+  --node-audio: #f97316;
+  --node-audio-light: #fb923c;
+  --node-audio-bg: rgba(249, 115, 22, 0.15);
+  --node-panorama: #06b6d4;
+  --node-panorama-light: #22d3ee;
+  --node-panorama-bg: rgba(6, 182, 212, 0.15);
+  --node-markdown: #a855f7;
+  --node-markdown-light: #c084fc;
+  --node-markdown-bg: rgba(168, 85, 247, 0.15);
+
+  /* Semantic State Colors / 语义状态色 ── */
+  --success: #22c55e;
+  --success-light: #4ade80;
+  --success-text: #34d399;
+  --success-bg: rgba(16, 185, 129, 0.15);
+  --danger: #ef4444;
+  --danger-light: #f87171;
+  --danger-pale: #fca5a5;
+  --danger-bg: rgba(239, 68, 68, 0.15);
+  --info: #3b82f6;
+  --info-light: #60a5fa;
+  --info-bg: rgba(59, 130, 246, 0.15);
+  --warning: #f97316;
+  --warning-light: #fb923c;
+  --warning-bg: rgba(249, 115, 22, 0.15);
+
+  /* Amber accent — workflow chips & vendor badges / 琥珀强调色 — 工作流 chip 与厂商徽标 ── */
+  --accent-amber: #f59e0b;
+  --accent-amber-text: #fbbf24;
+  --accent-amber-bg: rgba(245, 158, 11, 0.10);
+  --accent-amber-border: rgba(245, 158, 11, 0.25);
+
+  /* Disabled foreground / 禁用态前景色 ── */
+  --text-disabled: #444455;
+
+  /* Video Editor Track Colors / 视频编辑器轨道颜色 ── */
+  --track-color-1: #6366f1;
+  --track-color-2: #22c55e;
+  --track-color-3: #f59e0b;
+  --track-color-4: #3b82f6;
+  --track-color-5: #ec4899;
+  --track-color-6: #14b8a6;
+
+  /* Media well — 图片/图标衬底（透明图会露出这一层，所以要跟随主题；
+     压在图片之上的徽标、遮罩不用这个，它们两个主题下都该是深色）── */
+  --media-well: rgba(0, 0, 0, 0.35);
+  --media-well-soft: rgba(0, 0, 0, 0.20);
+
+  /* ── Stock Tailwind palette, channel form / Tailwind 原生调色板（通道写法）──
+     These back the `text-red-400`, `bg-emerald-500/10`, … utilities (see tailwind.config.js).
+     Dark values are the stock Tailwind hexes, so the dark theme is unchanged; the light
+     theme re-tints the whole ramp to macaron in one place.
+     这些变量支撑 text-red-400 / bg-emerald-500/10 等工具类（见 tailwind.config.js）。
+     暗色沿用 Tailwind 原生色值保持不变，浅色主题在一处统一改写为马卡龙色阶。
+
+     Shade roles follow how this codebase actually uses them, not Tailwind's ramp:
+     300/400 are foreground (text/icon/border) shades, 500 is a tint & fill shade.
+     色阶语义按本项目实际用法：300/400 是前景色（文字/图标/描边），500 是底色与填充色。 */
+  --tw-indigo-50: 238 242 255;
+  --tw-indigo-100: 224 231 255;
+  --tw-indigo-200: 199 210 254;
+  --tw-indigo-300: 165 180 252;
+  --tw-indigo-400: 129 140 248;
+  --tw-indigo-500: 99 102 241;
+  --tw-indigo-600: 79 70 229;
+
+  --tw-purple-400: 192 132 252;
+  --tw-purple-500: 168 85 247;
+  --tw-purple-600: 147 51 234;
+
+  --tw-violet-300: 196 181 253;
+  --tw-violet-400: 167 139 250;
+  --tw-violet-500: 139 92 246;
+  --tw-violet-600: 124 58 237;
+
+  --tw-fuchsia-400: 232 121 249;
+  --tw-fuchsia-500: 217 70 239;
+  --tw-fuchsia-600: 192 38 211;
+
+  --tw-pink-400: 244 114 182;
+  --tw-pink-500: 236 72 153;
+
+  --tw-red-200: 254 202 202;
+  --tw-red-300: 252 165 165;
+  --tw-red-400: 248 113 113;
+  --tw-red-500: 239 68 68;
+
+  --tw-amber-200: 253 230 138;
+  --tw-amber-300: 252 211 77;
+  --tw-amber-400: 251 191 36;
+  --tw-amber-500: 245 158 11;
+
+  --tw-yellow-400: 250 204 21;
+  --tw-yellow-500: 234 179 8;
+
+  --tw-emerald-100: 209 250 229;
+  --tw-emerald-200: 167 243 208;
+  --tw-emerald-300: 110 231 183;
+  --tw-emerald-400: 52 211 153;
+  --tw-emerald-500: 16 185 129;
+
+  --tw-green-300: 134 239 172;
+  --tw-green-400: 74 222 128;
+  --tw-green-500: 34 197 94;
+
+  --tw-blue-400: 96 165 250;
+  --tw-blue-500: 59 130 246;
+
+  --tw-sky-100: 224 242 254;
+  --tw-sky-200: 186 230 253;
+  --tw-sky-300: 125 211 252;
+  --tw-sky-400: 56 189 248;
+
+  --tw-orange-400: 251 146 60;
+  --tw-orange-500: 249 115 22;
+
+  --tw-cyan-400: 34 211 238;
+  --tw-cyan-500: 6 182 212;
+
+  /* White Alpha Series / 白色透明度系列 ── */
+  --white-alpha-03: rgba(255, 255, 255, 0.03);
+  --white-alpha-04: rgba(255, 255, 255, 0.04);
+  --white-alpha-06: rgba(255, 255, 255, 0.06);
+  --white-alpha-08: rgba(255, 255, 255, 0.08);
+  --white-alpha-10: rgba(255, 255, 255, 0.10);
+  --white-alpha-12: rgba(255, 255, 255, 0.12);
+  --white-alpha-15: rgba(255, 255, 255, 0.15);
+
+  /* Black Alpha (Overlay) Series / 黑色透明度（遮罩）系列 ── */
+  --black-alpha-30: rgba(0, 0, 0, 0.30);
+  --black-alpha-40: rgba(0, 0, 0, 0.40);
+  --black-alpha-50: rgba(0, 0, 0, 0.50);
+  --black-alpha-60: rgba(0, 0, 0, 0.60);
+
+  /* Border Variants / 边框变体 ── */
+  --separator-color: rgba(232, 232, 237, 0.10);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-secondary: #3a3a4a;
+  --border-focus: rgba(99, 102, 241, 0.40);
+
+  /* Scrollbar / 滚动条 ── */
+  --scrollbar-thumb: #3a3a50;
+  --scrollbar-thumb-hover: #555570;
+  --scrollbar-thumb-active: #6b6b88;
+
+  /* ════════════════════════════════════════════════════════════════════════
+     Motion Design Tokens / 动效设计令牌
+     Based on 100/300/500 rule + expo-out curves / 基于 100/300/500 规则 + expo-out 缓动曲线
+     ════════════════════════════════════════════════════════════════════════ */
+
+  /* Easing curves / 缓动曲线 */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* Spring-like overshoot / 弹簧式轻微过冲（菜单、弹层弹出，贴近 Apple 落位手感）*/
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+
+  /* Duration scale / 时长阶梯 */
+  --dur-instant: 100ms;
+  --dur-fast: 135ms;
+  --dur-normal: 180ms;
+  --dur-slow: 260ms;
+
+  /* Composite transitions (most common patterns) / 组合过渡（最常用模式） */
+  --transition-base: var(--dur-fast) var(--ease-out-expo);
+  --transition-smooth: var(--dur-normal) var(--ease-out-expo);
+  --transition-colors:
+    color var(--transition-base),
+    background-color var(--transition-base),
+    border-color var(--transition-base);
+  --transition-control:
+    var(--transition-colors),
+    opacity var(--transition-base);
+
+  /* ════════════════════════════════════════════════════════════════════════
+     Glass / Frosted Surface Tokens / 毛玻璃表面令牌
+     ════════════════════════════════════════════════════════════════════════ */
+  --glass-bg: rgba(20, 20, 28, 0.92);
+  --glass-bg-light: rgba(56, 56, 76, 0.3);
+  --glass-bg-node: rgba(34, 34, 50, 0.88);
+  --glass-panel-bg: rgba(20, 20, 28, 0.77);
+  --glass-ring: rgba(255, 255, 255, 0.16);
+  --glass-ring-strong: rgba(255, 255, 255, 0.10);
+  --glass-blur-sm: 6px;
+  --glass-blur-md: 16px;
+  --glass-blur-lg: 24px;
+  --floating-surface-bg: color-mix(in srgb, var(--theme-surface) 60%, transparent);
+  --glass-bevel-border: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.18) 0%,
+    rgba(255, 255, 255, 0.09) 36%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  --glass-bevel-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  --glass-shadow-floating:
+    0 1px 2px rgba(0, 0, 0, 0.42),
+    0 12px 32px rgba(0, 0, 0, 0.38),
+    var(--glass-bevel-inset);
+  --glass-shadow-menu:
+    0 2px 8px rgba(0, 0, 0, 0.28),
+    0 12px 40px rgba(0, 0, 0, 0.48),
+    var(--glass-bevel-inset);
+  --glass-shadow-panel:
+    0 8px 24px rgba(0, 0, 0, 0.32),
+    0 24px 64px rgba(0, 0, 0, 0.48),
+    var(--glass-bevel-inset);
+  --floating-surface-shadow: var(--glass-shadow-floating);
+  --minimap-mask: rgba(10, 10, 15, 0.75);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Light Theme — Macaron / 浅色主题 — 马卡龙
+   Cool off-white neutrals + low-saturation pastel accents.
+   偏冷的米白中性色 + 低饱和马卡龙强调色。
+
+   Accent convention / 强调色约定：
+   base (--brand / --node-* / --success …) 是柔和的马卡龙色，用于填充、描边、圆点；
+   `-light` / `-pale` / `-text` 变体在浅色主题下**加深**一档，因为它们几乎都被
+   当作浅色/淡色底上的前景文字使用（暗色主题里"更亮"才可读，浅色主题里反之）。
+   ════════════════════════════════════════════════════════════════════════ */
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Theme Layer / 主题层 ── */
+  --theme-bg: #EEF2F7;
+  --splash-base-bg: #EEF2F7;
+  --theme-surface: #FFFFFF;
+  --theme-card: #F7F9FC;
+  --theme-border: #C7D0DF;
+  --theme-hover: #E5EAF2;
+  --theme-text: #252A38;
+  --theme-text-secondary: #4F5A6E;
+  --theme-text-muted: #657084;
+  --theme-input-bg: #FFFFFF;
+  --canvas-edge: #71809A;
+
+  /* Brand — macaron periwinkle / 品牌色 — 马卡龙紫罗兰 ── */
+  --brand: #5368D6;
+  --brand-light: #4053C0;
+  --brand-hover: #475BCB;
+  --brand-pale: #3D50B8;
+  --brand-contrast: #ffffff;
+
+  /* Node type colors — macaron / 节点类型颜色 — 马卡龙 ── */
+  --node-text: #7280E4;
+  --node-text-light: #5A69D4;
+  --node-text-bg: rgba(114, 128, 228, 0.14);
+  --node-image: #6ECBAA;
+  --node-image-light: #23937A;
+  --node-image-text: #23937A;
+  --node-image-bg: rgba(110, 203, 170, 0.20);
+  --node-video: #7FBBF2;
+  --node-video-light: #3B7EC4;
+  --node-video-bg: rgba(127, 187, 242, 0.20);
+  --node-audio: #F4AC7D;
+  --node-audio-light: #C06E33;
+  --node-audio-bg: rgba(244, 172, 125, 0.22);
+  --node-panorama: #6FCBD6;
+  --node-panorama-light: #26838F;
+  --node-panorama-bg: rgba(111, 203, 214, 0.20);
+  --node-markdown: #B294E6;
+  --node-markdown-light: #7F55C6;
+  --node-markdown-bg: rgba(178, 148, 230, 0.18);
+
+  /* Semantic State Colors — macaron / 语义状态色 — 马卡龙 ── */
+  --success: #6ECBAA;
+  --success-light: #23937A;
+  --success-text: #23937A;
+  --success-bg: rgba(110, 203, 170, 0.20);
+  --danger: #E27C89;
+  --danger-light: #CE4F62;
+  --danger-pale: #C24357;
+  --danger-bg: rgba(226, 124, 137, 0.18);
+  --info: #7FBBF2;
+  --info-light: #3B7EC4;
+  --info-bg: rgba(127, 187, 242, 0.20);
+  --warning: #F4AC7D;
+  --warning-light: #C06E33;
+  --warning-bg: rgba(244, 172, 125, 0.22);
+
+  /* Amber accent — macaron butter / 琥珀强调色 — 马卡龙奶油黄 ── */
+  --accent-amber: #EDBE63;
+  --accent-amber-text: #A87A24;
+  --accent-amber-bg: rgba(237, 190, 99, 0.22);
+  --accent-amber-border: rgba(237, 190, 99, 0.42);
+
+  /* Disabled foreground / 禁用态前景色 ── */
+  --text-disabled: #A9AEC0;
+
+  /* Media well / 图片衬底 ── */
+  --media-well: color-mix(in srgb, var(--theme-text) 6%, var(--theme-card));
+  --media-well-soft: color-mix(in srgb, var(--theme-text) 4%, var(--theme-card));
+
+  /* ── Stock Tailwind palette → macaron / Tailwind 原生调色板 → 马卡龙 ──
+     Families that map onto an existing macaron accent are pinned to it (indigo→品牌紫罗兰,
+     emerald/green→薄荷, blue/sky→天蓝, orange→杏色, cyan→水绿, red→玫瑰, amber/yellow→奶油黄,
+     purple→薰衣草) so there is one palette rather than two that drift apart. The rest
+     (violet / fuchsia / pink) keep their own hue at macaron saturation, since node types
+     rely on them staying distinguishable. */
+  --tw-indigo-50: 249 250 252;
+  --tw-indigo-100: 244 245 251;
+  --tw-indigo-200: 224 226 246;
+  --tw-indigo-300: 117 130 217;
+  --tw-indigo-400: 90 105 212;
+  --tw-indigo-500: 114 128 228;
+  --tw-indigo-600: 65 83 219;
+
+  --tw-purple-400: 127 85 198;
+  --tw-purple-500: 178 148 230;
+  --tw-purple-600: 119 66 211;
+
+  --tw-violet-300: 152 120 209;
+  --tw-violet-400: 136 95 206;
+  --tw-violet-500: 177 149 225;
+  --tw-violet-600: 118 72 196;
+
+  --tw-fuchsia-400: 182 66 197;
+  --tw-fuchsia-500: 209 136 218;
+  --tw-fuchsia-600: 149 64 160;
+
+  --tw-pink-400: 194 73 132;
+  --tw-pink-500: 217 139 177;
+
+  --tw-red-200: 244 222 225;
+  --tw-red-300: 209 103 117;
+  --tw-red-400: 206 79 98;
+  --tw-red-500: 226 124 137;
+
+  --tw-amber-200: 242 225 194;
+  --tw-amber-300: 175 127 35;
+  --tw-amber-400: 168 122 36;
+  --tw-amber-500: 237 190 99;
+
+  --tw-yellow-400: 168 122 36;
+  --tw-yellow-500: 237 190 99;
+
+  --tw-emerald-100: 239 247 244;
+  --tw-emerald-200: 207 234 224;
+  --tw-emerald-300: 65 151 120;
+  --tw-emerald-400: 35 147 122;
+  --tw-emerald-500: 110 203 170;
+
+  --tw-green-300: 65 151 120;
+  --tw-green-400: 35 147 122;
+  --tw-green-500: 110 203 170;
+
+  --tw-blue-400: 59 126 196;
+  --tw-blue-500: 127 187 242;
+
+  --tw-sky-100: 239 246 251;
+  --tw-sky-200: 211 230 246;
+  --tw-sky-300: 55 140 217;
+  --tw-sky-400: 59 126 196;
+
+  --tw-orange-400: 192 110 51;
+  --tw-orange-500: 244 172 125;
+
+  --tw-cyan-400: 38 131 143;
+  --tw-cyan-500: 111 203 214;
+
+  /* Brand alphas / 品牌透明度 ── */
+  --brand-alpha-04: rgba(114, 128, 228, 0.05);
+  --brand-alpha-05: rgba(114, 128, 228, 0.07);
+  --brand-alpha-08: rgba(114, 128, 228, 0.09);
+  --brand-alpha-10: rgba(114, 128, 228, 0.10);
+  --brand-alpha-12: rgba(114, 128, 228, 0.12);
+  --brand-alpha-15: rgba(114, 128, 228, 0.14);
+  --brand-alpha-20: rgba(114, 128, 228, 0.17);
+  --brand-alpha-25: rgba(114, 128, 228, 0.20);
+  --brand-alpha-30: rgba(114, 128, 228, 0.24);
+
+  /* White Alpha → cool ink alpha for overlays & subtle layers / 遮罩和微妙层切换为冷调墨色透明度 */
+  --white-alpha-03: rgba(51, 54, 77, 0.03);
+  --white-alpha-04: rgba(51, 54, 77, 0.04);
+  --white-alpha-06: rgba(51, 54, 77, 0.06);
+  --white-alpha-08: rgba(51, 54, 77, 0.07);
+  --white-alpha-10: rgba(51, 54, 77, 0.09);
+  --white-alpha-12: rgba(51, 54, 77, 0.11);
+  --white-alpha-15: rgba(51, 54, 77, 0.14);
+
+  /* Border Variants / 边框变体 ── */
+  --separator-color: rgba(37, 42, 56, 0.18);
+  --border-subtle: rgba(37, 42, 56, 0.12);
+  --border-secondary: #C7D0DF;
+  --border-focus: rgba(83, 104, 214, 0.52);
+
+  /* Scrollbar / 滚动条 ── */
+  --scrollbar-thumb: #B3BDCE;
+  --scrollbar-thumb-hover: #8996AA;
+  --scrollbar-thumb-active: #71809A;
+
+  /* Glass / Frosted Surface / 毛玻璃表面 ── */
+  --glass-bg: rgba(255, 255, 255, 0.95);
+  --glass-bg-light: rgba(255, 255, 255, 0.58);
+  --glass-bg-node: rgba(255, 255, 255, 0.90);
+  --glass-panel-bg: rgba(252, 253, 255, 0.86);
+  --glass-ring: rgba(51, 54, 77, 0.10);
+  --glass-ring-strong: rgba(51, 54, 77, 0.06);
+  /* 小弹窗内容先在主题层派生，再局部映射，避免变量自引用与全局配色变化。 */
+  --dialog-glass-content-bg: color-mix(in srgb, var(--theme-card) 44%, transparent);
+  --dialog-glass-hover-bg: color-mix(in srgb, var(--theme-hover) 72%, transparent);
+  --dialog-glass-text-secondary: color-mix(in srgb, var(--theme-text-secondary) 72%, var(--theme-text));
+  --dialog-glass-text-muted: color-mix(in srgb, var(--theme-text-muted) 86%, var(--theme-text));
+  --floating-surface-bg: color-mix(in srgb, var(--theme-surface) 70%, transparent);
+  --minimap-mask: color-mix(in srgb, var(--theme-text) 14%, transparent);
+  --glass-bevel-border: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    color-mix(in srgb, var(--theme-text) 7%, transparent) 42%,
+    color-mix(in srgb, var(--theme-text) 14%, transparent) 100%
+  );
+  --glass-bevel-inset:
+    inset 0 1px 0 color-mix(in srgb, var(--theme-surface) 82%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--theme-surface) 38%, transparent);
+  --glass-shadow-floating:
+    0 1px 2px color-mix(in srgb, var(--theme-text) 7%, transparent),
+    0 12px 32px color-mix(in srgb, var(--theme-text) 10%, transparent),
+    var(--glass-bevel-inset);
+  --glass-shadow-menu:
+    0 2px 8px color-mix(in srgb, var(--theme-text) 6%, transparent),
+    0 12px 40px color-mix(in srgb, var(--theme-text) 11%, transparent),
+    var(--glass-bevel-inset);
+  --glass-shadow-panel:
+    0 8px 24px color-mix(in srgb, var(--theme-text) 8%, transparent),
+    0 24px 64px color-mix(in srgb, var(--theme-text) 12%, transparent),
+    var(--glass-bevel-inset);
+  --floating-surface-shadow: var(--glass-shadow-floating);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Theme-aware opacity utilities / 跟随主题的透明度工具类
+   Tailwind cannot emit opacity variants for colors backed by a plain CSS
+   variable (for example `bg-brand/15`). Define the variants here so they work
+   in dark, light, system, and imported themes alike.
+   ════════════════════════════════════════════════════════════════════════ */
+.text-canvas-text\/90 { color: color-mix(in srgb, var(--theme-text) 90%, transparent); }
+.text-canvas-text-secondary\/80 { color: color-mix(in srgb, var(--theme-text-secondary) 80%, transparent); }
+.bg-canvas-bg\/60 { background-color: color-mix(in srgb, var(--theme-bg) 60%, transparent); }
+.bg-canvas-surface\/60 { background-color: color-mix(in srgb, var(--theme-surface) 60%, transparent); }
+.bg-canvas-surface\/80 { background-color: color-mix(in srgb, var(--theme-surface) 80%, transparent); }
+.bg-canvas-surface\/95 { background-color: color-mix(in srgb, var(--theme-surface) 95%, transparent); }
+.bg-canvas-card\/80 { background-color: color-mix(in srgb, var(--theme-card) 80%, transparent); }
+.bg-canvas-card\/95 { background-color: color-mix(in srgb, var(--theme-card) 95%, transparent); }
+.bg-canvas-hover\/80 { background-color: color-mix(in srgb, var(--theme-hover) 80%, transparent); }
+.bg-canvas-text-muted\/60 { background-color: color-mix(in srgb, var(--theme-text-muted) 60%, transparent); }
+.bg-brand\/10 { background-color: var(--brand-alpha-10); }
+.bg-brand\/15 { background-color: var(--brand-alpha-15); }
+.border-brand\/30 { border-color: var(--brand-alpha-30); }
+.border-brand\/40 { border-color: color-mix(in srgb, var(--brand) 40%, transparent); }
+.border-brand-light\/50 { border-color: color-mix(in srgb, var(--brand-light) 50%, transparent); }
+.border-canvas-border\/80 { border-color: color-mix(in srgb, var(--theme-border) 80%, transparent); }
+.ring-brand\/15 { --tw-ring-color: var(--brand-alpha-15); }
+.shadow-brand\/30 { --tw-shadow-color: var(--brand-alpha-30); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Light Theme — Tailwind Class Overrides / 浅色主题 — Tailwind 类覆盖
+   Tailwind resolves colors at build time; override generated utility classes here.
+   Tailwind 在构建时解析颜色，此处覆盖生成的工具类。
+   ════════════════════════════════════════════════════════════════════════ */
+[data-theme='light'] .text-canvas-text { color: var(--theme-text); }
+[data-theme='light'] .text-canvas-text\/90 { color: color-mix(in srgb, var(--theme-text) 90%, transparent); }
+[data-theme='light'] .focus\:text-canvas-text\/90:focus { color: color-mix(in srgb, var(--theme-text) 90%, transparent); }
+[data-theme='light'] .text-canvas-text-secondary { color: var(--theme-text-secondary); }
+[data-theme='light'] .text-canvas-text-secondary\/80 { color: color-mix(in srgb, var(--theme-text-secondary) 80%, transparent); }
+[data-theme='light'] .text-canvas-text-muted { color: var(--theme-text-muted); }
+[data-theme='light'] .hover\:text-canvas-text:hover { color: var(--theme-text); }
+[data-theme='light'] .hover\:text-canvas-text-secondary:hover { color: var(--theme-text-secondary); }
+
+[data-theme='light'] .bg-canvas-bg { background-color: var(--theme-bg); }
+[data-theme='light'] .bg-canvas-bg\/60 { background-color: color-mix(in srgb, var(--theme-bg) 60%, transparent); }
+/* app-box 在浅色主题下背景透明，由 CanvasBackground 的米白层负责 */
+[data-theme='light'] .app-box { background-color: transparent; }
+[data-theme='light'] .bg-canvas-surface { background-color: var(--theme-surface); }
+[data-theme='light'] .bg-canvas-surface\/60 { background-color: color-mix(in srgb, var(--theme-surface) 60%, transparent); }
+[data-theme='light'] .bg-canvas-surface\/80 { background-color: color-mix(in srgb, var(--theme-surface) 80%, transparent); }
+[data-theme='light'] .bg-canvas-surface\/95 { background-color: color-mix(in srgb, var(--theme-surface) 95%, transparent); }
+[data-theme='light'] .bg-canvas-card { background-color: var(--theme-card); }
+[data-theme='light'] .bg-canvas-card\/80 { background-color: color-mix(in srgb, var(--theme-card) 80%, transparent); }
+[data-theme='light'] .bg-canvas-card\/95 { background-color: color-mix(in srgb, var(--theme-card) 95%, transparent); }
+[data-theme='light'] .bg-canvas-hover { background-color: var(--theme-hover); }
+[data-theme='light'] .hover\:bg-canvas-border:hover { background-color: var(--theme-border); }
+[data-theme='light'] .hover\:bg-canvas-card:hover { background-color: var(--theme-card); }
+[data-theme='light'] .hover\:bg-canvas-hover:hover { background-color: var(--theme-hover); }
+[data-theme='light'] .hover\:bg-canvas-hover\/80:hover {
+  background-color: color-mix(in srgb, var(--theme-hover) 80%, transparent);
+}
+[data-theme='light'] .hover\:bg-canvas-surface:hover { background-color: var(--theme-surface); }
+[data-theme='light'] .hover\:bg-canvas-text-muted\/60:hover,
+[data-theme='light'] .group:hover .group-hover\:bg-canvas-text-muted\/60 {
+  background-color: color-mix(in srgb, var(--theme-text-muted) 60%, transparent);
+}
+
+[data-theme='light'] .border-canvas-border { border-color: var(--theme-border); }
+[data-theme='light'] .border-border-subtle { border-color: var(--border-subtle); }
+[data-theme='light'] .border-border-secondary { border-color: var(--border-secondary); }
+[data-theme='light'] .hover\:border-canvas-border\/80:hover {
+  border-color: color-mix(in srgb, var(--theme-border) 80%, transparent);
+}
+[data-theme='light'] .hover\:border-canvas-hover:hover { border-color: var(--theme-hover); }
+[data-theme='light'] .focus\:border-canvas-text-secondary:focus {
+  border-color: var(--theme-text-secondary);
+}
+
+[data-theme='light'] .shadow-canvas-border { --tw-shadow-color: var(--theme-border); }
+[data-theme='light'] .ring-canvas-border { --tw-ring-color: var(--theme-border); }
+[data-theme='light'] .divide-canvas-border { --tw-divide-opacity: 1; border-color: var(--theme-border); }
+
+/* Accent utilities resolve to dark-theme hexes at build time; re-point them at the
+   macaron tokens so the light theme stays in one palette.
+   强调色工具类在构建时固化为暗色主题色值，此处改指向马卡龙令牌，保证浅色主题同一套调色板。 */
+[data-theme='light'] .bg-brand { background-color: var(--brand); }
+[data-theme='light'] .bg-brand\/10 { background-color: var(--brand-alpha-10); }
+[data-theme='light'] .bg-brand\/15 { background-color: var(--brand-alpha-15); }
+[data-theme='light'] .bg-brand-light { background-color: var(--brand-light); }
+[data-theme='light'] .text-brand { color: var(--brand-pale); }
+[data-theme='light'] .text-brand-light { color: var(--brand-light); }
+[data-theme='light'] .border-brand\/30 { border-color: var(--brand-alpha-30); }
+[data-theme='light'] .border-brand\/40 { border-color: color-mix(in srgb, var(--brand) 40%, transparent); }
+[data-theme='light'] .border-brand-light { border-color: var(--brand-light); }
+[data-theme='light'] .border-brand-light\/50 { border-color: color-mix(in srgb, var(--brand-light) 50%, transparent); }
+[data-theme='light'] .ring-brand\/15 { --tw-ring-color: var(--brand-alpha-15); }
+[data-theme='light'] .shadow-brand\/30 { --tw-shadow-color: var(--brand-alpha-30); }
+
+[data-theme='light'] .text-node-text-light { color: var(--node-text-light); }
+[data-theme='light'] .text-node-image-light { color: var(--node-image-light); }
+[data-theme='light'] .text-node-video-light { color: var(--node-video-light); }
+[data-theme='light'] .text-node-audio-light { color: var(--node-audio-light); }
+[data-theme='light'] .bg-node-text\/15 { background-color: var(--node-text-bg); }
+[data-theme='light'] .bg-node-image\/15 { background-color: var(--node-image-bg); }
+[data-theme='light'] .bg-node-video\/15 { background-color: var(--node-video-bg); }
+[data-theme='light'] .bg-node-audio\/15 { background-color: var(--node-audio-bg); }
+[data-theme='light'] .ring-node-text\/25 { --tw-ring-color: color-mix(in srgb, var(--node-text) 30%, transparent); }
+[data-theme='light'] .ring-node-image\/25 { --tw-ring-color: color-mix(in srgb, var(--node-image) 45%, transparent); }
+[data-theme='light'] .ring-node-video\/25 { --tw-ring-color: color-mix(in srgb, var(--node-video) 45%, transparent); }
+[data-theme='light'] .ring-node-audio\/25 { --tw-ring-color: color-mix(in srgb, var(--node-audio) 45%, transparent); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Unified Glass Utility / 统一毛玻璃工具类
+   ════════════════════════════════════════════════════════════════════════ */
+.glass-surface {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-menu);
+  backdrop-filter: blur(var(--glass-blur-lg));
+}
+.glass-surface--light {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-floating);
+  backdrop-filter: blur(var(--glass-blur-md));
+}
+.glass-bevel {
+  --glass-bevel-bg: var(--glass-bg);
+  border-color: transparent;
+  background:
+    linear-gradient(var(--glass-bevel-bg), var(--glass-bevel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-menu);
+}
+.glass-bevel--floating {
+  --glass-bevel-bg: var(--floating-surface-bg);
+  box-shadow: var(--glass-shadow-floating);
+}
+.glass-bevel--panel {
+  --glass-bevel-bg: var(--glass-panel-bg);
+  box-shadow: var(--glass-shadow-panel);
+}
+.glass-bevel--card {
+  --glass-bevel-bg: color-mix(in srgb, var(--theme-card) 95%, transparent);
+  box-shadow: var(--glass-shadow-floating);
+}
+
+/* Global toast: neutral glass surface with restrained semantic accents. */
+.app-toast {
+  --toast-accent: var(--success);
+  --toast-tint: var(--success-bg);
+  color: var(--theme-text);
+  background: var(--glass-bg);
+  border-color: color-mix(in srgb, var(--toast-accent) 22%, var(--glass-ring));
+  box-shadow:
+    var(--floating-surface-shadow, 0 10px 28px var(--black-alpha-30)),
+    inset 0 1px 0 var(--glass-ring-strong);
+  backdrop-filter: blur(var(--glass-blur-md)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--glass-blur-md)) saturate(130%);
+}
+.app-toast.is-info {
+  --toast-accent: var(--info);
+  --toast-tint: var(--info-bg);
+}
+.app-toast.is-error {
+  --toast-accent: var(--danger);
+  --toast-tint: var(--danger-bg);
+}
+.app-toast-icon {
+  color: color-mix(in srgb, var(--toast-accent) 78%, var(--theme-text));
+  background: var(--toast-tint);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--toast-accent) 20%, transparent);
+}
+
+/* Update bubble: compact by default, fully readable on hover or keyboard focus. */
+.update-bubble {
+  width: min(280px, calc(100vw - 32px));
+  transition: width var(--transition-smooth);
+}
+
+.update-bubble:hover,
+.update-bubble:focus-within {
+  width: min(360px, calc(100vw - 32px));
+}
+
+.update-bubble__body {
+  display: -webkit-box;
+  max-height: 4.5em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.update-bubble:hover .update-bubble__body,
+.update-bubble:focus-within .update-bubble__body {
+  display: block;
+  max-height: clamp(96px, calc(100vh - 360px), 320px);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-line-clamp: unset;
+}
+
+/* ==========================================================================
+   AI Canvas - Base & Reset / 基础重置
+   ========================================================================== */
+
+/* CSS Reset / CSS 重置 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  border-radius: 16px;
+  background: transparent;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    'Noto Sans SC',
+    sans-serif;
+}
+
+/* 性能模式：避开部分 Windows / WebView2 显卡驱动的合成异常，并减少装饰性绘制开销。
+   Canvas、视频和 3D 的功能性 GPU 能力不受影响。 */
+html[data-performance-mode] {
+  --glass-bg: var(--theme-surface);
+  --glass-bg-light: var(--theme-surface);
+  --glass-bg-node: var(--theme-card);
+  --glass-panel-bg: var(--theme-surface);
+  --floating-surface-bg: var(--theme-surface);
+  --glass-shadow-floating: none;
+  --glass-shadow-menu: none;
+  --glass-shadow-panel: none;
+  --floating-surface-shadow: none;
+  --dur-instant: 0.01ms;
+  --dur-fast: 0.01ms;
+  --dur-normal: 0.01ms;
+  --dur-slow: 0.01ms;
+}
+
+html[data-performance-mode],
+html[data-performance-mode] body,
+html[data-performance-mode] #root {
+  background: var(--theme-bg);
+  border-radius: 0;
+}
+
+html[data-performance-mode] *,
+html[data-performance-mode] *::before,
+html[data-performance-mode] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* 状态旋转、进度条和 aria 状态区域保留必要反馈；其余 CSS 动画与过渡直接完成。 */
+html[data-performance-mode] *:not(.animate-spin):not(.animate-pulse):not([class*='spinner']):not([class*='progress']):not([class*='loading']):not([role='status']):not([role='status'] *):not([role='progressbar']):not([role='progressbar'] *):not([data-performance-motion='essential']):not([data-performance-motion='essential'] *) {
+  animation-delay: 0s !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-delay: 0s !important;
+  transition-duration: 0.01ms !important;
+}
+
+html[data-performance-mode] *::before,
+html[data-performance-mode] *::after {
+  animation-delay: 0s !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-delay: 0s !important;
+  transition-duration: 0.01ms !important;
+}
+
+html[data-performance-mode] :is(.shadow-lg, .shadow-xl, .shadow-2xl) {
+  box-shadow: none !important;
+}
+
+/* macOS 默认次像素渲染偏粗，灰度抗锯齿更接近系统观感；
+   Windows 相反——antialiased 会关掉 ClearType，1x DPI 下小号中文糊成一团。 */
+html:not([data-os='windows']),
+html:not([data-os='windows']) body,
+html:not([data-os='windows']) #root {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html[data-chat-window-platform='windows'],
+html[data-chat-window-platform='windows'] body,
+html[data-chat-window-platform='windows'] #root,
+html[data-chat-window-platform='windows'] .chat-panel-detached {
+  border-radius: 8px;
+}
+
+html {
+  position: fixed;
+  inset: 0;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+  touch-action: none;
+  -webkit-overflow-scrolling: auto;
+}
+
+/* 主窗口玻璃外框：留出 5px 透明磨砂带，不加内外轮廓高光。 */
+.app-shell {
+  --app-shell-inset: 0px;
+  /* 内置聊天助手面板尺寸；操作记录浮层按此让位 */
+  --chat-panel-width: 480px;
+  --chat-panel-inset: 12px;
+  --app-shell-content-radius: 16px;
+  isolation: isolate;
+}
+
+.app-shell::before {
+  position: absolute;
+  pointer-events: none;
+  content: '';
+  opacity: 0;
+  transition: opacity var(--transition-smooth);
+}
+
+.app-shell::before {
+  z-index: 0;
+  inset: 0;
+  padding: 5px;
+  border-radius: 16px;
+  background: var(--window-glass-tint);
+  /* 只露出 5px 外框的磨砂层，中间挖空，不给应用内容叠一层玻璃。 */
+  -webkit-mask:
+    linear-gradient(rgb(var(--window-glass-rgb)) 0 0) content-box,
+    linear-gradient(rgb(var(--window-glass-rgb)) 0 0);
+  mask:
+    linear-gradient(rgb(var(--window-glass-rgb)) 0 0) content-box,
+    linear-gradient(rgb(var(--window-glass-rgb)) 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  -webkit-backdrop-filter: blur(12px) saturate(115%);
+  backdrop-filter: blur(12px) saturate(115%);
+}
+
+.app-shell--glass-frame {
+  --app-shell-inset: 5px;
+  --app-shell-content-radius: 12px;
+}
+
+.app-shell--glass-frame::before {
+  opacity: 1;
+}
+
+/* 浅色下稍微加强玻璃底色，仍然透出窗口后面的颜色。 */
+[data-theme='light'] .app-shell {
+  --window-glass-tint: rgb(var(--window-glass-rgb) / 0.26);
+}
+
+.app-shell__content {
+  z-index: 1;
+  inset: var(--app-shell-inset);
+  border-radius: var(--app-shell-content-radius);
+  clip-path: inset(0 round var(--app-shell-content-radius));
+  transition:
+    inset var(--transition-smooth),
+    border-radius var(--transition-smooth),
+    clip-path var(--transition-smooth);
+}
+
+/* React Flow 使用独立 GPU 合成层，直接裁切其绘制容器以防节点越过窗口圆角。 */
+.app-canvas-viewport {
+  border-radius: inherit;
+  overflow: hidden;
+  clip-path: inset(0 round var(--app-shell-content-radius));
+  contain: paint;
+}
+
+/* 全屏蒙层与主内容边界保持一致，避免覆盖玻璃带或露出直角。 */
+body[data-tauri-window] {
+  --window-overlay-top: 0px;
+  --window-overlay-right: 0px;
+  --window-overlay-bottom: 0px;
+  --window-overlay-left: 0px;
+  --window-overlay-radius: 16px;
+}
+
+body[data-tauri-window][data-window-glass-frame] {
+  --window-overlay-top: 5px;
+  --window-overlay-right: 5px;
+  --window-overlay-bottom: 5px;
+  --window-overlay-left: 5px;
+  --window-overlay-radius: 12px;
+}
+
+body[data-tauri-window][data-sidebar-floating] {
+  --window-overlay-left: 30px;
+}
+
+body[data-tauri-window][data-sidebar-floating][data-window-glass-frame] {
+  --window-overlay-left: 35px;
+}
+
+/* 性能模式使用系统矩形窗口边界，不保留自定义圆角、透明带和玻璃外框。 */
+html[data-performance-mode] .app-shell,
+html[data-performance-mode] .app-shell--glass-frame {
+  --app-shell-inset: 0px;
+  --app-shell-content-radius: 0px;
+}
+
+html[data-performance-mode] .app-shell::before,
+html[data-performance-mode] .app-shell::after {
+  display: none;
+}
+
+html[data-performance-mode] .app-shell__content,
+html[data-performance-mode] .app-canvas-viewport {
+  border-radius: 0;
+  clip-path: none;
+}
+
+html[data-performance-mode] body[data-tauri-window] {
+  --window-overlay-top: 0px;
+  --window-overlay-right: 0px;
+  --window-overlay-bottom: 0px;
+  --window-overlay-left: 0px;
+  --window-overlay-radius: 0px;
+}
+
+body[data-tauri-window] > :is(
+  .fixed.inset-0,
+  .ai-dialog-expanded-backdrop,
+  .assets-panel-backdrop,
+  .matting-overlay,
+  .point-edit-overlay,
+  .text-fullscreen-overlay,
+  .fullscreen-overlay,
+  .preset-modal-overlay,
+  .dreamina-login-overlay,
+  .asset-picker-backdrop
+),
+body[data-tauri-window] .app-shell__content > :is(
+  .wf-panel-backdrop,
+  .assets-panel-backdrop,
+  .ai-dialog-expanded-backdrop,
+  .fixed.inset-0
+) {
+  top: var(--window-overlay-top);
+  right: var(--window-overlay-right);
+  bottom: var(--window-overlay-bottom);
+  left: var(--window-overlay-left);
+  border-radius: var(--window-overlay-radius);
+  overflow: hidden;
+}
+
+/* 内容内的 fixed 蒙层同样以视口定位；在蒙层自身裁切模糊合成层。 */
+body[data-tauri-window] .app-shell__content > :is(
+  .wf-panel-backdrop,
+  .assets-panel-backdrop,
+  .ai-dialog-expanded-backdrop,
+  .fixed.inset-0
+) {
+  clip-path: inset(0 round var(--window-overlay-radius));
+}
+
+/* 展开蒙层是 button，显式的 100% 尺寸会抵消右侧和底部 inset。 */
+body[data-tauri-window] > .ai-dialog-expanded-backdrop,
+body[data-tauri-window] .app-shell__content > .ai-dialog-expanded-backdrop {
+  width: auto;
+  height: auto;
+}
+/* 节点放大遮罩覆盖悬浮导航预留区，仅保留窗口玻璃外框。 */
+body[data-tauri-window][data-sidebar-floating] > .ai-dialog-expanded-backdrop {
+  left: var(--window-overlay-right);
+}
+
+/* PointEdit 通过 portal 挂载到 body，蒙层视觉与项目内置图片工具保持一致。 */
+body > .point-edit-overlay {
+  background: color-mix(in srgb, var(--black-alpha-30) 50%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* Global Scrollbar / 全局滚动条 ── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background var(--transition-base);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-active);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Custom Textarea & Input Styles / 自定义输入框样式 */
+input::placeholder,
+textarea::placeholder {
+  color: var(--theme-text-muted);
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* Native selects keep their platform popup; custom Select's hidden native fallback stays hidden. */
+select:not(.ui-select__native):not([multiple]):not([size]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-inline-end: 30px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--theme-text-secondary) 50%),
+    linear-gradient(135deg, var(--theme-text-secondary) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) calc(50% - 2px),
+    calc(100% - 8px) calc(50% - 2px);
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  color-scheme: inherit;
+  cursor: var(--cursor-pointer, pointer);
+  text-overflow: ellipsis;
+}
+
+select:not(.ui-select__native):not([multiple]):not([size]):disabled {
+  cursor: var(--cursor-not-allowed, not-allowed);
+  opacity: 0.55;
+}
+
+/* WebView2 may render the native option popup outside the themed select surface. */
+select {
+  color-scheme: inherit;
+}
+
+select option,
+select optgroup {
+  color: var(--theme-text);
+  background-color: var(--theme-card);
+}
+
+select option:disabled {
+  color: var(--theme-text-muted);
+}
+
+@media (forced-colors: active) {
+  select:not(.ui-select__native):not([multiple]):not([size]) {
+    -webkit-appearance: auto;
+    appearance: auto;
+    padding-inline-end: revert;
+    background-image: none;
+  }
+}
+
+:where(
+  button,
+  input,
+  textarea,
+  select,
+  [contenteditable='true'],
+  [role='button'],
+  [role='tab'],
+  [role='radio'],
+  [tabindex]
+):focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Animation Keyframes (unified expo-out curves) / 动画关键帧（统一 expo-out 缓动曲线）
+   ════════════════════════════════════════════════════════════════════════ */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInLeft {
+  from { transform: translateX(-12px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes zoomIn95 {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes floatUpIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 工具栏 / 锚定弹层统一入场：从锚点弹簧式生长（Apple popover 手感）
+   配合 transform-origin 控制生长方向。*/
+@keyframes popoverIn {
+  from { opacity: 0; transform: scale(0.92) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* 统一弹层入场工具类 / unified popover entrance */
+.anim-popover {
+  animation: popoverIn var(--dur-normal) var(--ease-spring);
+}
+
+.animate-in {
+  animation-duration: var(--dur-normal);
+  animation-timing-function: var(--ease-out-expo);
+  animation-fill-mode: both;
+}
+
+.fade-in { animation-name: fadeIn; }
+.zoom-in-95 { animation-name: zoomIn95; }
+
+/* Content Editable styles / 可编辑内容样式 */
+[contenteditable]:hover {
+  outline: none;
+  background-color: var(--white-alpha-03);
+}
+
+[contenteditable]:focus {
+  outline: none;
+  background-color: var(--brand-alpha-05);
+}
+
+/* ── AnimatedButton — 纯 CSS 触感缩放（替代 framer-motion 弹簧，无逐帧 JS）──
+   合成器处理 transform 过渡，按钮再多也几乎零成本；减少动效由下方全局规则禁用。 */
+.anim-btn {
+  transition: transform var(--dur-fast, 0.15s) var(--ease-out-quart, ease-out);
+}
+.anim-btn:hover:not(:disabled) {
+  transform: scale(var(--anim-hover-scale, 1.04));
+}
+.anim-btn:active:not(:disabled) {
+  transform: scale(var(--anim-tap-scale, 0.96));
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Reduced Motion — accessibility / 减少动效 — 无障碍
+   ════════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  /* 保留加载指示器的旋转，避免等待状态看起来像卡住。 */
+  *:not(.animate-spin):not([class*='spinner']),
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .anim-btn:hover:not(:disabled),
+  .anim-btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+.app-header {
+  --canvas-panel-bg: var(--appearance-panel-projectBar-bg, var(--floating-surface-bg));
+  --canvas-panel-image: var(--appearance-panel-projectBar-image, var(--appearance-surface-image, none));
+}
+.footer-toolbar {
+  --canvas-panel-bg: var(--appearance-panel-viewportToolbar-bg, var(--floating-surface-bg));
+  --canvas-panel-image: var(--appearance-panel-viewportToolbar-image, var(--appearance-surface-image, none));
+}
+.app-header,
+.episode-workbench,
+.footer-toolbar {
+  padding: 4px;
+  border-color: transparent;
+  background:
+    var(--canvas-panel-image, var(--appearance-surface-image, none)) padding-box,
+    linear-gradient(var(--canvas-panel-bg, var(--floating-surface-bg)), var(--canvas-panel-bg, var(--floating-surface-bg))) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-floating, var(--tw-shadow));
+}
+
+.canvas-zoom-slider {
+  width: 80px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 2px;
+  background: var(--separator-color);
+  cursor: var(--cursor-pointer, pointer);
+}
+
+.canvas-zoom-slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  -webkit-appearance: none;
+  appearance: none;
+  border: 2px solid var(--theme-surface);
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 1px 4px var(--black-alpha-30);
+}
+
+.canvas-zoom-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--separator-color);
+}
+
+.canvas-zoom-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--theme-surface);
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 1px 4px var(--black-alpha-30);
+}

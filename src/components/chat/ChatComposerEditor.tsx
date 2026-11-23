@@ -1,0 +1,526 @@
+/**
+ * 对话输入的可编辑文本层，维护节点、模型和 Skill 引用令牌并向外暴露插入与聚焦 API。
+ */
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+} from 'react';
+import { t as translate, useT } from '../../i18n';
+import type { PromptSubmitShortcut } from '../../types';
+import { resolvePromptEnterAction } from '../../utils/promptSubmitShortcut';
+import { buildReferenceChipEl } from '../shared/referenceChipDom';
+import { useComfyDomImageSources } from '../../hooks/useComfyDomImageSources';
+
+export type ChatComposerReference =
+  | { kind: 'node'; id: string; label: string; displayId?: number }
+  | { kind: 'model'; id: string; label: string }
+  | { kind: 'skill'; id: string; label: string }
+  | { kind: 'image'; id: string; label: string }
+  /** 资产库人物/场景/道具；发送时由 promptResolver 展开为设定正文或参考图 */
+  | { kind: 'drama'; id: string; label: string };
+
+export interface ChatComposerEditorHandle {
+  focus: () => void;
+  insertReference: (reference: ChatComposerReference) => void;
+}
+
+interface ChatComposerEditorProps {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  canSubmitEmpty?: boolean;
+  submitShortcut?: PromptSubmitShortcut;
+  nodeDisplayIds: ReadonlyMap<string, number | undefined>;
+  onMentionQueryChange: (query: string | null) => void;
+  onSlashQueryChange: (query: string | null) => void;
+  onSuggestionKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => boolean;
+  suggestionListId?: string;
+  activeSuggestionId?: string;
+  suggestionsOpen?: boolean;
+  placeholder: string;
+  disabled?: boolean;
+  /** 宿主可复用自己的引用 DOM；序列化与光标行为仍由编辑器维护。 */
+  referencePresentation?: {
+    createElement: (reference: ChatComposerReference) => HTMLSpanElement;
+    synchronize?: (root: HTMLDivElement) => void;
+  };
+}
+
+type ParsedReference = ChatComposerReference & { raw: string };
+
+const ZWSP = '\u200B';
+const REFERENCE_PATTERN = /@\{([^:}\r\n]+):([^}\r\n]+)\}|@model\{([^|}\r\n]+)\|([^}\r\n]*)\}|@skill\{([^|}\r\n]+)\|([^}\r\n]*)\}|@drama\{([^:}\r\n]+):([^}\r\n]+)\}|@image\{(chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp))\|([^}\r\n]*)\}/g;
+const REFERENCE_TEXT_PATTERN = /@\{[^:}\r\n]+:[^}\r\n]+\}|@model\{[^|}\r\n]+\|[^}\r\n]*\}|@skill\{[^|}\r\n]+\|[^}\r\n]*\}|@drama\{[^:}\r\n]+:[^}\r\n]+\}|@image\{chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp)\|[^}\r\n]*\}/;
+
+/** 只读取草稿实际引用的节点；与编辑器解析使用同一语法。 */
+// eslint-disable-next-line react-refresh/only-export-components
+export function getChatComposerNodeIds(value: string): string[] {
+  return [...new Set([...value.matchAll(REFERENCE_PATTERN)].flatMap((match) => match[1] === undefined ? [] : [match[1]]))];
+}
+
+const REFERENCE_ARIA_PREFIX: Record<ChatComposerReference['kind'], string> = {
+  node: '节点',
+  model: '模型',
+  skill: 'Skill',
+  drama: '资产',
+  image: '参考图',
+};
+
+function decodeLabel(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function sanitizeLabel(value: string): string {
+  return value.replace(/}/g, '').trim();
+}
+
+function serializeReference(reference: ChatComposerReference): string {
+  if (reference.kind === 'node') {
+    return `@{${reference.id}:${sanitizeLabel(reference.label) || '节点'}}`;
+  }
+  if (reference.kind === 'model') {
+    return `@model{${reference.id}|${sanitizeLabel(reference.label) || '模型'}}`;
+  }
+  if (reference.kind === 'drama') {
+    return `@drama{${reference.id}:${sanitizeLabel(reference.label) || '资产'}}`;
+  }
+  if (reference.kind === 'image') return `@image{${reference.id}|${encodeURIComponent(reference.label)}}`;
+  return `@skill{${reference.id}|${encodeURIComponent(reference.label)}}`;
+}
+
+function parseReference(match: RegExpExecArray, nodeDisplayIds: ReadonlyMap<string, number | undefined>): ParsedReference {
+  const raw = match[0];
+  if (match[1] !== undefined) {
+    return {
+      kind: 'node',
+      id: match[1],
+      label: match[2],
+      displayId: nodeDisplayIds.get(match[1]),
+      raw,
+    };
+  }
+  if (match[3] !== undefined) {
+    return {
+      kind: 'model',
+      id: match[3],
+      label: match[4] || translate('模型'),
+      raw,
+    };
+  }
+  if (match[5] !== undefined) {
+    return {
+      kind: 'skill',
+      id: match[5],
+      label: decodeLabel(match[6]) || 'Skill',
+      raw,
+    };
+  }
+  if (match[9] !== undefined) return { kind: 'image', id: match[9], label: decodeLabel(match[10]) || translate('参考图'), raw };
+  return {
+    kind: 'drama',
+    id: match[7],
+    label: match[8] || translate('资产'),
+    raw,
+  };
+}
+
+function isReferenceElement(node: Node | null | undefined): node is HTMLElement {
+  return !!node
+    && node.nodeType === Node.ELEMENT_NODE
+    && (node as HTMLElement).hasAttribute('data-chat-reference');
+}
+
+function isBreakElement(node: Node | null | undefined): boolean {
+  return !!node && node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR';
+}
+
+function ensureCaretSlotBefore(referenceElement: HTMLElement): void {
+  const previous = referenceElement.previousSibling;
+  if (!previous || isBreakElement(previous) || isReferenceElement(previous)) {
+    referenceElement.parentNode?.insertBefore(document.createTextNode(ZWSP), referenceElement);
+  }
+}
+
+function setReferenceAriaLabel(element: HTMLElement, reference: ParsedReference): void {
+  element.setAttribute('aria-label', `${translate(REFERENCE_ARIA_PREFIX[reference.kind])} ${reference.label}${
+    reference.kind === 'node' && reference.displayId != null ? translate('，编号 {id}', { id: reference.displayId }) : ''
+  }`);
+}
+
+function buildReferenceElement(reference: ParsedReference, presentation?: ChatComposerEditorProps['referencePresentation']): HTMLSpanElement {
+  const element = presentation?.createElement(reference) ?? buildReferenceChipEl(document, {
+    label: reference.kind === 'skill' ? `/${reference.label}` : reference.label,
+    kind: reference.kind === 'image' || reference.kind === 'drama' ? 'image' : 'text',
+    badge: reference.kind === 'node' && reference.displayId != null ? `#${reference.displayId}` : undefined,
+    iconText: reference.kind === 'model' ? 'M' : reference.kind === 'skill' ? '✦' : '@',
+  });
+  element.contentEditable = 'false';
+  element.setAttribute('role', 'button');
+  element.tabIndex = 0;
+  element.setAttribute('data-chat-reference', reference.kind);
+  element.setAttribute('data-chat-reference-raw', reference.raw);
+  if (reference.kind === 'node') {
+    element.setAttribute('data-ref-id', reference.id);
+    element.setAttribute('data-ref-label', reference.label);
+  } else if (reference.kind === 'drama') {
+    element.setAttribute('data-drama-id', reference.id);
+    element.setAttribute('data-drama-label', reference.label);
+  } else if (reference.kind === 'skill') {
+    element.setAttribute('data-skill-id', reference.id);
+    element.setAttribute('data-skill-name', reference.label);
+  } else if (reference.kind === 'model') {
+    element.setAttribute('data-model-ref-id', reference.id);
+    element.setAttribute('data-model-ref-label', reference.label);
+  } else {
+    element.setAttribute('data-chat-image-file-name', reference.id);
+    element.setAttribute('data-chat-image-label', reference.label);
+  }
+  setReferenceAriaLabel(element, reference);
+  return element;
+}
+
+function appendText(nodes: Node[], value: string): void {
+  if (!value) return;
+  const lines = value.split('\n');
+  lines.forEach((line, index) => {
+    if (index > 0) nodes.push(document.createElement('br'));
+    if (line) nodes.push(document.createTextNode(line));
+  });
+}
+
+function renderValue(value: string, nodeDisplayIds: ReadonlyMap<string, number | undefined>, presentation?: ChatComposerEditorProps['referencePresentation']): Node[] {
+  const nodes: Node[] = [];
+  let cursor = 0;
+  for (const match of value.matchAll(REFERENCE_PATTERN)) {
+    const start = match.index;
+    if (start == null) continue;
+    appendText(nodes, value.slice(cursor, start));
+    const referenceElement = buildReferenceElement(parseReference(match, nodeDisplayIds), presentation);
+    const previous = nodes[nodes.length - 1];
+    if (!previous || isBreakElement(previous) || isReferenceElement(previous)) {
+      nodes.push(document.createTextNode(ZWSP));
+    }
+    nodes.push(referenceElement);
+    cursor = start + match[0].length;
+  }
+  appendText(nodes, value.slice(cursor));
+  return nodes;
+}
+
+function serializeEditor(root: HTMLElement): string {
+  let value = '';
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      value += (node.textContent || '').split(ZWSP).join('');
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    const rawReference = element.getAttribute('data-chat-reference-raw');
+    if (rawReference != null) {
+      value += rawReference;
+      return;
+    }
+    if (element.tagName === 'BR') {
+      value += '\n';
+      return;
+    }
+    for (const child of Array.from(element.childNodes)) walk(child);
+  };
+  for (const child of Array.from(root.childNodes)) walk(child);
+  return value;
+}
+
+function containsUndecoratedReference(root: HTMLElement): boolean {
+  const visit = (node: Node): boolean => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return REFERENCE_TEXT_PATTERN.test(node.textContent || '');
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE || isReferenceElement(node)) return false;
+    return Array.from(node.childNodes).some(visit);
+  };
+  return Array.from(root.childNodes).some(visit);
+}
+
+function placeCaretAtEnd(root: HTMLElement): void {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function resolveTextCaret(range: Range): { node: Text; offset: number } | null {
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    return { node: range.startContainer as Text, offset: range.startOffset };
+  }
+  if (range.startContainer.nodeType !== Node.ELEMENT_NODE || range.startOffset === 0) return null;
+
+  let candidate: Node | null = range.startContainer.childNodes[range.startOffset - 1] ?? null;
+  while (candidate?.nodeType === Node.ELEMENT_NODE && !isReferenceElement(candidate)) {
+    candidate = candidate.lastChild;
+  }
+  if (candidate?.nodeType !== Node.TEXT_NODE) return null;
+  return { node: candidate as Text, offset: candidate.textContent?.length ?? 0 };
+}
+
+const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEditorProps>(function ChatComposerEditor({
+  value,
+  onChange,
+  onSubmit,
+  canSubmitEmpty = false,
+  submitShortcut = 'enter',
+  nodeDisplayIds,
+  onMentionQueryChange,
+  onSlashQueryChange,
+  onSuggestionKeyDown,
+  suggestionListId,
+  activeSuggestionId,
+  suggestionsOpen = false,
+  placeholder,
+  disabled = false,
+  referencePresentation,
+}, ref) {
+  const t = useT();
+  const editorRef = useRef<HTMLDivElement>(null);
+  useComfyDomImageSources(editorRef);
+  const lastRangeRef = useRef<Range | null>(null);
+  const triggerRangeRef = useRef<Range | null>(null);
+  const previousPresentationRef = useRef(referencePresentation);
+
+  const emitValue = useCallback(() => {
+    if (!editorRef.current) return;
+    referencePresentation?.synchronize?.(editorRef.current);
+    onChange(serializeEditor(editorRef.current));
+  }, [onChange, referencePresentation]);
+
+  const captureSelection = useCallback(() => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.startContainer)) lastRangeRef.current = range.cloneRange();
+  }, []);
+
+  const detectTrigger = useCallback(() => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount) return;
+    const caret = selection.getRangeAt(0);
+    const textCaret = resolveTextCaret(caret);
+    if (!editor.contains(caret.startContainer) || !textCaret) {
+      triggerRangeRef.current = null;
+      onMentionQueryChange(null);
+      onSlashQueryChange(null);
+      return;
+    }
+
+    const textBeforeCaret = (textCaret.node.textContent || '').slice(0, textCaret.offset);
+    const mention = /@([^\s@]*)$/.exec(textBeforeCaret);
+    const slash = /(?:^|\s)\/([^\s/]*)$/.exec(textBeforeCaret);
+    const trigger = mention ?? slash;
+    if (!trigger) {
+      triggerRangeRef.current = null;
+      onMentionQueryChange(null);
+      onSlashQueryChange(null);
+      return;
+    }
+
+    const replacement = caret.cloneRange();
+    replacement.setStart(textCaret.node, textCaret.offset - trigger[0].trimStart().length);
+    triggerRangeRef.current = replacement;
+    if (mention) {
+      onMentionQueryChange(mention[1]);
+      onSlashQueryChange(null);
+    } else {
+      onMentionQueryChange(null);
+      onSlashQueryChange(slash?.[1] ?? '');
+    }
+  }, [onMentionQueryChange, onSlashQueryChange]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const serializedValue = serializeEditor(editor);
+    const presentationChanged = previousPresentationRef.current !== referencePresentation;
+    previousPresentationRef.current = referencePresentation;
+    if (!presentationChanged && serializedValue === value && !containsUndecoratedReference(editor)) return;
+
+    const hadFocus = document.activeElement === editor;
+    editor.innerHTML = '';
+    for (const node of renderValue(value, nodeDisplayIds, referencePresentation)) editor.appendChild(node);
+    referencePresentation?.synchronize?.(editor);
+    if (hadFocus) placeCaretAtEnd(editor);
+  }, [nodeDisplayIds, value, referencePresentation]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    for (const element of editor.querySelectorAll<HTMLElement>('[data-chat-reference-raw]')) {
+      const match = element.getAttribute('data-chat-reference-raw')?.matchAll(REFERENCE_PATTERN).next().value;
+      if (match) setReferenceAriaLabel(element, parseReference(match, nodeDisplayIds));
+    }
+  }, [nodeDisplayIds, t]);
+
+  useEffect(() => {
+    const focusEditor = () => editorRef.current?.focus();
+    window.addEventListener('chat-focus-composer', focusEditor);
+    return () => window.removeEventListener('chat-focus-composer', focusEditor);
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => editorRef.current?.focus(),
+    insertReference: (reference) => {
+      const editor = editorRef.current;
+      if (!editor || disabled) return;
+      editor.focus();
+
+      const selection = window.getSelection();
+      const savedRange = triggerRangeRef.current ?? lastRangeRef.current;
+      const range = savedRange && editor.contains(savedRange.startContainer)
+        ? savedRange.cloneRange()
+        : document.createRange();
+      if (!savedRange || !editor.contains(savedRange.startContainer)) {
+        range.selectNodeContents(editor);
+        range.collapse(false);
+      }
+      range.deleteContents();
+
+      const raw = serializeReference(reference);
+      const chip = buildReferenceElement({ ...reference, raw }, referencePresentation);
+      range.insertNode(chip);
+      ensureCaretSlotBefore(chip);
+      const spacer = document.createTextNode(' ');
+      chip.parentNode?.insertBefore(spacer, chip.nextSibling);
+      range.setStart(spacer, 1);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      lastRangeRef.current = range.cloneRange();
+      triggerRangeRef.current = null;
+      onMentionQueryChange(null);
+      onSlashQueryChange(null);
+      emitValue();
+    },
+  }), [disabled, emitValue, onMentionQueryChange, onSlashQueryChange, referencePresentation]);
+
+  const handleInput = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (!editor.textContent && !editor.querySelector('[data-chat-reference]')) editor.innerHTML = '';
+    captureSelection();
+    detectTrigger();
+    emitValue();
+  }, [captureSelection, detectTrigger, emitValue]);
+
+  const removeAdjacentReference = useCallback((direction: 'before' | 'after'): boolean => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed || !editor.contains(range.startContainer)) return false;
+
+    let candidate: Node | null = null;
+    if (range.startContainer.nodeType === Node.TEXT_NODE) {
+      const text = range.startContainer.textContent || '';
+      if (direction === 'before' && range.startOffset === 0) candidate = range.startContainer.previousSibling;
+      if (direction === 'after' && range.startOffset === text.length) candidate = range.startContainer.nextSibling;
+    } else if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
+      candidate = direction === 'before'
+        ? range.startContainer.childNodes[range.startOffset - 1] ?? null
+        : range.startContainer.childNodes[range.startOffset] ?? null;
+    }
+    if (!isReferenceElement(candidate)) return false;
+
+    const previous = candidate.previousSibling;
+    candidate.remove();
+    if (previous?.nodeType === Node.TEXT_NODE && previous.textContent === ZWSP) previous.remove();
+    emitValue();
+    return true;
+  }, [emitValue]);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (onSuggestionKeyDown?.(event)) return;
+    const action = resolvePromptEnterAction(event.nativeEvent, submitShortcut);
+    if (action === 'submit') {
+      event.preventDefault();
+      if (!disabled && (value.trim() || canSubmitEmpty)) onSubmit();
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (action !== 'newline') return;
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const lineBreak = document.createElement('br');
+      const caretSlot = document.createTextNode(ZWSP);
+      range.insertNode(lineBreak);
+      lineBreak.parentNode?.insertBefore(caretSlot, lineBreak.nextSibling);
+      range.setStart(caretSlot, 1);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      emitValue();
+      return;
+    }
+    if (event.key === 'Backspace' && removeAdjacentReference('before')) event.preventDefault();
+    if (event.key === 'Delete' && removeAdjacentReference('after')) event.preventDefault();
+  }, [disabled, emitValue, onSubmit, canSubmitEmpty, onSuggestionKeyDown, removeAdjacentReference, submitShortcut, value]);
+
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (disabled) return;
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const text = document.createTextNode(event.clipboardData.getData('text/plain'));
+    range.insertNode(text);
+    range.setStartAfter(text);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    handleInput();
+  }, [disabled, handleInput]);
+
+  return (
+    <div className="ui-ai-input__editor-wrap">
+      <div
+        ref={editorRef}
+        role="textbox"
+        aria-label={t('对话消息')}
+        aria-multiline="true"
+        aria-disabled={disabled}
+        aria-autocomplete="list"
+        aria-controls={suggestionsOpen ? suggestionListId : undefined}
+        aria-activedescendant={suggestionsOpen ? activeSuggestionId : undefined}
+        aria-expanded={suggestionsOpen}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        spellCheck={false}
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        onKeyUp={captureSelection}
+        onMouseUp={captureSelection}
+        onPaste={handlePaste}
+        onBlur={emitValue}
+        className={`ui-ai-input__editor chat-panel-textarea${!value ? ' is-empty' : ''}`}
+        data-placeholder={placeholder}
+      />
+    </div>
+  );
+});
+
+export default ChatComposerEditor;

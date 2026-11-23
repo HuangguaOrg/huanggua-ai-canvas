@@ -1,0 +1,14 @@
+{
+  "productName": "黄瓜 AI 画布 Legacy",
+  "build": {
+    "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1 && npm run release:pack && npm run release:preflight && npm run build:mcp-adapter"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}

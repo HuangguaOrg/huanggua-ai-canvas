@@ -1,0 +1,716 @@
+/**
+ * nodes/shared/mentionEditorDom — @ 提及编辑器的 DOM 层。
+ * 把画布节点与工作流 IO 节点渲染成可插入提示词的「芯片」（chip）DOM 片段，
+ * 用零宽空格（ZWSP）作分隔占位，配合 mentionEditorSources 提供可点选的提及候选。
+ */
+import { t } from '../../../i18n';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import type { WorkflowIONodeType, StoryboardCellOverride } from '../../../types';
+import type { MediaReferenceKind } from '../../../types/aiTypes';
+import type { AppState } from '../../../store/useAppStore';
+import { useAppStore } from '../../../store/useAppStore';
+import { getFileCategory } from '../../../services/fileService';
+import { parseDramaMentionId } from '../../../types/dramaAssets';
+import { findDramaAsset, listGlobalDramaAssets, resolveDramaActionMediaRef, resolveDramaAssetImageRef } from '../../../services/dramaAssetPrompt';
+import { buildReferenceChipEl, type ReferenceChipOptions } from '../../shared/referenceChipDom';
+import { referenceThumbnailSource, setReferenceThumbnailSource } from '../../../utils/comfyMediaUrl';
+import { buildShotlistRowMentionId, parseShotlistRowMentionId } from '../../../types/shotlist';
+import { buildComfyRefmodMention, parseComfyRefmodMentions } from '../../../utils/comfyRefmodMention';
+import { comfyRefmodKey } from '../../../utils/comfyRefmod';
+import { resolveVideoThumbnailPoster } from '../../shared/videoThumbnailSource';
+
+const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export const ZWSP = '\u200B';
+const CHIP_STYLE: Record<string, string> = {
+  'ai-text': 'chip-text',
+  'ai-image': 'chip-image',
+  'ai-video': 'chip-video',
+  'ai-audio': 'chip-audio',
+  'ai-markdown': 'chip-markdown',
+  'ai-storyboard': 'chip-image',
+  'ai-shotlist': 'chip-text',
+};
+const NODE_CHIP_ICON_PATHS: Record<string, string> = {
+  'ai-text': 'M4 4h16v16H4zM8 8h8M8 12h8M8 16h5',
+  'ai-video': 'm16 8 5-3v14l-5-3M3 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z',
+  'ai-audio': 'm11 5-5 4H3v6h3l5 4V5ZM15.54 8.46a5 5 0 0 1 0 7.08M19.07 4.93a10 10 0 0 1 0 14.14',
+};
+
+/** 编辑器与生成信息共用引用图标，源节点和 Markdown 沿用对应类型。 */
+export function getNodeChipIconPath(nodeType: string): string | undefined {
+  const type = nodeType === 'ai-markdown' || nodeType === 'ai-shotlist' ? 'ai-text' : nodeType.replace(/^source-/, 'ai-');
+  return NODE_CHIP_ICON_PATHS[type];
+}
+
+const WF_IO_STYLE: Record<string, string> = {
+  prompt: 'chip-workflow-prompt',
+  image: 'chip-workflow-image',
+  video: 'chip-workflow-video',
+  audio: 'chip-workflow-audio',
+};
+const WF_IO_ICON: Record<string, string> = {
+  prompt: 'T',
+  image: 'I',
+  video: 'V',
+  audio: 'A',
+};
+const IMAGE_REFERENCE_NODE_TYPES = new Set([
+  'ai-image',
+  'source-image',
+  'ai-storyboard',
+  'ai-director',
+  'ai-panorama',
+  'ai-animation',
+]);
+
+type NodeMeta = {
+  type: string;
+  /** 子资源的实时展示标题；引用序列化仍保留原标签。 */
+  label?: string;
+  displayId?: number;
+  thumbnailUrl?: string;
+  imageReferenceKey?: string;
+  mediaReference?: { kind: MediaReferenceKind; key: string };
+};
+
+type NodeMetaSource = ReadonlyArray<Pick<AppState['nodes'][number], 'id' | 'data'>>;
+const nodeMetaCache = new WeakMap<NodeMetaSource, Map<string, NodeMeta>>();
+
+function localAssetUrl(filePath?: string): string | undefined {
+  if (!filePath || !IS_TAURI) return undefined;
+  try {
+    return convertFileSrc(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+export function bestNodeThumb(
+  data: { type?: unknown; imageUrl?: unknown; videoUrl?: unknown; thumbnailUrl?: unknown; filePath?: unknown },
+): string | undefined {
+  if (data.videoUrl || data.type === 'ai-video' || data.type === 'source-video') {
+    return resolveVideoThumbnailPoster(
+      typeof data.thumbnailUrl === 'string' ? data.thumbnailUrl : undefined,
+      typeof data.videoUrl === 'string' ? data.videoUrl : undefined,
+      typeof data.filePath === 'string' ? data.filePath : undefined,
+    );
+  }
+  if (data.imageUrl) {
+    return localAssetUrl(data.filePath as string | undefined)
+      || (data.thumbnailUrl as string | undefined)
+      || (data.imageUrl as string | undefined);
+  }
+  return data.thumbnailUrl as string | undefined;
+}
+
+export function getNodeMetaMap(nodes: NodeMetaSource) {
+  const cached = nodeMetaCache.get(nodes);
+  if (cached) return cached;
+  const map = new Map<string, NodeMeta>();
+  for (const node of nodes) {
+    const type = (node.data.type as string) || '';
+    const thumbnailUrl = bestNodeThumb(node.data);
+    const directorCaptureUrl = type === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)
+      ? node.data.directorCaptureUrls.find((url) => typeof url === 'string' && url.trim())
+      : undefined;
+    const imageReferenceKey = IMAGE_REFERENCE_NODE_TYPES.has(type) && (thumbnailUrl || directorCaptureUrl)
+      ? `node:${node.id}${!thumbnailUrl && directorCaptureUrl ? ':cap0' : ''}`
+      : undefined;
+    const mediaReference: NodeMeta['mediaReference'] = imageReferenceKey
+      ? { kind: 'image', key: imageReferenceKey }
+      : typeof node.data.videoUrl === 'string' && node.data.videoUrl.trim()
+        ? { kind: 'video', key: `node:${node.id}` }
+        : typeof node.data.audioUrl === 'string' && node.data.audioUrl.trim()
+          ? { kind: 'audio', key: `node:${node.id}` }
+          : undefined;
+    map.set(node.id, {
+      type,
+      displayId: node.data.displayId as number | undefined,
+      thumbnailUrl,
+      imageReferenceKey,
+      mediaReference,
+    });
+    if (type === 'ai-shotlist') {
+      node.data.shotlistRows?.forEach((row, index) => {
+        map.set(buildShotlistRowMentionId(node.id, row.id), {
+          type: 'ai-shotlist', label: `镜${row.shotNo || index + 1} · ${node.data.label || '分镜表'}`,
+        });
+      });
+    }
+    if (node.data.type !== 'ai-storyboard') continue;
+    const cols = Math.max(1, (node.data.storyboardCols as number) || 3);
+    const rows = Math.max(1, (node.data.storyboardRows as number) || 3);
+    const overrides = (node.data.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
+    const imageUrl = node.data.imageUrl as string | undefined;
+    for (let index = 0; index < rows * cols; index += 1) {
+      const thumbnailUrl = overrides[index]?.url || imageUrl;
+      if (thumbnailUrl) {
+        const cellId = `${node.id}/cell/${index}`;
+        map.set(cellId, {
+          type: 'ai-image',
+          displayId: undefined,
+          thumbnailUrl,
+          imageReferenceKey: `sbcell:${cellId}`,
+          mediaReference: { kind: 'image', key: `sbcell:${cellId}` },
+        });
+      }
+    }
+  }
+  nodeMetaCache.set(nodes, map);
+  return map;
+}
+
+export function isChipEl(node: Node | null | undefined): node is HTMLElement {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+  const element = node as HTMLElement;
+  return element.hasAttribute('data-ref-id')
+    || element.hasAttribute('data-asset-path')
+    || element.hasAttribute('data-drama-id')
+    || element.hasAttribute('data-wf-id')
+    || element.hasAttribute('data-refmod-raw')
+    || element.hasAttribute('data-skill-id');
+}
+
+export function isBrEl(node: Node | null | undefined): boolean {
+  return !!node && node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR';
+}
+
+export function ensureCaretSlotBeforeChip(chip: Node): void {
+  const previous = chip.previousSibling;
+  if (!previous || isBrEl(previous)) {
+    chip.parentNode?.insertBefore(document.createTextNode(ZWSP), chip);
+  } else if (previous.nodeType === Node.TEXT_NODE && !previous.textContent) {
+    previous.textContent = ZWSP;
+  }
+}
+
+/** 胶囊后也留一个文本落点，避免插入点停在不可编辑的胶囊边界。 */
+export function ensureCaretSlotAfterChip(chip: Node): Text {
+  const next = chip.nextSibling;
+  if (next?.nodeType === Node.TEXT_NODE) {
+    if (!next.textContent) next.textContent = ZWSP;
+    return next as Text;
+  }
+  const slot = document.createTextNode(ZWSP);
+  chip.parentNode?.insertBefore(slot, next);
+  return slot;
+}
+
+export function normalizeChipSlots(root: HTMLElement): void {
+  const chips = root.querySelectorAll('[data-ref-id],[data-asset-path],[data-drama-id],[data-wf-id],[data-skill-id],[data-refmod-raw]');
+  for (const chip of Array.from(chips)) {
+    ensureCaretSlotBeforeChip(chip);
+    ensureCaretSlotAfterChip(chip);
+  }
+}
+
+export function numberMediaReferenceLabels(references: Array<NodeMeta['mediaReference']>): Array<string | undefined> {
+  const indices: Record<MediaReferenceKind, Map<string, number>> = {
+    image: new Map(), video: new Map(), audio: new Map(),
+  };
+  const names = { image: '图', video: '视频', audio: '音频' };
+  return references.map((reference) => {
+    if (!reference?.key) return undefined;
+    const indexByKey = indices[reference.kind];
+    let index = indexByKey.get(reference.key);
+    if (index === undefined) {
+      index = indexByKey.size + 1;
+      indexByKey.set(reference.key, index);
+    }
+    return `(${names[reference.kind]}${index})`;
+  });
+}
+
+export function syncMediaReferenceLabels(root: HTMLElement, metaMap: Map<string, NodeMeta>): void {
+  syncNodeReferenceChips(root, metaMap);
+  const chips = Array.from(root.querySelectorAll<HTMLElement>('[data-ref-id],[data-drama-id],[data-image-ref-key],[data-media-ref-key]'));
+  const references = chips.map((chip): NodeMeta['mediaReference'] => {
+    const nodeId = chip.getAttribute('data-ref-id');
+    if (nodeId) {
+      const meta = metaMap.get(nodeId);
+      return meta?.mediaReference || (meta?.imageReferenceKey ? { kind: 'image', key: meta.imageReferenceKey } : undefined);
+    }
+    const key = chip.getAttribute('data-image-ref-key');
+    if (key) return { kind: 'image', key };
+    const mediaKey = chip.getAttribute('data-media-ref-key');
+    const kind = chip.getAttribute('data-media-ref-kind');
+    return mediaKey && (kind === 'video' || kind === 'audio') ? { kind, key: mediaKey } : undefined;
+  });
+  const labels = numberMediaReferenceLabels(references);
+
+  chips.forEach((chip, position) => {
+    const existing = Array.from(chip.children).find((child) => child.classList.contains('prompt-chip-image-index'));
+    const text = labels[position];
+    if (text === undefined) {
+      existing?.remove();
+      return;
+    }
+    const label = existing || document.createElement('span');
+    label.className = 'prompt-chip-id prompt-chip-image-index prompt-chip-media-index text-canvas-text-secondary';
+    label.textContent = text;
+    if (!existing) chip.appendChild(label);
+  });
+}
+
+// 保留编辑器现有调用入口，所有媒体标签统一由同一套同步逻辑处理。
+export const syncImageReferenceLabels = syncMediaReferenceLabels;
+
+export function serializeDOM(root: HTMLElement): string {
+  let result = '';
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      result += node.textContent || '';
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    if (element.hasAttribute('data-refmod-raw')) {
+      const raw = element.getAttribute('data-refmod-raw') || '';
+      try {
+        const mention = parseComfyRefmodMentions(raw).mentions[0];
+        result += mention ? buildComfyRefmodMention(mention.selection, mention.label) : raw;
+      } catch { result += raw; }
+    } else if (element.hasAttribute('data-ref-id')) {
+      result += `@{${element.getAttribute('data-ref-id') || ''}:${element.getAttribute('data-ref-label') || ''}}`;
+    } else if (element.hasAttribute('data-drama-id')) {
+      result += `@drama{${element.getAttribute('data-drama-id') || ''}:${element.getAttribute('data-drama-label') || ''}}`;
+    } else if (element.hasAttribute('data-asset-path')) {
+      result += `@asset{${encodeURIComponent(element.getAttribute('data-asset-path') || '')}}`;
+    } else if (element.hasAttribute('data-skill-id')) {
+      result += `@skill{${element.getAttribute('data-skill-id') || ''}|${encodeURIComponent(element.getAttribute('data-skill-name') || '')}}`;
+    } else if (element.hasAttribute('data-wf-id')) {
+      result += `@wf{${element.getAttribute('data-wf-id') || ''}|${element.getAttribute('data-wf-title') || ''}|${element.getAttribute('data-wf-type') || 'prompt'}}(`;
+      const valueElement = element.querySelector('.prompt-chip-wf-value');
+      if (valueElement) {
+        for (const child of Array.from(valueElement.childNodes)) walk(child);
+      }
+      result += ')';
+    } else if (element.tagName === 'BR') {
+      result += '\n';
+    } else {
+      for (const child of Array.from(node.childNodes)) walk(child);
+    }
+  };
+  for (const child of Array.from(root.childNodes)) walk(child);
+  return result.split(ZWSP).join('').replace(/\n+$/, '');
+}
+
+function nodeChipPresentation(meta: NodeMeta | undefined): Pick<ReferenceChipOptions, 'kind' | 'iconPath' | 'thumbnailUrl'> {
+  const nodeType = (meta?.type || 'ai-text').replace(/^source-/, 'ai-');
+  return {
+    kind: (CHIP_STYLE[nodeType] || CHIP_STYLE['ai-text']).replace('chip-', '') as ReferenceChipOptions['kind'],
+    iconPath: getNodeChipIconPath(nodeType),
+    thumbnailUrl: ['ai-image', 'ai-video', 'ai-storyboard'].includes(nodeType) ? meta?.thumbnailUrl : undefined,
+  };
+}
+
+export function buildChipEl(
+  nodeId: string,
+  label: string,
+  metaMap: Map<string, NodeMeta>,
+): HTMLSpanElement {
+  const meta = metaMap.get(nodeId);
+  const isShot = !!parseShotlistRowMentionId(nodeId);
+  const displayLabel = isShot ? meta?.label || t('{label}（镜头已失效）', { label }) : label;
+  const span = buildReferenceChipEl(document, {
+    label: displayLabel,
+    ...nodeChipPresentation(meta),
+    badge: meta?.displayId != null ? `#${meta.displayId}` : undefined,
+  });
+  span.setAttribute('data-ref-id', nodeId);
+  span.setAttribute('data-ref-label', label);
+  span.title = meta?.displayId != null ? `${displayLabel} (#${meta.displayId})` : displayLabel;
+
+  return span;
+}
+
+/** 只更新节点胶囊的类型和图标，保留引用、编号、外层 DOM 与光标。 */
+export function syncNodeReferenceChips(root: HTMLElement, metaMap: Map<string, NodeMeta>): void {
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-ref-id]'))) {
+    const nodeId = chip.getAttribute('data-ref-id') || '';
+    const meta = metaMap.get(nodeId);
+    if (!meta) continue;
+    const presentation = nodeChipPresentation(meta);
+    for (const kind of ['text', 'image', 'video', 'audio', 'markdown']) {
+      chip.classList.toggle(`chip-${kind}`, kind === presentation.kind);
+      chip.classList.toggle(`ui-reference-chip--${kind}`, kind === presentation.kind);
+    }
+    const icon = chip.querySelector<HTMLElement>('.prompt-chip-icon');
+    if (!icon) continue;
+    const image = icon.querySelector('img');
+    const thumbnail = presentation.iconPath ? undefined : presentation.thumbnailUrl;
+    icon.classList.toggle('has-thumbnail', !!thumbnail);
+    const unchanged = thumbnail
+      ? !!image && referenceThumbnailSource(image) === thumbnail
+      : !image && icon.querySelector('path')?.getAttribute('d') === presentation.iconPath
+        && (!!presentation.iconPath || icon.textContent === '@');
+    if (unchanged) continue;
+    const nextIcon = buildChipEl(nodeId, chip.getAttribute('data-ref-label') || '', metaMap).querySelector('.prompt-chip-icon');
+    if (nextIcon) icon.replaceChildren(...Array.from(nextIcon.childNodes));
+  }
+}
+
+/** 镜头重排或改号只刷新胶囊展示，不改变引用、编辑历史或光标。 */
+export function syncShotlistReferenceChips(root: HTMLElement, metaMap: Map<string, NodeMeta>): void {
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-ref-id*="/shot/"]'))) {
+    const id = chip.getAttribute('data-ref-id') || '';
+    if (!parseShotlistRowMentionId(id)) continue;
+    const label = metaMap.get(id)?.label || t('{label}（镜头已失效）', { label: chip.getAttribute('data-ref-label') || t('镜头') });
+    const visible = chip.querySelector<HTMLElement>('.prompt-chip-id');
+    if (visible && visible.textContent !== label) visible.textContent = label;
+    if (chip.title !== label) chip.title = label;
+    if (chip.getAttribute('aria-label') !== label) chip.setAttribute('aria-label', label);
+  }
+}
+
+export function buildAssetChipEl(path: string, assetUrl?: string): HTMLSpanElement {
+  const name = path.split(/[\\/]/).pop() || 'asset';
+  const isImage = getFileCategory(name) === 'image';
+  const span = document.createElement('span');
+  span.className = 'prompt-chip chip-asset';
+  span.contentEditable = 'false';
+  span.setAttribute('data-asset-path', path);
+  span.title = name;
+  span.tabIndex = 0;
+  span.setAttribute('role', 'button');
+  if (isImage) span.setAttribute('data-image-ref-key', `asset:${encodeURIComponent(path)}`);
+  const icon = document.createElement('span');
+  icon.className = 'prompt-chip-icon';
+  if (isImage && assetUrl) {
+    const image = document.createElement('img');
+    setReferenceThumbnailSource(image, assetUrl);
+    image.className = 'prompt-chip-thumb';
+    image.alt = '';
+    icon.appendChild(image);
+  } else {
+    icon.textContent = isImage ? '🖼' : '📄';
+  }
+  span.appendChild(icon);
+  const label = document.createElement('span');
+  label.className = 'prompt-chip-id';
+  label.textContent = name.length > 18 ? `${name.slice(0, 16)}…` : name;
+  span.appendChild(label);
+  return span;
+}
+
+export function buildDramaChipEl(dramaId: string, name: string, kind: string, thumbUrl?: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = `prompt-chip ${kind === 'voice' ? 'chip-audio' : kind === 'action-video' ? 'chip-video' : 'chip-image'}`;
+  span.contentEditable = 'false';
+  span.setAttribute('data-drama-id', dramaId);
+  span.tabIndex = 0;
+  span.setAttribute('role', 'button');
+  span.setAttribute('data-drama-label', name);
+  span.setAttribute('data-drama-kind', kind);
+  span.title = name;
+  if (kind === 'voice' || kind === 'action-video') {
+    span.setAttribute('data-media-ref-key', `drama:${dramaId}`);
+    span.setAttribute('data-media-ref-kind', kind === 'voice' ? 'audio' : 'video');
+  } else if (thumbUrl) span.setAttribute('data-image-ref-key', `drama:${dramaId}`);
+  const icon = document.createElement('span');
+  icon.className = 'prompt-chip-icon';
+  if (thumbUrl) {
+    const image = document.createElement('img');
+    setReferenceThumbnailSource(image, thumbUrl);
+    image.className = 'prompt-chip-thumb';
+    image.alt = '';
+    icon.appendChild(image);
+  } else {
+    icon.textContent = kind === 'voice' ? '♪' : kind.startsWith('action-') ? '动' : kind === 'character' ? '人' : kind === 'scene' ? '场' : '道';
+  }
+  span.appendChild(icon);
+  const label = document.createElement('span');
+  label.className = 'prompt-chip-id';
+  label.textContent = name.length > 16 ? `${name.slice(0, 14)}…` : name;
+  span.appendChild(label);
+  return span;
+}
+
+export function resolveDramaChipPresentation(dramaId: string): { kind: string; thumb?: string; hasAsset: boolean } {
+  let kind = 'character';
+  let thumb: string | undefined;
+  let hasAsset = false;
+  try {
+    const store = useAppStore.getState();
+    const { assetId, referenceImageId, actionId, actionMediaId, voiceClipId } = parseDramaMentionId(dramaId);
+    const found = findDramaAsset(store.dramaAssets, assetId, listGlobalDramaAssets(store));
+    hasAsset = !!found;
+    if (voiceClipId !== undefined) {
+      kind = 'voice';
+    } else if (actionId !== undefined) {
+      const media = resolveDramaActionMediaRef(found, actionId, actionMediaId);
+      kind = media?.kind === 'video' ? 'action-video' : 'action-image';
+      thumb = media && media.kind !== 'video' ? media.url : undefined;
+    } else if (found) {
+      kind = found.kind;
+      const picked = referenceImageId && found.kind === 'character'
+        ? found.referenceImages?.find((image) => image.id === referenceImageId)
+        : undefined;
+      if (assetId.startsWith('global/') || referenceImageId !== undefined) {
+        thumb = resolveDramaAssetImageRef(found, store.nodes, referenceImageId)?.imageUrl;
+      } else if (picked) {
+        thumb = picked.imageUrl;
+      } else if (found.imageNodeId) {
+        const node = store.nodes.find((candidate) => candidate.id === found.imageNodeId);
+        thumb = bestNodeThumb(node?.data ?? {}) || found.imageUrl;
+      } else {
+        thumb = found.imageUrl;
+      }
+    }
+  } catch {
+    // 资产未加载或渲染失败时保留引用身份和无缩略图芯片。
+  }
+  return { kind, thumb, hasAsset };
+}
+
+/** 全局创作资产异步加载后只刷新胶囊展示，不改正文、标签或光标所在的外层节点。 */
+export function syncGlobalCharacterReferenceChips(root: HTMLElement): void {
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-drama-id^="global/"]'))) {
+    const id = chip.getAttribute('data-drama-id') || '';
+    const name = chip.getAttribute('data-drama-label') || '';
+    const presentation = resolveDramaChipPresentation(id);
+    const next = buildDramaChipEl(id, name, presentation.kind, presentation.thumb);
+    const currentIcon = chip.querySelector<HTMLElement>('.prompt-chip-icon');
+    const nextIcon = next.querySelector<HTMLElement>('.prompt-chip-icon');
+    if (nextIcon) {
+      if (!currentIcon) chip.insertBefore(nextIcon, chip.firstChild);
+      else {
+        const currentImage = currentIcon.querySelector('img');
+        const nextImage = nextIcon.querySelector('img');
+        const sameImage = !!currentImage && !!nextImage
+          && referenceThumbnailSource(currentImage) === referenceThumbnailSource(nextImage);
+        const sameText = !currentImage && !nextImage && currentIcon.textContent === nextIcon.textContent;
+        if (!sameImage && !sameText) currentIcon.replaceChildren(...Array.from(nextIcon.childNodes));
+      }
+    }
+    for (const className of ['chip-image', 'chip-video', 'chip-audio']) {
+      chip.classList.toggle(className, next.classList.contains(className));
+    }
+    if (chip.getAttribute('data-drama-kind') !== presentation.kind) {
+      chip.setAttribute('data-drama-kind', presentation.kind);
+    }
+    for (const attribute of ['data-image-ref-key', 'data-media-ref-key', 'data-media-ref-kind']) {
+      const value = presentation.hasAsset ? next.getAttribute(attribute) : null;
+      if (value === null) chip.removeAttribute(attribute);
+      else if (chip.getAttribute(attribute) !== value) chip.setAttribute(attribute, value);
+    }
+  }
+}
+
+export function buildSkillChipEl(skillId: string, skillName: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = 'prompt-chip chip-skill';
+  span.contentEditable = 'false';
+  span.setAttribute('data-skill-id', skillId);
+  span.tabIndex = 0;
+  span.setAttribute('role', 'button');
+  span.setAttribute('data-skill-name', skillName);
+  span.title = skillName;
+  const icon = document.createElement('span');
+  icon.className = 'prompt-chip-icon prompt-chip-skill-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = '✦';
+  span.appendChild(icon);
+  const label = document.createElement('span');
+  label.className = 'prompt-chip-skill-name';
+  label.textContent = skillName.length > 20 ? `${skillName.slice(0, 18)}...` : skillName;
+  span.appendChild(label);
+  return span;
+}
+
+function comfyRefmodChipTitle(label: string, isLab: boolean, strength: number, translate: typeof t = t): string {
+  return translate('{label} · ComfyUI 角色 · {strength}（双击设置）', {
+    label,
+    strength: isLab ? translate('强度沿用 Combine') : translate('强度 {value}', { value: strength }),
+  });
+}
+
+/** 语言切换只更新已有芯片的显示和辅助标签，保留正文、引用身份和光标。 */
+export function syncMentionChipLocale(root: HTMLElement, metaMap: Map<string, NodeMeta>, translate: typeof t): void {
+  syncShotlistReferenceChips(root, metaMap);
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-refmod-raw]'))) {
+    try {
+      const mention = parseComfyRefmodMentions(chip.getAttribute('data-refmod-raw') || '').mentions[0];
+      if (!mention) continue;
+      const title = comfyRefmodChipTitle(mention.label, mention.selection.loaderType === 'refmods-lab', mention.selection.strength, translate);
+      if (chip.title !== title) chip.title = title;
+      if (chip.getAttribute('aria-label') !== title) chip.setAttribute('aria-label', title);
+    } catch {
+      // 损坏的引用保留原始正文，交给已有引用校验处理。
+    }
+  }
+}
+
+/** RefMod 只引用模型文件，不参加图片/音频素材编号。 */
+export function buildComfyRefmodChipEl(raw: string, thumbnailUrl?: string): HTMLSpanElement {
+  const parsed = parseComfyRefmodMentions(raw);
+  const mention = parsed.mentions[0];
+  if (!mention || parsed.mentions.length !== 1 || mention.token !== raw || parsed.prompt.trim()) throw new Error('ComfyUI 角色引用无效');
+  const isLab = mention.selection.loaderType === 'refmods-lab';
+  const label = isLab ? mention.label : `${mention.label} · ${mention.selection.strength}`;
+  const span = buildReferenceChipEl(document, { label, kind: 'image', thumbnailUrl,
+    iconText: '人' });
+  span.setAttribute('data-refmod-raw', buildComfyRefmodMention(mention.selection, mention.label));
+  span.setAttribute('data-refmod-label', mention.label);
+  span.title = comfyRefmodChipTitle(mention.label, isLab, mention.selection.strength);
+  span.setAttribute('aria-label', span.title);
+  return span;
+}
+
+/** 预览图只取已关联角色，不读取模型目录或给 RefMod 编造媒体文件。 */
+export function resolveComfyRefmodChipPresentation(raw: string): { thumbnailUrl?: string; label: string } | null {
+  try {
+    const mention = parseComfyRefmodMentions(raw).mentions[0];
+    if (!mention) return null;
+    const state = useAppStore.getState();
+    const key = comfyRefmodKey(mention.selection);
+    const character = [...state.dramaAssets.characters, ...state.globalCharacters.map((item) => ({ ...item, id: `global/${item.id}` }))]
+      .find((item) => item.refmods?.some((reference) => comfyRefmodKey(reference) === key));
+    return { label: mention.label, thumbnailUrl: character ? resolveDramaAssetImageRef(character, state.nodes)?.imageUrl : undefined };
+  } catch { return null; }
+}
+
+export function syncComfyRefmodReferenceChips(root: HTMLElement): void {
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-refmod-raw]'))) {
+    const presentation = resolveComfyRefmodChipPresentation(chip.getAttribute('data-refmod-raw') || '');
+    const icon = chip.querySelector('.prompt-chip-icon');
+    if (!presentation || !icon) continue;
+    const image = icon.querySelector('img');
+    if (presentation.thumbnailUrl) {
+      if (referenceThumbnailSource(image) === presentation.thumbnailUrl) continue;
+      const next = document.createElement('img');
+      setReferenceThumbnailSource(next, presentation.thumbnailUrl); next.alt = ''; next.draggable = false;
+      next.className = 'ui-reference-chip__thumb prompt-chip-thumb';
+      icon.replaceChildren(next); icon.classList.add('has-thumbnail');
+    } else if (image) { icon.replaceChildren(document.createTextNode('人')); icon.classList.remove('has-thumbnail'); }
+  }
+}
+
+function buildWorkflowChipIconEl(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', '#f5a97f');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  path.setAttribute('d', 'M3.5 1.5h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2m7 7h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2m-6-1V10q0 1.5 1.5 1.5h2.5');
+  svg.appendChild(path);
+  return svg;
+}
+
+function buildChipTextEl(className: string, text: string): HTMLSpanElement {
+  const element = document.createElement('span');
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+export function buildWorkflowChipEl(
+  ioNodeId: string,
+  ioNodeTitle: string,
+  ioNodeType: WorkflowIONodeType,
+): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = `prompt-chip prompt-chip-wf ${WF_IO_STYLE[ioNodeType] || WF_IO_STYLE.prompt}`;
+  span.contentEditable = 'false';
+  span.setAttribute('data-wf-id', ioNodeId);
+  span.tabIndex = 0;
+  span.setAttribute('role', 'button');
+  span.setAttribute('data-wf-title', ioNodeTitle);
+  span.setAttribute('data-wf-type', ioNodeType);
+  const prefix = document.createElement('span');
+  prefix.className = 'prompt-chip-wf-prefix';
+  prefix.contentEditable = 'false';
+  prefix.appendChild(buildWorkflowChipIconEl());
+  prefix.appendChild(buildChipTextEl('prompt-chip-icon', WF_IO_ICON[ioNodeType] || '?'));
+  prefix.appendChild(buildChipTextEl('prompt-chip-wf-id', `#${ioNodeId}`));
+  prefix.appendChild(buildChipTextEl('prompt-chip-wf-colon', ':'));
+  span.appendChild(prefix);
+  const valueArea = document.createElement('span');
+  valueArea.className = 'prompt-chip-wf-value';
+  valueArea.contentEditable = 'true';
+  valueArea.appendChild(document.createElement('br'));
+  span.appendChild(valueArea);
+  return span;
+}
+
+function pushTextWithBreaks(nodes: Node[], text: string) {
+  if (!text) return;
+  text.split('\n').forEach((line, index) => {
+    if (index > 0) nodes.push(document.createElement('br'));
+    if (line) nodes.push(document.createTextNode(line));
+  });
+}
+
+export function renderPromptToNodes(text: string, metaMap: Map<string, NodeMeta>): Node[] {
+  const regex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}|@skill\{([^|}]+)\|([^}]+)\}|@refmod\{([^}]*)\}/g;
+  const nodes: Node[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const pushChip = (chip: Node) => {
+    const previous = nodes[nodes.length - 1];
+    if (!previous || isBrEl(previous) || isChipEl(previous)) nodes.push(document.createTextNode(ZWSP));
+    nodes.push(chip);
+  };
+
+  while ((match = regex.exec(text)) !== null) {
+    pushTextWithBreaks(nodes, text.slice(lastIndex, match.index));
+    if (match[1] !== undefined) {
+      let path = match[1];
+      try { path = decodeURIComponent(match[1]); } catch { /* 保留原值 */ }
+      pushChip(buildAssetChipEl(path));
+      lastIndex = regex.lastIndex;
+    } else if (match[2] !== undefined) {
+      const dramaId = match[2];
+      const dramaName = match[3];
+      const { kind, thumb } = resolveDramaChipPresentation(dramaId);
+      pushChip(buildDramaChipEl(dramaId, dramaName, kind, thumb));
+      lastIndex = regex.lastIndex;
+    } else if (match[4] !== undefined) {
+      pushChip(buildChipEl(match[4], match[5], metaMap));
+      lastIndex = regex.lastIndex;
+    } else if (match[6] !== undefined) {
+      const chip = buildWorkflowChipEl(match[6], match[7], match[8] as WorkflowIONodeType);
+      const matchEnd = regex.lastIndex;
+      if (text[matchEnd] === '(') {
+        let depth = 1;
+        let index = matchEnd + 1;
+        while (index < text.length && depth > 0) {
+          if (text[index] === '(') depth += 1;
+          else if (text[index] === ')') depth -= 1;
+          index += 1;
+        }
+        const valueText = text.slice(matchEnd + 1, index - 1);
+        if (valueText) {
+          const valueArea = chip.querySelector('.prompt-chip-wf-value');
+          if (valueArea) {
+            valueArea.innerHTML = '';
+            for (const node of renderPromptToNodes(valueText, metaMap)) valueArea.appendChild(node);
+          }
+        }
+        pushChip(chip);
+        lastIndex = index;
+        regex.lastIndex = index;
+      } else {
+        pushChip(chip);
+        lastIndex = matchEnd;
+        regex.lastIndex = matchEnd;
+      }
+    } else if (match[9] !== undefined) {
+      let name = match[10];
+      try { name = decodeURIComponent(match[10]); } catch { /* 保留原值 */ }
+      pushChip(buildSkillChipEl(match[9], name));
+      lastIndex = regex.lastIndex;
+    } else if (match[11] !== undefined) {
+      try { pushChip(buildComfyRefmodChipEl(match[0], resolveComfyRefmodChipPresentation(match[0])?.thumbnailUrl)); }
+      catch { pushTextWithBreaks(nodes, match[0]); }
+      lastIndex = regex.lastIndex;
+    }
+  }
+  pushTextWithBreaks(nodes, text.slice(lastIndex));
+  if (isChipEl(nodes[nodes.length - 1])) nodes.push(document.createTextNode(ZWSP));
+  return nodes;
+}

@@ -1,0 +1,1409 @@
+/* ============================================
+   Node Components — Frosted Glass Design System (base)
+   ============================================ */
+
+/* Node Wrapper — label sits above the glass card */
+.node-wrapper {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  transition: width 0.24s var(--ease-spring);
+}
+
+.react-flow__nodesselection-rect {
+  border-radius: 12PX;
+}
+
+/* Far-zoom media nodes keep the same outer box and connection anchors. */
+.canvas-node-lod-boundary {
+  display: contents;
+}
+
+.canvas-node-lod-preview {
+  background: var(--appearance-node-background, var(--theme-surface));
+  box-shadow: inset 0 0 0 1px var(--canvas-edge);
+  border-radius: var(--appearance-node-radius, 12px);
+}
+
+.canvas-node-lod-preview.is-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.canvas-node-lod-image {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity var(--dur-fast);
+}
+
+.canvas-node-lod-image.is-ready {
+  opacity: 1;
+}
+
+/* Base Node — frosted glass card */
+.node {
+  display: flex;
+  flex-direction: column;
+  background: var(--appearance-node-background, var(--glass-bg-node));
+  /* ponytail: 不加 backdrop-filter —— 底色 0.88/0.90 已近乎不透明，6px 模糊看不出来，
+     却让每个节点单独成一层合成表面并逐帧回读背景，是画布平移/缩放的主要开销。 */
+  /* border: 1px solid var(--glass-ring); */
+  border-radius: var(--appearance-node-radius, 12px);
+  border: var(--appearance-node-border-width, 0px) solid var(--appearance-node-border, transparent);
+  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
+    transform var(--dur-fast) var(--ease-out-quart), height 0.24s var(--ease-spring);
+  /* 可见区重挂载立即显示；不能把平移中新进入视口的已有节点重新淡入。 */
+}
+
+/* ── 节点退场（由 playNodeExit 添加 .node-exiting）——向下淡出。
+   节点随即被移除，位移不会造成持久的连线问题。 ── */
+.node.node-exiting {
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition: opacity 0.13s var(--ease-out-quart), transform 0.13s var(--ease-out-quart);
+}
+
+/* ── #5 拖拽「抬起」反馈：放大 + 分层强投影（经典「拿起」手感）── */
+.react-flow__node.dragging .node {
+  transform: scale(1.03);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.35),
+    0 28px 60px -10px rgba(0, 0, 0, 0.65);
+}
+
+.node.selected {
+  border-color: var(--appearance-node-selected-border, var(--brand-alpha-25));
+  box-shadow: 0 0 0 1px var(--appearance-node-selected-glow, var(--brand-alpha-20)), 0 8px 32px color-mix(in srgb, var(--brand) 12%, transparent);
+}
+
+/* ════════════════════════════════════════════
+   生成中 → 完成 状态过渡 / Generating → Done
+   ════════════════════════════════════════════ */
+
+/* 生成中：静态内辉光 + 合成层流光，避免逐帧重绘 box-shadow。 */
+.node.loading .node-preview {
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 0 28px 2px var(--brand-alpha-12);
+  contain: paint;
+}
+
+/* 流光扫过 */
+.node.loading .node-preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    var(--brand-alpha-12) 48%,
+    var(--brand-alpha-12) 52%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: shimmerSweep 1.9s var(--ease-in-out) infinite;
+  will-change: transform;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@keyframes shimmerSweep {
+  0% { transform: translateX(-120%); }
+  60%, 100% { transform: translateX(120%); }
+}
+
+/* 生成中整卡边框微微呼吸（用过渡，不占用 .node 的 animation，避免与进场冲突）*/
+.node.loading {
+  border-color: var(--brand-alpha-25);
+}
+
+/* 完成瞬间：边框/外发光柔和闪现成功色，再随 .just-completed 移除平滑回落
+   （走 .node 已有的 border-color/box-shadow 过渡，不会重放进场动画）*/
+.node.just-completed {
+  border-color: var(--success-light);
+  box-shadow: 0 0 0 1px var(--success-bg), 0 8px 28px -4px var(--success);
+}
+
+/* 预览区一次性成功内闪 */
+.node.just-completed .node-preview {
+  animation: completeFlash 0.7s var(--ease-out-quart);
+}
+
+@keyframes completeFlash {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--success-light), inset 0 0 26px var(--success-bg);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent;
+  }
+}
+
+/* Node Label Header — floats above the glass card */
+.node-label {
+  width: 100%;
+  position: absolute;
+  top: -20px;
+  padding: 0 4px;
+}
+
+.node-label-icon {
+  flex-shrink: 0;
+  color: var(--appearance-node-text, var(--theme-text));
+}
+
+/* 关闭标题显示后仍保留 DOM，重命名时临时显示编辑框。 */
+[data-node-label-visible='false'] .node-label:not([data-editing='true']) {
+  display: none;
+}
+
+/* Upload button on node-preview top-right corner (source nodes) */
+.node-upload-btn {
+  position: absolute !important;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--white-alpha-12);
+  background: rgba(10, 10, 15, 0.55);
+  backdrop-filter: blur(var(--glass-blur-sm));
+  color: var(--theme-text-secondary);
+  cursor: var(--cursor-pointer, pointer);
+  transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base), opacity var(--transition-base);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.node-upload-btn:hover {
+  background: rgba(20, 20, 28, 0.9);
+  color: var(--theme-text);
+  border-color: rgba(255, 255, 255, 0.25);
+  opacity: 1;
+}
+
+[data-theme='light'] .node-upload-btn {
+  border-color: var(--border-secondary);
+  background: color-mix(in srgb, var(--theme-surface) 88%, var(--theme-hover));
+  color: var(--brand-pale);
+  opacity: 1;
+}
+
+[data-theme='light'] .node-upload-btn:hover {
+  border-color: var(--brand-alpha-30);
+  background: var(--brand-alpha-10);
+  color: var(--brand-light);
+}
+
+/* Floating Toolbar */
+.node-floating-toolbar {
+  --toolbar-offset-x: 0px;
+  --toolbar-reveal-delay: 190ms;
+  --toolbar-zoom-compensation: var(--node-toolbar-zoom-compensation, 1);
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  visibility: hidden;
+  translate: var(--toolbar-offset-x) 0;
+  scale: var(--toolbar-zoom-compensation);
+  transform: translateY(8px) scale(0.94);
+  transform-origin: center bottom;
+  transition:
+    opacity 850ms var(--ease-out-expo),
+    transform 850ms var(--ease-out-expo),
+    visibility 0s linear 850ms;
+  pointer-events: none;
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
+  border-radius: 10px;
+  cursor: var(--cursor-default, default);
+  isolation: isolate;
+}
+
+.node-floating-toolbar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle 32px at var(--toolbar-pointer-x, 50%) var(--toolbar-pointer-y, 50%),
+    color-mix(in srgb, var(--theme-text) 10%, transparent),
+    transparent 72%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.node-floating-toolbar:hover::before {
+  opacity: 1;
+}
+
+.node-toolbar-shell.is-visible .node-floating-toolbar,
+.node:hover .node-floating-toolbar,
+.node.selected .node-floating-toolbar {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+  transition-delay: var(--toolbar-reveal-delay), var(--toolbar-reveal-delay), 0s;
+}
+
+.node-floating-toolbar .ftb-btn,
+.node-floating-toolbar .img-toolbar-zone,
+.node-floating-toolbar .ftb-divider {
+  opacity: 0;
+  transform: translateY(4px) scale(0.96);
+  transition:
+    opacity 850ms var(--ease-out-expo) var(--toolbar-stagger-delay, 0ms),
+    transform 850ms var(--ease-out-expo) var(--toolbar-stagger-delay, 0ms),
+    scale var(--dur-fast, 0.15s) var(--ease-out-quart, ease-out);
+}
+
+.node-toolbar-shell.is-visible .node-floating-toolbar .ftb-btn,
+.node-toolbar-shell.is-visible .node-floating-toolbar .img-toolbar-zone,
+.node-toolbar-shell.is-visible .node-floating-toolbar .ftb-divider,
+.node:hover .node-floating-toolbar .ftb-btn,
+.node:hover .node-floating-toolbar .img-toolbar-zone,
+.node:hover .node-floating-toolbar .ftb-divider,
+.node.selected .node-floating-toolbar .ftb-btn,
+.node.selected .node-floating-toolbar .img-toolbar-zone,
+.node.selected .node-floating-toolbar .ftb-divider {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.node-floating-toolbar .ftb-btn:nth-child(1),
+.node-floating-toolbar .img-toolbar-zone:nth-child(1) { --toolbar-stagger-delay: 230ms; }
+.node-floating-toolbar .ftb-btn:nth-child(2),
+.node-floating-toolbar .img-toolbar-zone:nth-child(2) { --toolbar-stagger-delay: 265ms; }
+.node-floating-toolbar .ftb-btn:nth-child(3),
+.node-floating-toolbar .ftb-divider:nth-child(3) { --toolbar-stagger-delay: 300ms; }
+.node-floating-toolbar .ftb-btn:nth-child(4) { --toolbar-stagger-delay: 335ms; }
+.node-floating-toolbar .ftb-btn:nth-child(5) { --toolbar-stagger-delay: 370ms; }
+.node-floating-toolbar .ftb-btn:nth-child(6) { --toolbar-stagger-delay: 405ms; }
+.node-floating-toolbar .ftb-btn:nth-child(7) { --toolbar-stagger-delay: 440ms; }
+.node-floating-toolbar .ftb-btn:nth-child(8) { --toolbar-stagger-delay: 475ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .node-floating-toolbar,
+  .node-floating-toolbar .ftb-btn,
+  .node-floating-toolbar .img-toolbar-zone,
+  .node-floating-toolbar .ftb-divider {
+    transition-duration: 1ms;
+    transition-delay: 0s;
+  }
+}
+
+.ftb-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  color: var(--theme-text-secondary);
+  cursor: var(--cursor-pointer, pointer);
+  transition: color var(--transition-base), background var(--transition-base);
+  padding: 0;
+}
+
+.ftb-btn:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .node-floating-toolbar .ftb-btn:hover:not(:disabled) {
+    scale: var(--anim-hover-scale, 1.04);
+  }
+
+  .node-floating-toolbar .ftb-btn:active:not(:disabled) {
+    scale: var(--anim-tap-scale, 0.96);
+  }
+}
+
+[data-node-toolbar-mode='icons-and-text'] .node-floating-toolbar .ftb-btn[data-tooltip] {
+  width: auto;
+  min-width: 28px;
+  padding: 0 8px;
+  gap: 4px;
+}
+
+[data-node-toolbar-mode='icons-and-text'] .node-floating-toolbar .ftb-btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.toolbar-more-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.toolbar-more-wrap > .act-more.is-active {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.toolbar-more-menu {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  z-index: 10010;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  padding: 4px 6px;
+  color: var(--theme-text-secondary);
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+[data-theme='dark'] .toolbar-more-menu {
+  background: var(--glass-bg-node);
+}
+
+.toolbar-more-menu-item,
+.toolbar-more-menu-item > .multigrid-wrap {
+  display: inline-flex;
+}
+
+.toolbar-more-menu-empty {
+  padding: 4px 8px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* Preview Area */
+.node-preview {
+  flex: 1;
+  min-height: 0;
+  border-radius: inherit;
+}
+
+.image-preview {
+  position: relative;
+  aspect-ratio: 1;
+  background: var(--theme-surface);
+  margin: 8px;
+  border-radius: var(--appearance-node-radius-inner, max(0px, calc(var(--appearance-node-radius, 12px) - 4px)));
+  overflow: hidden;
+}
+
+.video-preview {
+  position: relative;
+  aspect-ratio: 16/9;
+  background: var(--theme-surface);
+  margin: 8px;
+  border-radius: var(--appearance-node-radius-inner, max(0px, calc(var(--appearance-node-radius, 12px) - 4px)));
+  overflow: hidden;
+}
+
+.text-output-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--theme-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.image-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+/* 图片可见区重挂载不重复揭示；生成完成仍使用节点的 just-completed 反馈。 */
+.image-preview-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.image-preview-mask {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* ── 超分加载动画：光晕流动 ── */
+.upscale-glow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: inherit;
+  /* 整体轻微变暗，突出光效 */
+  background: rgba(8, 10, 20, 0.28);
+  z-index: 5;
+}
+
+/* 生成中遮罩浮层（节点已有内容时覆盖预览区，跟随节点圆角） */
+.generation-progress-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 20px;
+  border-radius: inherit;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--theme-card) 90%, transparent);
+  color: var(--theme-text);
+  pointer-events: none;
+}
+.generation-progress-overlay .spinner {
+  width: 44px;
+  height: 44px;
+}
+.generation-progress-overlay--interactive {
+  pointer-events: auto;
+}
+
+/* 斜向扫描光带，循环掠过图像 */
+.upscale-glow-scan {
+  position: absolute;
+  inset: -40%;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    transparent 44%,
+    rgba(129, 140, 248, 0.55) 50%,
+    rgba(56, 189, 248, 0.35) 54%,
+    transparent 62%
+  );
+  filter: blur(2px);
+  transform: translateX(-60%);
+  animation: upscale-scan 1.6s ease-in-out infinite;
+}
+
+/* 内描边光晕，呼吸式明暗流动 */
+.upscale-glow-ring {
+  position: absolute;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 1.5px rgba(129, 140, 248, 0.7),
+    inset 0 0 18px rgba(99, 102, 241, 0.45);
+  animation: upscale-pulse 1.6s ease-in-out infinite;
+  border-radius: 14px;
+}
+
+/* 角标文字 —— 浮在图片上方，两个主题都用深色胶囊 + 亮色前景，
+   因此这里的颜色刻意写死，不跟随主题令牌（否则浅色主题会变成深底深字）。 */
+.upscale-glow-label {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #e0e7ff;
+  background: rgba(30, 27, 75, 0.55);
+  border: 1px solid rgba(129, 140, 248, 0.35);
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+  white-space: nowrap;
+}
+
+.upscale-glow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #818cf8;
+  box-shadow: 0 0 8px 2px rgba(129, 140, 248, 0.9);
+  animation: upscale-pulse 1s ease-in-out infinite;
+}
+
+@keyframes upscale-scan {
+  0% { transform: translateX(-60%); }
+  100% { transform: translateX(60%); }
+}
+
+@keyframes upscale-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upscale-glow-scan,
+  .upscale-glow-ring,
+  .upscale-glow-dot {
+    animation: none;
+  }
+}
+
+.video-preview-player {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 原生媒体控件会吞掉 React Flow 拖拽结束所需的 pointerup。
+   节点拖拽期间暂时让视频退出命中测试，松手后由 .dragging 消失自动恢复。 */
+.react-flow:has(.react-flow__node.dragging) .video-preview-player {
+  pointer-events: none;
+}
+
+/* Preview Placeholder / Loading */
+.node-preview-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--theme-text-muted);
+  font-size: 13px;
+  border-radius: inherit;
+}
+
+.node-preview-loading {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+  border-radius: inherit;
+}
+
+/* Spinner */
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--brand-alpha-20);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner.large {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+
+/* 交互期间停止绘制装饰动画，把合成与绘制预算留给 React Flow。
+   选择器逐个列出而不是用 *，避免拖拽起止时整棵节点树的样式失效。 */
+.canvas-interacting .node.loading .node-preview::after,
+.canvas-interacting .upscale-glow-scan,
+.canvas-interacting .upscale-glow-ring,
+.canvas-interacting .upscale-glow-dot,
+.canvas-interacting .audio-progress-dot {
+  visibility: hidden;
+  animation-play-state: paused;
+}
+
+/* 加载指示仍保留可见，仅冻结旋转，避免交互时失去状态反馈。 */
+.canvas-interacting .node.loading .spinner,
+.canvas-interacting .spinner-sm,
+.canvas-interacting .shot-frame-spinner {
+  animation-play-state: paused;
+}
+
+/* Node Error */
+.node-error {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  max-height: min(76px, calc(100% - 20px));
+  margin: 0;
+  padding: 7px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid color-mix(in srgb, var(--danger) 26%, var(--glass-ring));
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--danger) 72%, var(--theme-text));
+  background: color-mix(in srgb, var(--glass-bg-node) 88%, var(--danger-bg));
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--danger) 9%, transparent);
+  backdrop-filter: blur(var(--glass-blur-sm));
+  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  opacity: 1;
+  user-select: text;
+  scrollbar-color: color-mix(in srgb, var(--danger) 28%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.node-error__icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.node-error__message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.node-error::-webkit-scrollbar {
+  width: 4px;
+}
+
+.node-error::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+/* ============================================
+   Compact Node (simplified, no prompt panel)
+   ============================================ */
+.node-preview.compact {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 4px;
+}
+
+/* Node type overrides */
+.text-node {
+  position: relative;
+  overflow: visible !important;
+}
+
+.image-node {
+  overflow: visible !important;
+}
+
+.image-node .node-preview.compact {
+  position: relative;
+  padding: 2px;
+  /* 与节点卡片同圆角并裁剪，保证生成中遮罩等 inset-0 元素不溢出直角 */
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.video-node {
+  position: relative;
+  overflow: visible !important;
+}
+
+.video-node .node-preview.compact {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.video-node .node-preview.compact.has-media {
+  background: var(--theme-bg);
+}
+
+.audio-node {
+  overflow: visible !important;
+}
+
+/* ── Resize handles — 四角 + 四边共 8 个把手 ──
+   容器铺满节点卡片本身不吃事件，只有把手可拖。 */
+.node-resize-handles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.node-resize-handle {
+  position: absolute;
+  pointer-events: auto;
+}
+
+/* 角把手：14×14，压在卡片四角内侧 */
+.node-resize-handle--nw,
+.node-resize-handle--ne,
+.node-resize-handle--sw,
+.node-resize-handle--se {
+  width: 14px;
+  height: 14px;
+}
+
+.node-resize-handle--nw { left: 0; top: 0; cursor: var(--cursor-nwse-resize, nwse-resize); }
+.node-resize-handle--ne { right: 0; top: 0; cursor: var(--cursor-nesw-resize, nesw-resize); }
+.node-resize-handle--sw { left: 0; bottom: 0; cursor: var(--cursor-nesw-resize, nesw-resize); }
+.node-resize-handle--se { right: 0; bottom: 0; cursor: var(--cursor-nwse-resize, nwse-resize); }
+
+/* 边把手：骑在边线上的 6px 窄条，两端让出角把手，避免与节点内容抢事件 */
+.node-resize-handle--n,
+.node-resize-handle--s {
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: var(--cursor-ns-resize, ns-resize);
+}
+
+.node-resize-handle--n { top: -3px; }
+.node-resize-handle--s { bottom: -3px; }
+
+.node-resize-handle--w,
+.node-resize-handle--e {
+  top: 14px;
+  bottom: 14px;
+  width: 6px;
+  cursor: var(--cursor-ew-resize, ew-resize);
+}
+
+.node-resize-handle--w { left: -3px; }
+.node-resize-handle--e { right: -3px; }
+
+/* 只有右下角画出可见的三角，其余把手靠光标形状提示 */
+.node-resize-handle--se::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 8px 8px;
+  border-color: transparent transparent var(--theme-text-muted) transparent;
+  border-radius: 0 2px 8px 0;
+  /* 默认隐藏：只在鼠标悬浮该节点（或正在缩放）时露出把手 */
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out-quart);
+}
+
+/* 缩放过程中指针可能滑出节点范围，用 .is-resizing 兜住，避免把手中途消失 */
+.react-flow__node:hover .node-resize-handle--se::after,
+.node-resize-handle--se.is-resizing::after {
+  opacity: 1;
+}
+
+.node-resize-handle--se:hover::after {
+  border-color: transparent transparent var(--brand-light) transparent;
+}
+
+.image-preview-img.compact {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.video-preview-player.compact,
+.video-node-poster {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.video-node-initial-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: contain;
+  background: var(--theme-bg);
+  pointer-events: none;
+}
+
+/* ── 节点内部输入框、图片、视频跟随节点圆角 ── */
+.node img,
+.node video,
+.node .image-preview-container,
+.node .image-preview-container img,
+.node .video-preview-player,
+.node .video-node-poster {
+  border-radius: inherit;
+}
+
+.node input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.node textarea,
+.node select,
+.node .ui-input,
+.node .ui-textarea {
+  border-radius: var(--appearance-node-radius-inner, max(0px, calc(var(--appearance-node-radius, 12px) - 4px)));
+}
+
+/* ════════════════════════════════════════════
+   Shared Fullscreen Overlay (framer-motion)
+   ════════════════════════════════════════════ */
+
+.fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(var(--glass-blur-sm));
+}
+
+/* 半透明模式：无面板框，仅遮罩背景（裁切/抠图等工具用） */
+.fullscreen-overlay--transparent {
+  background: rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(8px);
+  flex-direction: column;
+  padding: 0;
+}
+
+/* 大图预览不模糊整个画布，避免 WebView2 为背景建立整窗离屏缓冲。 */
+.fullscreen-overlay--transparent.fullscreen-overlay--image-preview {
+  background: rgba(0, 0, 0, 0.58);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.fullscreen-panel {
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--appearance-surface-image, none), var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 18px 64px rgba(0, 0, 0, 0.48);
+  position: relative;
+  transform-origin: center center;
+  will-change: transform, opacity, filter;
+}
+
+.fullscreen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--theme-border);
+  flex-shrink: 0;
+}
+
+.fullscreen-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+.fullscreen-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: var(--cursor-pointer, pointer);
+  border-radius: 6px;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+
+.fullscreen-close:hover {
+  color: var(--theme-text);
+  background: var(--white-alpha-06);
+}
+
+.fullscreen-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+/* ============ Fullscreen editor (textarea-based) ============ */
+
+.fullscreen-body textarea.fullscreen-textarea {
+  width: 100%;
+  height: 72vh;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--theme-text);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fullscreen-body textarea.fullscreen-textarea::placeholder {
+  color: var(--theme-text-muted);
+}
+
+/* ============ Fullscreen markdown preview ============ */
+
+.fullscreen-md-view {
+  min-height: 72vh;
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--theme-text);
+}
+
+/* Inherit .markdown-rendered styles but scale up for fullscreen */
+.fullscreen-md-view .markdown-rendered {
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.fullscreen-md-view .markdown-rendered h1 { font-size: 24px; }
+.fullscreen-md-view .markdown-rendered h2 { font-size: 20px; }
+.fullscreen-md-view .markdown-rendered h3 { font-size: 16px; }
+.fullscreen-md-view .markdown-rendered h4,
+.fullscreen-md-view .markdown-rendered h5,
+.fullscreen-md-view .markdown-rendered h6 { font-size: 14px; }
+
+.fullscreen-md-view .markdown-rendered code {
+  font-size: 13px;
+}
+
+.fullscreen-md-view .markdown-rendered pre code {
+  font-size: 12px;
+}
+
+/* Fullscreen toolbar (edit/preview toggle inside header) */
+.fullscreen-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Wrapper for headerContent in fullscreen-header, keeps header layout intact */
+.fullscreen-header-extra {
+  display: flex;
+  align-items: center;
+}
+
+/* ============ Fullscreen close — absolute (hideHeader mode) ============ */
+
+.fullscreen-close--absolute {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 10;
+}
+
+/* 对比工具栏包含主题控件，使用同一主题背景和前景避免浅色文字落在暗底上。 */
+.zoom-controls.image-comparison-toolbar {
+  background: var(--theme-surface);
+  border-color: var(--theme-border);
+}
+.zoom-controls.image-comparison-toolbar .zoom-btn,
+.zoom-controls.image-comparison-toolbar .zoom-percent {
+  color: var(--theme-text);
+}
+.zoom-controls.image-comparison-toolbar .zoom-btn:hover:not(:disabled),
+.zoom-controls.image-comparison-toolbar .zoom-percent:hover {
+  background: var(--theme-hover);
+}
+
+/* ============ Fullscreen panorama viewer ============ */
+
+.fullscreen-body--pano {
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 80vh;
+}
+
+/* ============ Fullscreen image preview (hidePanel 模式) ============ */
+
+.fullscreen-img-view {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+  /* Apple Photos 式放大浮现：从略缩 + 柔焦优雅展开 */
+  transform-origin: center;
+  animation: imgZoomIn 0.5s var(--ease-out-expo) both;
+}
+
+/* 全屏视频预览（hidePanel 模式） */
+.fullscreen-video-view {
+  width: 92vw;
+  height: 92vh;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+  outline: none;
+  animation: imgZoomIn 0.5s var(--ease-out-expo) both;
+}
+
+@keyframes imgZoomIn {
+  from { transform: scale(0.86); filter: blur(14px); }
+  55% { filter: blur(3px); }
+  to { transform: scale(1); filter: blur(0); }
+}
+
+/* ============ Zoomable fullscreen image（缩放/平移查看器）============ */
+
+.zoomable-image-container {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transform-origin: center center;
+}
+
+.zoomable-image-stage {
+  display: inline-flex;
+  line-height: 0;
+  transform-origin: center center;
+}
+
+/* 容器内的图片不再单独执行入场动画，transform 完全由 JS 控制 */
+.zoomable-image-container .fullscreen-img-view {
+  animation: none;
+  transition: none;
+  cursor: inherit;
+}
+
+/* 全屏图片预览显式关闭滤镜入场和强制图层。 */
+.fullscreen-overlay--image-preview .zoomable-image-stage {
+  animation: none;
+  will-change: auto;
+}
+
+/* 安全预览作用域内不对大尺寸图片/视频表面做滤镜入场。 */
+.fullscreen-overlay--image-preview .fullscreen-img-view,
+.fullscreen-overlay--image-preview .fullscreen-video-view {
+  animation: none;
+}
+
+.zoom-controls {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.62);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  user-select: none;
+  animation: zoomControlsReveal var(--dur-normal) var(--ease-out-expo) both;
+}
+
+@keyframes zoomControlsReveal {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fullscreen-img-view,
+  .zoomable-image-stage,
+  .zoom-controls {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+}
+
+.zoom-controls .zoom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 0.15s ease, transform 0.12s ease, opacity 0.15s ease;
+}
+
+.zoom-controls .zoom-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.zoom-controls .zoom-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.zoom-controls .zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: var(--cursor-default, default);
+}
+
+.zoom-controls .zoom-percent {
+  min-width: 52px;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 0.15s ease;
+}
+
+.zoom-controls .zoom-percent:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+
+/* ════════════════════════════════════════════
+   Markdown Node
+   ════════════════════════════════════════════ */
+
+.markdown-node {
+  position: relative;
+  overflow: visible !important;
+}
+
+.markdown-node-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--theme-border);
+  background: color-mix(in srgb, var(--theme-card) 60%, transparent);
+  flex-shrink: 0;
+}
+
+.markdown-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: var(--cursor-pointer, pointer);
+  transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base);
+}
+
+.markdown-mode-btn:hover {
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+.markdown-mode-btn.active {
+  background: color-mix(in srgb, var(--node-markdown) 15%, transparent);
+  border-color: color-mix(in srgb, var(--node-markdown) 40%, transparent);
+  color: var(--node-markdown-light);
+}
+
+.markdown-mode-btn:disabled {
+  opacity: 0.4;
+  cursor: var(--cursor-not-allowed, not-allowed);
+}
+
+.markdown-node-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.markdown-edit-area {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--theme-text);
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  tab-size: 2;
+}
+
+.markdown-edit-area::placeholder {
+  color: var(--theme-text-muted);
+}
+
+.markdown-preview-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+/* ── Rendered markdown preview ── */
+.markdown-rendered {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--theme-text);
+}
+
+.markdown-rendered h1 { font-size: 18px; font-weight: 700; margin: 8px 0 4px; color: var(--node-markdown-light); }
+.markdown-rendered h2 { font-size: 15px; font-weight: 600; margin: 6px 0 3px; color: var(--node-markdown-light); }
+.markdown-rendered h3 { font-size: 13px; font-weight: 600; margin: 5px 0 2px; color: var(--theme-text); }
+.markdown-rendered h4,
+.markdown-rendered h5,
+.markdown-rendered h6 { font-size: 12px; font-weight: 600; margin: 4px 0 2px; color: var(--theme-text-secondary); }
+
+.markdown-rendered p { margin: 4px 0; }
+.markdown-rendered ul,
+.markdown-rendered ol { margin: 4px 0; padding-left: 18px; }
+.markdown-rendered li { margin: 2px 0; }
+.markdown-rendered li::marker { color: var(--theme-text-muted); }
+
+.markdown-rendered code {
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--node-markdown) 12%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--node-markdown-light);
+}
+
+.markdown-rendered pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--theme-text) 7%, var(--theme-card));
+  border-radius: 6px;
+  border: 1px solid var(--theme-border);
+  overflow-x: auto;
+}
+
+.markdown-rendered pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  color: var(--theme-text);
+}
+
+.markdown-rendered blockquote {
+  margin: 6px 0;
+  padding: 4px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--node-markdown) 50%, transparent);
+  color: var(--theme-text-secondary);
+  background: color-mix(in srgb, var(--node-markdown) 8%, var(--theme-card));
+  border-radius: 0 4px 4px 0;
+}
+
+.markdown-rendered a {
+  color: var(--node-markdown-light);
+  text-decoration: underline;
+}
+
+.markdown-rendered table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 11px;
+}
+
+.markdown-rendered th {
+  background: color-mix(in srgb, var(--theme-text) 7%, var(--theme-card));
+  padding: 3px 6px;
+  text-align: left;
+  font-weight: 600;
+  border: 1px solid var(--theme-border);
+}
+
+.markdown-rendered td {
+  padding: 3px 6px;
+  border: 1px solid var(--theme-border);
+}
+
+.markdown-rendered hr {
+  border: none;
+  border-top: 1px solid var(--theme-border);
+  margin: 8px 0;
+}
+
+.markdown-rendered img {
+  max-width: 100%;
+  border-radius: 4px;
+  margin: 4px 0;
+}
+
+.markdown-rendered strong { font-weight: 600; color: var(--theme-text); }
+.markdown-rendered em { font-style: italic; }
+
+.text-node-wordcount {
+  position: absolute;
+  right: 5px;
+  bottom: -12px;
+  font-size: 8px;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  z-index: 2;
+}
+
+
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--theme-border);
+  border-top-color: var(--theme-text-secondary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}

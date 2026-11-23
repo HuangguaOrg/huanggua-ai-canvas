@@ -1,0 +1,259 @@
+/* Panorama node and XiaoLuo-Panorama host styles. */
+
+.pano-node {
+  overflow: visible;
+}
+
+.pano-node .node-preview.compact {
+  position: relative;
+  min-height: 0;
+  padding: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  /* 与节点卡片同圆角并裁剪，生成中遮罩等 inset-0 元素不会露出直角 */
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+[data-theme='light'] .pano-node .node-upload-btn {
+  border-color: var(--theme-border);
+  background: color-mix(in srgb, var(--theme-surface) 82%, transparent);
+  color: var(--theme-text-secondary);
+}
+
+[data-theme='light'] .pano-node .node-upload-btn:hover {
+  border-color: var(--border-secondary);
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+.pano-node .image-preview-container,
+.pano-node .image-preview-img {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.xiaoluo-pano-shell {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--appearance-node-radius-inner, max(0px, calc(var(--appearance-node-radius, 12px) - 2px)));
+  background: var(--theme-bg);
+}
+
+/* 只有进入视角模式后才是抓手光标；未激活时保持节点默认的拖动光标 */
+.xiaoluo-pano-shell.is-compact.is-interactive {
+  cursor: grab;
+}
+
+.xiaoluo-pano-shell.is-compact.is-interactive:active {
+  cursor: grabbing;
+}
+
+/* 未激活时的遮罩：接住指针事件，让拖拽移动节点、滚轮缩放画布 */
+.xiaoluo-pano-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+}
+
+.xiaoluo-pano-veil-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--white-alpha-12);
+  border-radius: 999px;
+  background: rgba(10, 10, 15, 0.55);
+  backdrop-filter: blur(var(--glass-blur-sm));
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity var(--transition-base), transform var(--transition-base);
+}
+
+.xiaoluo-pano-veil:hover .xiaoluo-pano-veil-hint {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 视角模式角标 */
+.xiaoluo-pano-active-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 4;
+  padding: 3px 7px;
+  border: 1px solid var(--brand-alpha-30);
+  border-radius: 6px;
+  background: rgba(10, 10, 15, 0.55);
+  backdrop-filter: blur(var(--glass-blur-sm));
+  color: var(--brand-light);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+[data-theme='light'] .xiaoluo-pano-veil-hint,
+[data-theme='light'] .xiaoluo-pano-active-badge {
+  border-color: var(--theme-border);
+  background: color-mix(in srgb, var(--theme-surface) 82%, transparent);
+}
+
+[data-theme='light'] .xiaoluo-pano-veil-hint {
+  color: var(--theme-text-secondary);
+}
+
+/* 视角模式下给节点一圈品牌色描边，提示指针已被全景接管 */
+.pano-node.is-pano-active {
+  border-color: var(--brand-alpha-30);
+  box-shadow: 0 0 0 1px var(--brand-alpha-30), 0 8px 32px color-mix(in srgb, var(--brand) 16%, transparent);
+}
+
+.xiaoluo-pano-shell .xiaoluo-panorama-core,
+.xiaoluo-pano-shell .pnlm-render-container,
+.xiaoluo-pano-shell .pnlm-ui,
+.xiaoluo-pano-shell canvas {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.xiaoluo-pano-shell .xiaoluo-panorama-core,
+.xiaoluo-pano-shell .pnlm-dragfix {
+  border: 0 solid transparent;
+  outline: 0;
+  box-shadow: none;
+}
+
+.xiaoluo-pano-shell .xiaoluo-panorama-core {
+  background: transparent;
+}
+
+.xiaoluo-pano-shell .pnlm-load-box,
+.xiaoluo-pano-shell .pnlm-error-msg,
+.xiaoluo-pano-shell .pnlm-controls-container {
+  display: none;
+}
+
+.xiaoluo-pano-status {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px;
+  background: color-mix(in srgb, var(--theme-bg) 82%, transparent);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  text-align: center;
+  backdrop-filter: blur(var(--glass-blur-sm));
+}
+
+.xiaoluo-pano-status.is-error {
+  color: var(--theme-text);
+}
+
+.xiaoluo-pano-retry {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-card);
+  color: var(--theme-text);
+  cursor: var(--cursor-pointer, pointer);
+}
+
+.xiaoluo-pano-retry:hover {
+  background: var(--theme-hover);
+}
+
+
+/* Selected-node floating toolbar. */
+.pano-toolbar {
+  --toolbar-offset-x: -50%;
+  top: -54px;
+  bottom: auto;
+  left: 50%;
+  gap: 0;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+[data-theme='dark'] .pano-toolbar {
+  background: var(--glass-bg-node);
+}
+
+.pano-toolbar-main {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.pano-toolbar .ftb-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+}
+
+.pano-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  flex-shrink: 0;
+  background: var(--theme-border);
+}
+
+.pano-original-overlay .fullscreen-panel {
+  height: calc(100vh - 24px);
+  max-height: none;
+  border-radius: 12px;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  will-change: auto;
+}
+
+.fullscreen-overlay.pano-original-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.pano-original-overlay .fullscreen-close--absolute {
+  display: none;
+}
+
+.pano-original-overlay .fullscreen-body--pano {
+  position: relative;
+  display: block;
+  min-height: 0;
+  height: 100%;
+}
+
+.pano-fullscreen-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--theme-bg);
+}

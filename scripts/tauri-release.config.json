@@ -1,0 +1,6 @@
+{
+  "bundle": { "targets": ["nsis"] },
+  "build": {
+    "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1 && npm run release:pack && npm run release:preflight && npm run build:mcp-adapter"
+  }
+}
