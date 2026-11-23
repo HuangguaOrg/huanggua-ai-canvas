@@ -1,0 +1,14 @@
+{
+    "build": {
+        "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1 && npm run release:pack && npm run release:preflight && npm run build && npm run build:mcp-adapter",
+        "beforeBundleCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1"
+    },
+    "bundle": {
+        "resources": {
+            "resources/windows-runtime/msvcp140.dll": "msvcp140.dll",
+            "resources/windows-runtime/msvcp140_1.dll": "msvcp140_1.dll",
+            "resources/windows-runtime/vcruntime140.dll": "vcruntime140.dll",
+            "resources/windows-runtime/vcruntime140_1.dll": "vcruntime140_1.dll"
+        }
+    }
+}

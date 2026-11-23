@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "repository": "HuangguaOrg/huanggua-ai-canvas",
+  "tag": "runtime-engine-2026.11.23",
+  "asset": "huanggua-studio-engine-2026.11.23.tar.gz",
+  "assetId": 781858211,
+  "arcreelVersion": "0.34.0",
+  "size": 10395842,
+  "sha256": "e638cabb159d771b5f04ec7dcb62272b2078c16488666aa64324f2e1d6cfc8d2"
+}

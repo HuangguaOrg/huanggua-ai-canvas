@@ -2,8 +2,7 @@
     "build": {
         "beforeDevCommand": "npm run dev",
         "devUrl": "http://localhost:1420",
-        "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1 && npm run release:pack && npm run release:preflight && npm run build && npm run build:mcp-adapter",
-        "beforeBundleCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-runtime.ps1",
+        "beforeBuildCommand": "npm run release:pack && npm run release:preflight && npm run build && npm run build:mcp-adapter",
         "frontendDist": "../dist"
     },
     "productName": "黄瓜 AI 画布",
@@ -33,11 +32,7 @@
             "resources/ai-canvas-mcp.mjs": "ai-canvas-mcp.mjs",
             "resources/huanggua-studio.zip": "huanggua-studio.zip",
             "resources/huanggua-studio.json": "huanggua-studio.json",
-            "resources/director-desk.tar.gz": "director-desk.tar.gz",
-            "resources/windows-runtime/msvcp140.dll": "msvcp140.dll",
-            "resources/windows-runtime/msvcp140_1.dll": "msvcp140_1.dll",
-            "resources/windows-runtime/vcruntime140.dll": "vcruntime140.dll",
-            "resources/windows-runtime/vcruntime140_1.dll": "vcruntime140_1.dll"
+            "resources/director-desk.tar.gz": "director-desk.tar.gz"
         },
         "icon": [
             "icons/32x32.png",

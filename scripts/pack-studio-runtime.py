@@ -37,7 +37,7 @@ def load_manifest():
         raise ValueError('Stage the studio runtime first (manifest.json missing)')
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     files = manifest.get('files')
-    if manifest.get('schemaVersion') != 1 or manifest.get('platform') != 'windows-x86_64' or not isinstance(files, dict):
+    if manifest.get('schemaVersion') != 1 or manifest.get('platform') not in {'windows-x86_64', 'darwin-aarch64', 'darwin-x86_64'} or not isinstance(files, dict):
         raise ValueError('Invalid studio runtime manifest')
     if not files or len(files) > MAX_FILES:
         raise ValueError('Studio runtime manifest file count is out of range')

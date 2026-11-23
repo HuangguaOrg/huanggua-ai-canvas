@@ -85,11 +85,16 @@ class RuntimePruningTest(unittest.TestCase):
     def test_only_unused_volcengine_services_and_gui_data_are_pruned(self):
         for kept in ('volcenginesdkcore', 'volcenginesdkark', 'volcenginesdkarkruntime', 'openai', 'volcengine'):
             self.assertFalse(package.pruned(f'python/Lib/site-packages/{kept}'), kept)
+            self.assertFalse(package.pruned(f'python/lib/python3.12/site-packages/{kept}'), kept)
         for removed in ('volcenginesdkecs', 'volcenginesdkvod20260101', 'volcenginesdkcdn'):
             self.assertTrue(package.pruned(f'python/Lib/site-packages/{removed}'), removed)
+            self.assertTrue(package.pruned(f'python/lib/python3.12/site-packages/{removed}'), removed)
         self.assertTrue(package.pruned('python/tcl'))
         self.assertTrue(package.pruned('python/include'))
+        self.assertTrue(package.pruned('python/lib/tcl8.6'))
+        self.assertTrue(package.pruned('python/lib/tk8.6'))
         self.assertFalse(package.pruned('python/Lib'))
+        self.assertFalse(package.pruned('python/lib/python3.12'))
         self.assertFalse(package.pruned('engine/lib/volcenginesdkecs'))
 
 

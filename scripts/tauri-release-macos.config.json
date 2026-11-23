@@ -1,0 +1,14 @@
+{
+  "bundle": {
+    "targets": ["dmg", "app"],
+    "createUpdaterArtifacts": false
+  },
+  "build": {
+    "beforeBuildCommand": "npm run release:preflight && npm run build:mcp-adapter"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

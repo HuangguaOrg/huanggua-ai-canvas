@@ -11,7 +11,19 @@ const BUNDLE_SIDECAR: &str = "huanggua-studio.json";
 const BUNDLE_ARCHIVE: &str = "huanggua-studio.zip";
 const RUNTIME_DIRECTORY: &str = "huanggua-studio-runtime";
 const COMPLETE_MARKER: &str = ".huanggua-runtime-complete";
-const REQUIRED_FILES: [&str; 4] = ["manifest.json", "engine/server/app.py", "python/python.exe", "git/usr/bin/bash.exe"];
+#[cfg(windows)]
+const EXPECTED_PLATFORM: &str = "windows-x86_64";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const EXPECTED_PLATFORM: &str = "darwin-aarch64";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const EXPECTED_PLATFORM: &str = "darwin-x86_64";
+#[cfg(not(any(windows, target_os = "macos")))]
+const EXPECTED_PLATFORM: &str = "linux-x86_64";
+
+#[cfg(windows)]
+const REQUIRED_FILES: &[&str] = &["manifest.json", "engine/server/app.py", "python/python.exe", "git/usr/bin/bash.exe"];
+#[cfg(not(windows))]
+const REQUIRED_FILES: &[&str] = &["manifest.json", "engine/server/app.py", "python/bin/python3"];
 const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_RUNTIME_FILES: usize = 150_000;
@@ -97,12 +109,30 @@ fn read_manifest(archive: &mut zip::ZipArchive<BufReader<File>>, manifest_sha: &
     if format!("{:x}", Sha256::digest(&bytes)) != manifest_sha { return Err("studio_runtime_damaged".into()); }
     let manifest: RuntimeManifest = serde_json::from_slice(&bytes).map_err(|_| "studio_runtime_damaged")?;
     let mut names = HashSet::new();
-    if manifest.schema_version != 1 || manifest.platform != "windows-x86_64" || manifest.files.is_empty() || manifest.files.len() > MAX_RUNTIME_FILES
+    if manifest.schema_version != 1 || manifest.platform != EXPECTED_PLATFORM || manifest.files.is_empty() || manifest.files.len() > MAX_RUNTIME_FILES
         || manifest.files.iter().any(|(name, hash)| !valid_entry_name(name) || name == "manifest.json" || !is_sha256(hash) || !names.insert(name.to_lowercase()))
         || REQUIRED_FILES[1..].iter().any(|name| !manifest.files.contains_key(*name)) {
         return Err("studio_runtime_damaged".into());
     }
     Ok((bytes, manifest))
+}
+
+#[cfg(unix)]
+fn is_unix_executable_entry(name: &str, magic: &[u8]) -> bool {
+    name.starts_with("python/bin/")
+        || name.contains("/_bundled/claude")
+        || name.contains("/binaries/ffmpeg")
+        || name.ends_with(".dylib")
+        || name.ends_with(".so")
+        || magic.starts_with(b"#!")
+        || matches!(
+            magic,
+            [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xca, 0xfe, 0xba, 0xbe]
+        )
 }
 
 fn extract_worker(archive_path: &Path, staging: &Path, files: &BTreeMap<String, String>, indices: &[usize], worker: usize, workers: usize, failed: &AtomicBool) -> Result<(), String> {
@@ -120,10 +150,17 @@ fn extract_worker(archive_path: &Path, staging: &Path, files: &BTreeMap<String, 
         let mut writer = BufWriter::with_capacity(256 * 1024, output);
         let mut hasher = Sha256::new();
         let mut written = 0_u64;
+        #[cfg(unix)]
+        let mut magic = Vec::with_capacity(4);
         let mut limited = (&mut entry).take(declared + 1);
         loop {
             let read = limited.read(&mut buffer).map_err(|_| "studio_runtime_damaged")?;
             if read == 0 { break; }
+            #[cfg(unix)]
+            if magic.len() < 4 {
+                let need = (4 - magic.len()).min(read);
+                magic.extend_from_slice(&buffer[..need]);
+            }
             written += read as u64;
             if written > declared { return Err("studio_runtime_damaged".into()); }
             hasher.update(&buffer[..read]);
@@ -131,6 +168,13 @@ fn extract_worker(archive_path: &Path, staging: &Path, files: &BTreeMap<String, 
         }
         writer.flush().map_err(|_| "studio_runtime_prepare_failed")?;
         if written != declared || format!("{:x}", hasher.finalize()) != *expected { return Err("studio_runtime_damaged".into()); }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if is_unix_executable_entry(&name, &magic) {
+                fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).map_err(|_| "studio_runtime_prepare_failed")?;
+            }
+        }
     }
     Ok(())
 }
@@ -259,10 +303,15 @@ pub fn shutdown_for_update(app: &tauri::AppHandle) -> Result<(), String> {
 fn start(app: &tauri::AppHandle) -> Result<Connection, String> {
     // Release paths are fixed inside the signed installer; never accept renderer
     // input or development environment overrides for executable selection.
+    #[cfg(windows)]
+    const DEFAULT_PYTHON_REL: &str = "python/python.exe";
+    #[cfg(not(windows))]
+    const DEFAULT_PYTHON_REL: &str = "python/bin/python3";
+
     let (root, python, bash) = if cfg!(debug_assertions) {
         let staged = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/huanggua-studio");
         let root = std::env::var("HUANGGUA_STUDIO_ENGINE").map(std::path::PathBuf::from).unwrap_or_else(|_| staged.join("engine"));
-        let python = std::env::var("HUANGGUA_STUDIO_PYTHON").map(std::path::PathBuf::from).unwrap_or_else(|_| staged.join("python/python.exe"));
+        let python = std::env::var("HUANGGUA_STUDIO_PYTHON").map(std::path::PathBuf::from).unwrap_or_else(|_| staged.join(DEFAULT_PYTHON_REL));
         let bash = std::env::var("CLAUDE_CODE_GIT_BASH_PATH").ok().map(std::path::PathBuf::from).or_else(|| {
             let candidate = staged.join("git/usr/bin/bash.exe");
             candidate.is_file().then_some(candidate)
@@ -274,12 +323,21 @@ fn start(app: &tauri::AppHandle) -> Result<Connection, String> {
     } else {
         let bundle = prepare_runtime(app)?;
         let root = bundle.join("engine");
-        let python = bundle.join("python/python.exe");
-        let bash = bundle.join("git/usr/bin/bash.exe");
-        if !root.join("server/app.py").is_file() || !python.is_file() || !bash.is_file() || !bundle.join("manifest.json").is_file() {
+        let python = bundle.join(DEFAULT_PYTHON_REL);
+        #[cfg(windows)]
+        let bash = {
+            let b = bundle.join("git/usr/bin/bash.exe");
+            if !b.is_file() {
+                return Err("studio_runtime_not_packaged".into());
+            }
+            Some(b)
+        };
+        #[cfg(not(windows))]
+        let bash: Option<PathBuf> = None;
+        if !root.join("server/app.py").is_file() || !python.is_file() || !bundle.join("manifest.json").is_file() {
             return Err("studio_runtime_not_packaged".into());
         }
-        (root, python, Some(bash))
+        (root, python, bash)
     };
     let session = crate::secret_store::read_internal_secret_sync(app, "huanggua/session")
         .map_err(|_| "studio_login_required")?.filter(|s| !s.is_empty()).ok_or("studio_login_required")?;
@@ -323,6 +381,11 @@ fn start(app: &tauri::AppHandle) -> Result<Connection, String> {
                 if directory.is_dir() { runtime_path.push(directory); }
             }
         }
+    }
+    #[cfg(unix)]
+    for sys_dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+        let p = PathBuf::from(sys_dir);
+        if p.is_dir() { runtime_path.push(p); }
     }
     if let Some(inherited) = std::env::var_os("PATH") { runtime_path.extend(std::env::split_paths(&inherited)); }
     let mut command = Command::new(&python);
@@ -490,11 +553,17 @@ mod tests {
 
     /// Writes a fixture archive; `tamper` replaces the stored bytes of one file after the manifest is computed.
     fn fixture(directory: &Path, tamper: bool) -> (PathBuf, BundleSidecar, String) {
+        #[cfg(windows)]
         let files: Vec<(&str, &[u8])> = vec![
             ("engine/server/app.py", b"print('app')"), ("python/python.exe", b"MZ fixture"),
             ("git/usr/bin/bash.exe", b"MZ bash"), ("engine/lib/data.json", b"{\"ok\":true}"),
         ];
-        let manifest = json!({ "schemaVersion": 1, "platform": "windows-x86_64",
+        #[cfg(not(windows))]
+        let files: Vec<(&str, &[u8])> = vec![
+            ("engine/server/app.py", b"print('app')"), ("python/bin/python3", b"#!/bin/sh\n"),
+            ("engine/lib/data.json", b"{\"ok\":true}"),
+        ];
+        let manifest = json!({ "schemaVersion": 1, "platform": EXPECTED_PLATFORM,
             "files": files.iter().map(|(name, bytes)| (name.to_string(), sha(bytes))).collect::<BTreeMap<_, _>>() });
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let archive_path = directory.join(BUNDLE_ARCHIVE);
