@@ -54,6 +54,7 @@ import {
 import { resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../services/ai/dreaminaModels';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../services/ai/modelCapabilityValidation';
+import { resolveSupportedVideoResolution, resolveVideoModelCapability } from '../../services/ai/videoModelCapabilityResolver';
 import { applyGenerationCameraPrompt } from '../../services/shotlistPromptService';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
@@ -1020,13 +1021,16 @@ function AINodeDialog() {
       const imageRatio = currentRatio && imageRatios?.length
         && !imageRatios.some((ratio) => ratio.toLowerCase() === currentRatio.toLowerCase())
         ? fallbackRatio === 'auto' ? '自适应' : fallbackRatio : current.aspectRatio;
+      const videoCapability = nodeType === 'ai-video' && modelChanged
+        ? resolveVideoModelCapability(model.value, state.config) : undefined;
+      const videoResolution = nodeType === 'ai-video' && modelChanged
+        ? resolveSupportedVideoResolution(current.seedanceResolution, videoCapability) : undefined;
       const audioCapability = nodeType === 'ai-audio'
         ? resolveAudioParameterCapability(model.value, model.provider, state.config) : undefined;
       const currentSpeed = current.audioSpeed;
       const validSpeed = audioCapability?.speed && typeof currentSpeed === 'number'
         && currentSpeed >= audioCapability.speed.min && currentSpeed <= audioCapability.speed.max
         && (!audioCapability.speed.options || audioCapability.speed.options.includes(currentSpeed));
-      // 图片按项检查兼容性；视频保留用户参数，由参数控件和提交前校验处理。
       updateNodeData(activeNodeId!, {
         model: model.value,
         provider: model.provider,
@@ -1047,6 +1051,8 @@ function AINodeDialog() {
           ...(imageRatio !== current.aspectRatio && imageRatio ? { aspectRatio: imageRatio,
             ...(getImageNodeDimensionsForAspectRatio(imageRatio) ?? {}) } : {}),
         } : {}),
+        ...(nodeType === 'ai-video' && modelChanged && videoResolution !== current.seedanceResolution
+          ? { seedanceResolution: videoResolution } : {}),
         ...(modelChanged && audioCapability ? {
           audioVoice: audioCapability.kind === 'speech' && (audioCapability.voiceInput === 'id'
             ? !!current.audioVoice?.trim() : audioCapability.voices?.includes(current.audioVoice ?? ''))
