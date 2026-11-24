@@ -10,6 +10,7 @@
    - 平台配置拆分、Python 3.12 独立离线短剧运行时组装、Rust Unix 权限恢复、无头 `hdiutil` `.dmg` 打包与首次打开指引。
 3. [短剧 Agent 对话流降噪与全局关于弹窗规范](./studio-ui-and-about-dialog.md)
    - 子智能体与续写噪音过滤、对话轮次聚合展示、左上角品牌 Logo 全局唤起关于与检查更新窗口。
+4. [Bug 清单](./bug-list.md)
 
 ---
 
