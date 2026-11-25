@@ -22,6 +22,7 @@ import {
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
 import ProviderBadge from '../../shared/ProviderBadge';
+import HuangguaModelRefreshButton from '../../account/HuangguaModelRefreshButton';
 import { ModelMenu, type ModelPickerGroup } from '../../shared/ModelPicker';
 import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL, probeComfyServer } from '../../../services/comfyServers';
@@ -506,6 +507,7 @@ export default function ModelSelector({
           data-ui-select-portal=""
         >
           <ModelMenu
+            header={!configuredGroupsOverride ? <HuangguaModelRefreshButton menuItem /> : undefined}
             groups={menuGroups}
             value={selectedWorkflowId ? `workflow:${selectedWorkflowId}` : effectiveModel}
             onChange={selectMenuItem}

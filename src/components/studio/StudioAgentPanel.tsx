@@ -19,6 +19,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
 import type { StudioAttachment, StudioEpisode, StudioProject, StudioQuestion } from '../../types/studio';
 import Select from '../shared/Select';
+import HuangguaModelRefreshButton from '../account/HuangguaModelRefreshButton';
 import StudioSessions, { StudioSessionHeaderActions } from './StudioSessions';
 import StudioAttachments, { type AttachmentHandle } from './StudioAttachments';
 import StudioMessageQueue from './StudioMessageQueue';
@@ -641,6 +642,7 @@ export default function StudioAgentPanel({
             id="studio-model-options"
             className="ui-scroll mt-2 max-h-52 space-y-2 overflow-y-auto rounded-lg border border-canvas-border bg-canvas-card/40 p-2.5"
           >
+            <HuangguaModelRefreshButton />
             {Object.entries(available).map(([kind, models]) => (
               <label key={kind} className="block text-[11px] text-canvas-text-muted">
                 {t(kind === 'text' ? '文本模型' : kind === 'image' ? '图片模型' : '视频模型')}

@@ -1,4 +1,10 @@
 const huangguaAccount: Record<string, string> = {
+  "刷新模型列表": "Refresh model list",
+  "正在更新模型…": "Updating models…",
+  "获取黄瓜 AI 账号最新可用模型": "Fetch the latest models available to your Huanggua AI account",
+  "模型列表已更新": "Model list updated",
+  "模型列表更新失败，请在账号窗口查看原因并重试。": "Could not update models. Open your account dialog for details and retry.",
+  "画布模型已更新，短剧模型刷新失败，请重试。": "Canvas models updated, but short drama models could not refresh. Please retry.",
   "黄瓜 AI 使用说明": "About Huanggua AI",
   "欢迎使用黄瓜 AI": "Welcome to Huanggua AI",
   "登录黄瓜 AI 账号，即可使用账号已开通的模型服务": "Sign in to use the models available to your Huanggua AI account.",

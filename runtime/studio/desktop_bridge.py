@@ -139,10 +139,10 @@ async def checked(client, method, path, payload=None):
         raise ValueError("studio_engine_rejected")
     return response.json() if response.content else {}
 
-async def connect_account():
+async def connect_account(*, force=False):
     global account_checked, account_fingerprint, models, model_refs
     async with account_lock:
-        if time.monotonic() - account_checked < 40:
+        if not force and time.monotonic() - account_checked < 40:
             return
         try:
             async with httpx.AsyncClient(timeout=20, trust_env=False) as remote:
@@ -160,6 +160,7 @@ async def connect_account():
             await app.state.generation_worker.start_authorized()
             account_checked = time.monotonic()
         except Exception:
+            account_checked = 0
             secret_values.clear()
             models, model_refs = {}, {}
             account_fingerprint = ""
@@ -334,7 +335,7 @@ async def desktop_operation(operation: str, request: Request):
     body = await request.json()
     try:
         if operation == "status":
-            await connect_account()
+            await connect_account(force=True)
             return {"ready": True, "models": models, "videoModelsByMode": {
                 mode: [m['model_id'] for m in compatible_video_models(mode)]
                 for mode in ('storyboard', 'reference_video')
