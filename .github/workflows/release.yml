@@ -266,6 +266,7 @@ jobs:
           node node_modules/@tauri-apps/cli/tauri.js build `
             --target x86_64-pc-windows-msvc `
             --config scripts/tauri-release-legacy.config.json `
+            --bundles nsis `
             -- `
             --no-default-features
           if ($LASTEXITCODE -ne 0) { throw 'Legacy build failed' }
