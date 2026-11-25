@@ -78,4 +78,27 @@ class BridgeTest(unittest.TestCase):
             self.request(f"/desktop/artifact/{project}/{'0'*64}")
         missing.exception.close()
 
+    def test_artifact_pagination_retains_results_beyond_old_limit(self):
+        scope = {**self.ids, 'projectId': '12345678-1234-1234-1234-123456789099'}
+        project = json.loads(self.request('/desktop/poll', scope))['project']
+        folder = self.root / 'data/projects' / project / 'storyboards'
+        folder.mkdir(parents=True, exist_ok=True)
+        for number in range(1001):
+            (folder / f'frame-{number:04}.txt').write_text(str(number), encoding='utf-8')
+        result = json.loads(self.request('/desktop/poll', scope))
+        names = [item['name'] for item in result['artifacts']]
+        self.assertEqual(len(names), 200)
+        cursor = result['artifactCursor']
+        # Files created during pagination belong to the next snapshot, never shift this one.
+        (folder / 'later.txt').write_text('later', encoding='utf-8')
+        while cursor:
+            result = json.loads(self.request('/desktop/poll', {**scope, 'artifactCursor': cursor}))
+            names.extend(item['name'] for item in result['artifacts'])
+            cursor = result['artifactCursor']
+        self.assertEqual(len(names), 1001)
+        self.assertEqual(len(set(names)), 1001)
+        self.assertIn('storyboards/frame-1000.txt', names)
+        self.assertNotIn('storyboards/later.txt', names)
+
+
 if __name__ == "__main__": unittest.main()

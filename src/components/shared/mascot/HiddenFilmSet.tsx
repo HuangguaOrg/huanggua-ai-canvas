@@ -234,7 +234,7 @@ export default function HiddenFilmSet({
                     transition={{ delay: 0.9, duration: 0.3, times: [0, 0.15, 1] }}
                   />
                 )}
-                <text x="14" y="53" fontSize="7" letterSpacing="1.2" fill="var(--theme-text-muted)">AI CANVAS</text>
+                <text x="14" y="53" fontSize="7" letterSpacing="1.2" fill="var(--theme-text-muted)">黄瓜 AI</text>
                 <path d="M13 59h74M56 59v16" stroke="var(--theme-border)" />
                 <text x="14" y="71" fontSize="7" fill="var(--theme-text-secondary)">SCENE 01</text>
                 <text x="62" y="71" fontSize="7" fill="var(--accent-amber-text)">TAKE {String(take!.number).padStart(2, '0')}</text>

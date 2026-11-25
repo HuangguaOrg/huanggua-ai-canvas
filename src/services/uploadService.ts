@@ -56,7 +56,6 @@ const UPLOAD_TTL_MS = 150 * 60 * 1000;
 const CACHE_STORAGE_KEY = 'canvas-upload-cache-v4';
 
 /** 包含排队时间；到期会中止 fetch 或调用 Rust cancel_proxy_fetch。 */
-export const UPLOAD_TIMEOUT_MS = 120_000;
 
 // ── 持久化缓存 ──
 
@@ -73,7 +72,7 @@ interface UploadIdentity {
 
 type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl' | 'apiKey' | 'imageHosting' | 'tosUpload'> & {
   kind: MediaDataUrlKind;
-  huangguaModel?: string;
+  huangguaManaged: boolean;
   globalImageHosting?: { provider: PublicImageHostingProvider; config: ImageHostingConfig };
 }>;
 
@@ -87,7 +86,7 @@ function captureUploadConnection(provider: string, kind: MediaDataUrlKind = 'ima
     && upload !== 'toapis' && upload !== 'libapi' && upload !== 'minimax' && upload !== 'volcengine-tos'
     && !(provider === 'apimart' && kind === 'image');
   return { catalogId: connection?.catalogId, baseUrl: connection?.baseUrl, apiKey: connection?.apiKey?.trim() ?? '',
-    huangguaModel: managed ? (connection?.selectedModels?.find((model) => model.category === 'video') ?? connection?.selectedModels?.find((model) => model.id !== 'catcode-image-Nano Banana2') ?? connection?.selectedModels?.[0])?.id ?? '' : undefined,
+    huangguaManaged: managed,
     imageHosting: connection?.imageHosting ? structuredClone(connection.imageHosting) : undefined, kind,
     tosUpload: upload === 'volcengine-tos' && connection?.tosUpload ? structuredClone(connection.tosUpload) : undefined,
     globalImageHosting: useGlobalHosting ? {
@@ -97,7 +96,7 @@ function captureUploadConnection(provider: string, kind: MediaDataUrlKind = 'ima
 
 function assertUploadConnection(provider: string, expected: UploadConnection): void {
   const current = captureUploadConnection(provider, expected.kind);
-  if (current.catalogId !== expected.catalogId || current.baseUrl !== expected.baseUrl || current.apiKey !== expected.apiKey || current.huangguaModel !== expected.huangguaModel
+  if (current.catalogId !== expected.catalogId || current.baseUrl !== expected.baseUrl || current.apiKey !== expected.apiKey || current.huangguaManaged !== expected.huangguaManaged
     || JSON.stringify(current.imageHosting) !== JSON.stringify(expected.imageHosting)
     || JSON.stringify(current.tosUpload) !== JSON.stringify(expected.tosUpload)
     || JSON.stringify(current.globalImageHosting) !== JSON.stringify(expected.globalImageHosting)) {
@@ -268,11 +267,6 @@ async function runUploadSerially<T>(
   };
   if (externalSignal?.aborted) cancelFromCaller();
   else externalSignal?.addEventListener('abort', cancelFromCaller, { once: true });
-  const timeoutId = setTimeout(() => {
-    if (!operationController.signal.aborted) {
-      operationController.abort(new Error(`媒体上传等待超过 ${UPLOAD_TIMEOUT_MS / 1000} 秒，已取消`));
-    }
-  }, UPLOAD_TIMEOUT_MS);
 
   let operationPromise: Promise<T> | null = null;
   let operationSettled = false;
@@ -292,7 +286,7 @@ async function runUploadSerially<T>(
     queuedUploadControllers.delete(operationController);
     if (operationController.signal.aborted) throw abortReason(operationController.signal);
     operationPromise = Promise.resolve().then(() => operation(operationController.signal));
-    // 调用方可在取消/超时时立即收到拒绝，但串行 gate 只能在底层 operation
+    // 调用方可在取消时立即收到拒绝，但串行 gate 只能在底层 operation
     // 真正结算后释放。若原生 invoke 未结算，后续上传会继续隔离在队列外。
     const settleOperation = () => {
       operationSettled = true;
@@ -304,7 +298,6 @@ async function runUploadSerially<T>(
     void operationPromise.then(settleOperation, settleOperation);
     return await raceWithAbort(operationPromise, operationController.signal);
   } finally {
-    clearTimeout(timeoutId);
     queuedUploadControllers.delete(operationController);
     operationController.signal.removeEventListener('abort', quarantineIfStillRunning);
     externalSignal?.removeEventListener('abort', cancelFromCaller);
@@ -912,7 +905,7 @@ export async function uploadToRemote(
   }
   const identity = await cacheKey(url, provider, kind, connection, signal);
   // The platform controls expiry; never reuse a generic public-host cache receipt.
-  if (connection.huangguaModel !== undefined) identity.cacheable = false;
+  if (connection.huangguaManaged) identity.cacheable = false;
   assertUploadConnection(provider, connection);
   const { key } = identity;
 
@@ -937,11 +930,11 @@ export async function uploadToRemote(
     const queuedCached = identity.cacheable ? getCachedUrl(key, !usesTos) : null;
     if (queuedCached) return queuedCached;
 
-    if (connection.huangguaModel !== undefined) {
-      if (kind !== 'image' && kind !== 'video') throw new Error('当前黄瓜 AI 模型仅支持上传图片或视频参考素材');
+    if (connection.huangguaManaged) {
+      if (kind !== 'image' && kind !== 'video') throw new Error('黄瓜 AI 素材暂存服务目前支持图片和视频');
       const { blob, ext } = await urlToBlob(url, kind, undefined, operationSignal, identity.source);
       assertUploadConnection(provider, connection);
-      const result = await uploadHuangguaReference(blob, `reference.${ext}`, connection.apiKey, connection.huangguaModel, operationSignal, kind);
+      const result = await uploadHuangguaReference(blob, `reference.${ext}`, connection.apiKey, operationSignal, kind);
       assertUploadConnection(provider, connection);
       return result;
     }

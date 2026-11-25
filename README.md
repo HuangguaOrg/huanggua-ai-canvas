@@ -1,20 +1,20 @@
-# AI Canvas Tauri — AI 画布、AI短剧与AI资产管理
+# 黄瓜 AI 画布 — AI 画布、AI短剧与AI资产管理
 
-![AI Canvas Tauri — 从创意、分镜到视频的本地优先创作画布](doc/images/github-social-preview.jpg)
+<p align="center"><img src="public/huanggua-ai.png" width="128" alt="黄瓜 AI" /></p>
 
 **把创意、角色、分镜和视频放在同一张画布里，连接 ComfyUI、AI Agent 与 MCP 完成创作。**
 
-[![GitHub Stars](https://img.shields.io/github/stars/Tenney95/AI-Canvas-tauri?style=flat&label=Star%20on%20GitHub)](https://github.com/Tenney95/AI-Canvas-tauri/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/HuangguaOrg/huanggua-ai-canvas?style=flat&label=Star%20on%20GitHub)](https://github.com/HuangguaOrg/huanggua-ai-canvas/stargazers)
 
-**[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载桌面版](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [分享作品与交流](https://github.com/Tenney95/AI-Canvas-tauri/discussions)**
+**[官方网站](https://huanggua.my) · [下载桌面版](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [分享作品与交流](https://github.com/HuangguaOrg/huanggua-ai-canvas/issues)**
 
-> ⭐ **开源计划：** 当本项目的 GitHub Stars 达到 **10,000（10k）** 时，项目自有代码将转用 **[MIT License（MIT 许可证）](https://opensource.org/license/mit)**，允许自由使用、修改、分发和商用，须保留版权声明和许可文本。在此之前，仍以 [LICENSE](LICENSE) 中的当前许可条款为准。
+> ⭐ **上游开源计划（保留来源说明）：** 当上游 AI Canvas Tauri 项目的 GitHub Stars 达到 **10,000（10k）** 时，项目自有代码将转用 **[MIT License（MIT 许可证）](https://opensource.org/license/mit)**，允许自由使用、修改、分发和商用，须保留版权声明和许可文本。在此之前，仍以 [LICENSE](LICENSE) 中的当前许可条款为准。
 
 **简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
 > 面向 **AI短剧创作、AI资产管理、图像/视频生成与分镜制作** 的本地优先 AI 多模态画布与可视化工作流桌面应用，集成 **ComfyUI、对话 AI Agent 与 MCP**，基于 **Tauri 2 + React 19 + React Flow 12** 构建。
 
-AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown、分镜、360° 全景和手绘笔记组织成可连接的画布节点。你可以在同一个项目中编排生成链路、统一管理角色库、人物/场景/道具与本地素材、执行 ComfyUI 工作流、安装 JavaScript 或可信 Python 用户插件，也可以通过对话助手查询或修改画布、生成媒体、派出只读子智能体、读取授权文件并沉淀项目记忆。项目还能拆成剧集与分集，一部 AI短剧的每一集各占一张画布，角色库与素材整部剧共用。
+黄瓜 AI 画布将文本、图像、视频、音频、逐帧动画、Markdown、分镜、360° 全景和手绘笔记组织成可连接的画布节点。你可以在同一个项目中编排生成链路、统一管理角色库、人物/场景/道具与本地素材、执行 ComfyUI 工作流、安装 JavaScript 或可信 Python 用户插件，也可以通过对话助手查询或修改画布、生成媒体、派出只读子智能体、读取授权文件并沉淀项目记忆。项目还能拆成剧集与分集，一部 AI短剧的每一集各占一张画布，角色库与素材整部剧共用。
 
 **0.11.3 · 助手窗口与常用 Skill：** 独立助手关闭或收回时等待草稿交接与窗口真正关闭，失败保留草稿并恢复编辑；节点 `/` 一级菜单显示最近使用的 5 个可用 Skill，包含上传项与已启用智能体包，助手选择也更新这份近期记录。另含分组开合自动让位、新项目废弃原件扫描、七角色团队及 Seedream 5.0 Flash 适配，修复素材预览与部分 macOS 文件处理。旧项目保持原样，正式迁移继续关闭；新结构沿用 v4 项目包，兼容旧 v1–v3 包。含输出历史的 v4 包需 0.11.0 或支持该字段的客户端，早期 v4 客户端可能拒绝。安装包与验收范围见 [发布说明](.release-notes.md)。
 
@@ -25,11 +25,11 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
 ![License](https://img.shields.io/badge/license-source--available-f59e0b)
 
-**在线体验：** <https://tenney95.github.io/AI-Canvas-tauri/>（首屏可直接试用，内置演示画布）
+**官方网站：** <https://huanggua.my>
 
 **下载：** <https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest>（获取桌面安装包）
 
-[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [赞助支持](#赞助支持) · [核心能力](#核心能力) · [快速开始](#快速开始) · [项目文档](#项目文档) · [License](#license)
+[官方网站](https://huanggua.my) · [下载](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [赞助支持](#赞助支持) · [核心能力](#核心能力) · [快速开始](#快速开始) · [项目文档](#项目文档) · [License](#license)
 
 > 在线版适合体验画布与界面。用户插件、文件系统、凭据存储、独立窗口、3D 导演台、本地模型等能力依赖 Tauri 桌面环境；完整体验请按下方步骤启动桌面应用。
 

@@ -199,6 +199,16 @@ class MediaStagingBackendTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(allowed['references']), 2)
             self.assertEqual({r['kind'] for r in allowed['references']}, {'image', 'video'})
 
+            missing = await build_shot_precheck(
+                root=engine_root, project_path=proj_dir,
+                project={**project, 'desktop_shot_references': {'E1S01': {'images': ['uploads/missing.png'], 'videos': ['uploads/missing.mp4']}}},
+                item=item, shot_id='E1S01', kind='video', target_ratio='9:16', selected_model='grsai-minimax-h3-768p',
+            )
+            self.assertTrue(missing['allowed'])
+            self.assertTrue(any('missing.png' in warning for warning in missing['warnings']))
+            self.assertTrue(any('missing.mp4' in warning for warning in missing['warnings']))
+            self.assertEqual(len(missing['references']), 1)
+
             img_check = await build_shot_precheck(
                 root=engine_root, project_path=proj_dir, project={**project, 'style_image': sb_rel}, item=item,
                 shot_id='E1S01', kind='image', target_ratio='9:16', selected_model='grsai-gpt-image-2.5-flare',
@@ -218,6 +228,7 @@ class MediaStagingBackendTest(unittest.IsolatedAsyncioTestCase):
                 if req.url.path == '/v1/media/submissions/capabilities':
                     return httpx.Response(404)
                 if req.url.path == '/v1/media/uploads':
+                    self.assertNotIn('model', req.url.params)
                     kind = 'video' if b'video/mp4' in req.content else 'image'
                     ext = 'mp4' if kind == 'video' else 'png'
                     requests_seen.append((req.method, f"{req.url.path}?{req.url.query.decode()}", {'kind': kind}))

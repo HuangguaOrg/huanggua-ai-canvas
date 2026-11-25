@@ -55,7 +55,6 @@ vi.mock('@tauri-apps/plugin-fs', () => ({ lstat: mocks.lstat }));
 vi.mock('../../src/services/fs/assetImageMetadata', () => ({ fingerprintAssetImage: mocks.fingerprintAssetImage }));
 
 import {
-  UPLOAD_TIMEOUT_MS,
   resolveMediaReferenceUrl,
   uploadToRemote,
 } from '../../src/services/uploadService';
@@ -467,7 +466,7 @@ describe('uploadService 内存上传治理', () => {
     }
   });
 
-  it('120 秒超时会真正中止原生代理，底层结算后才释放队列', async () => {
+  it('上传不按固定时限取消，用户取消后才中止代理并释放队列', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn(async () => responseFor(new Blob([new Uint8Array([16, 17, 18])], {
       type: 'image/png',
@@ -488,11 +487,14 @@ describe('uploadService 内存上传治理', () => {
         })),
       });
     });
-    const task = uploadToRemote('asset://localhost/timeout-source.png');
-    const timeoutRejection = expect(task).rejects.toThrow('媒体上传等待超过 120 秒');
+    const controller = new AbortController();
+    const task = uploadToRemote('asset://localhost/timeout-source.png', '', 'image', controller.signal);
+    const timeoutRejection = expect(task).rejects.toThrow('用户取消上传');
     // Blob／multipart 准备还要经过真实异步任务，不能靠固定微任务次数判断请求已启动。
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('proxy_fetch', expect.anything()));
-    await vi.advanceTimersByTimeAsync(UPLOAD_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'cancel_proxy_fetch')).toBe(false);
+    controller.abort(new Error('用户取消上传'));
     await timeoutRejection;
     expect(mocks.invoke).toHaveBeenCalledWith(
       'cancel_proxy_fetch',
@@ -526,10 +528,11 @@ describe('uploadService 内存上传治理', () => {
       });
     });
 
-    const stuck = uploadToRemote('asset://localhost/stuck-native.png');
-    const stuckRejection = expect(stuck).rejects.toThrow('媒体上传等待超过 120 秒');
+    const controller = new AbortController();
+    const stuck = uploadToRemote('asset://localhost/stuck-native.png', '', 'image', controller.signal);
+    const stuckRejection = expect(stuck).rejects.toThrow('用户取消上传');
     await vi.waitFor(() => expect(proxyCalls).toBe(1));
-    await vi.advanceTimersByTimeAsync(UPLOAD_TIMEOUT_MS);
+    controller.abort(new Error('用户取消上传'));
     await stuckRejection;
 
     const isolated = uploadToRemote('asset://localhost/must-not-overlap.png');

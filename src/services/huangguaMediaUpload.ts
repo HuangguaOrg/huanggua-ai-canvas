@@ -8,11 +8,10 @@ export async function uploadHuangguaReference(
   blob: Blob,
   filename: string,
   key: string,
-  model: string,
   signal?: AbortSignal,
   kind: 'image' | 'video' = blob.type.startsWith('video/') ? 'video' : 'image',
 ): Promise<string> {
-  if (!key || !model) throw new Error('请重新登录黄瓜 AI 后上传参考素材');
+  if (!key) throw new Error('请重新登录黄瓜 AI 后上传参考素材');
   if (kind === 'video') {
     if ((!VIDEO_MIME_TYPES.has(blob.type) && !/\.(mp4|mov|m4v|webm)$/i.test(filename)) || blob.size <= 0 || blob.size > 64 * 1024 * 1024) {
       throw new Error('黄瓜 AI 参考视频需为 MP4、MOV 或 WebM，且不超过 64 MB');
@@ -21,7 +20,6 @@ export async function uploadHuangguaReference(
     throw new Error('黄瓜 AI 参考图片需为 PNG、JPEG 或 WebP，且不超过 20 MB');
   }
   const endpoint = new URL('https://huanggua.my/v1/media/uploads');
-  endpoint.searchParams.set('model', model);
   const body = new FormData();
   body.append('file', blob, filename);
   const response = await corsSafeFetch(endpoint.href, {

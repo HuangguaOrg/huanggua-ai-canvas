@@ -310,14 +310,13 @@ async def upload(name, body, client, checked):
         if entry['kind'] == 'attachment':
             from conversation_api import save_attachment
             from lib.project.project_manager import get_project_manager
-            project_dir = None
             try:
-                pm = get_project_manager()
-                if pm.project_exists(name) or body.get('title'):
-                    await ensure_local_project(name, body, client, checked)
-                    project_dir = pm.get_project_path(name)
-            except Exception:
-                project_dir = None
+                await ensure_local_project(name, body, client, checked)
+                project_dir = get_project_manager().get_project_path(name)
+                if not project_dir.is_dir():
+                    raise ValueError('studio_project_storage_unavailable')
+            except OSError as exc:
+                raise ValueError('studio_project_storage_unavailable') from exc
             entry['file'].seek(0)
             return await asyncio.to_thread(
                 save_attachment,

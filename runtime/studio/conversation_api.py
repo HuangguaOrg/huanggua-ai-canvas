@@ -34,7 +34,7 @@ def _safe_stem(filename: str | None, fallback: str) -> str:
 
 def _persist_project_record(project_dir: Path | None, subdir: str, filename: str | None, ext: str, raw_or_path) -> str | None:
     if not project_dir or not project_dir.is_dir():
-        return None
+        raise ValueError('studio_project_storage_unavailable')
     if isinstance(raw_or_path, Path):
         with raw_or_path.open('rb') as handle:
             digest = hashlib.file_digest(handle, 'sha256').hexdigest()[:12]
@@ -55,12 +55,16 @@ def _persist_project_record(project_dir: Path | None, subdir: str, filename: str
 
 
 def save_attachment(data_root, binding, stream, *, filename=None, project_dir: Path | None = None):
+    if not project_dir or not project_dir.is_dir():
+        raise ValueError('studio_project_storage_unavailable')
     ext = Path(filename or '').suffix.lower()
     if ext in {'.mp4', '.mov', '.m4v', '.webm'}:
         return _save_video_attachment(data_root, binding, stream, filename=filename, project_dir=project_dir)
     stream.seek(0)
     original_bytes = stream.read()
     raw = image_bytes(io.BytesIO(original_bytes))
+    img_ext = ext if ext in {'.png', '.jpg', '.jpeg', '.webp'} else '.jpg'
+    project_rel = _persist_project_record(project_dir, 'images', filename, img_ext, original_bytes)
     identity = hashlib.sha256(raw).hexdigest()
     folder = data_root / 'attachments' / binding
     folder.mkdir(parents=True, exist_ok=True)
@@ -69,8 +73,6 @@ def save_attachment(data_root, binding, stream, *, filename=None, project_dir: P
         temporary = destination.with_suffix('.tmp')
         temporary.write_bytes(raw)
         temporary.replace(destination)
-    img_ext = ext if ext in {'.png', '.jpg', '.jpeg', '.webp'} else '.jpg'
-    project_rel = _persist_project_record(project_dir, 'images', filename, img_ext, original_bytes)
     if project_rel:
         meta_path = folder / (identity + '.meta.json')
         meta_path.write_text(json.dumps({'kind': 'image', 'name': filename or '对话附图.jpg', 'project_path': project_rel}, ensure_ascii=False), encoding='utf-8')
@@ -103,6 +105,12 @@ def _save_video_attachment(data_root, binding, stream, *, filename=None, project
             raise ValueError('studio_invalid_attachment')
         with staged.open('rb') as handle:
             identity = hashlib.file_digest(handle, 'sha256').hexdigest()
+        normalized = staged
+        out_ext = ext
+        if ext in {'.mov', '.m4v', '.webm'}:
+            normalized = convert_video_to_mp4_sync(staged, staging_dir / 'normalized.mp4')
+            out_ext = '.mp4'
+        project_rel = _persist_project_record(project_dir, 'videos', filename, out_ext, normalized)
         folder = data_root / 'attachments' / binding
         folder.mkdir(parents=True, exist_ok=True)
         # Store keyframe JPEG at {identity}.jpg so attachment_path & preview work uniformly.
@@ -117,12 +125,6 @@ def _save_video_attachment(data_root, binding, stream, *, filename=None, project
             second_dest = folder / (identity + '.frame2.jpg')
             if not second_dest.exists():
                 second_dest.write_bytes(second_bytes)
-        normalized = staged
-        out_ext = ext
-        if ext in {'.mov', '.m4v', '.webm'}:
-            normalized = convert_video_to_mp4_sync(staged, staging_dir / 'normalized.mp4')
-            out_ext = '.mp4'
-        project_rel = _persist_project_record(project_dir, 'videos', filename, out_ext, normalized)
         meta_path = folder / (identity + '.meta.json')
         meta_path.write_text(
             json.dumps({'kind': 'video', 'name': filename or '本地视频.mp4', 'project_path': project_rel, 'size': total}, ensure_ascii=False),

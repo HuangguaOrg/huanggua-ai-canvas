@@ -56,6 +56,9 @@ export async function uploadStudioLocalFile(
   }
 }
 export function workspaceError(error: unknown): string {
+  if (error === 'studio_attachment_limit') return '每条消息最多添加 5 个附件，请移除部分附件后重试。';
+  if (error === 'studio_project_storage_unavailable') return '附件未完整保存：项目存储目录不可用或磁盘写入失败，请检查目录权限和剩余空间后重新上传。';
+  if (error === 'studio_connection_lost' || error === 'studio_transport_failed') return '与短剧执行服务的连接已断开，请恢复连接后重试。';
   if (error === 'studio_style_required') return '请先在「项目概览」中选择一个画面风格模版，或上传一张风格参考图。';
   if (error === 'studio_shot_busy') return '本镜头仍有生成任务，请等待完成后再修改比例或生成。';
   if (error === 'studio_prompt_required') return '请先在脚本规划中编写画面提示词。';

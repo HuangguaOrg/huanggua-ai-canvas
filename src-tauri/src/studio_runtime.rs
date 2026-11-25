@@ -450,7 +450,7 @@ async fn connection(app: &tauri::AppHandle) -> Result<Connection, String> {
     }).await.map_err(|_| "studio_runtime_failed")?
 }
 fn client() -> Result<reqwest::Client,String> {
-    reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(180)).build().map_err(|_| "studio_transport_failed".into())
+    reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "studio_transport_failed".into())
 }
 #[tauri::command]
 pub async fn studio_request(app: tauri::AppHandle, webview: Webview, operation: String, payload: Value) -> Result<Value,String> {

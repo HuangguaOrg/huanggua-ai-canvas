@@ -12,7 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 from workspace_api import workspace
-from conversation_api import attachment_path, normalize_session_entries
+from conversation_api import attachment_path, normalize_session_entries, save_attachment
 
 
 def meta(identity, superseded=None):
@@ -125,6 +125,29 @@ class ConversationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cleaned[2]['rewritable'])
         self.assertEqual(cleaned[2]['subtype'], 'question_answer')
         self.assertEqual(cleaned[2]['content'][0]['text'], '已确认：快节奏卡点')
+
+
+
+
+class AttachmentPersistenceTest(unittest.TestCase):
+    def test_unavailable_project_never_reports_success_or_creates_preview(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ('reference.png', 'reference.webm'):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'studio_project_storage_unavailable'):
+                    save_attachment(root, 'binding', io.BytesIO(b'fixture'), filename=name, project_dir=root / 'missing')
+            self.assertFalse((root / 'attachments').exists())
+
+    def test_successful_image_attachment_retains_original_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            project = root / 'project'
+            project.mkdir()
+            buffer = io.BytesIO()
+            Image.new('RGBA', (8, 8), (0, 255, 0, 128)).save(buffer, 'PNG')
+            raw = buffer.getvalue()
+            result = save_attachment(root, 'binding', io.BytesIO(raw), filename='reference.png', project_dir=project)
+            self.assertEqual((project / result['projectPath']).read_bytes(), raw)
 
 
 if __name__ == '__main__':
