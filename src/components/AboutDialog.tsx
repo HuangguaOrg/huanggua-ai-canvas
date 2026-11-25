@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { useAppVersion } from '../hooks/useAppVersion';
 import { useAppStore } from '../store/useAppStore';
-import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning } from '../services/updateService';
+import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning, updateCheckErrorMessage } from '../services/updateService';
 import { useT } from '../i18n';
 import { openStyleGuideWindow } from '../utils/styleGuideWindow';
 import ModalOverlay from './shared/ModalOverlay';
@@ -26,8 +26,11 @@ export default function AboutDialog({ isOpen, onClose }: { isOpen: boolean; onCl
   const updating = isAppUpdateRunning(appUpdateProgress);
 
   const handleCheckUpdate = async () => {
+    if (isAppUpdateRunning(useAppStore.getState().appUpdateProgress)) return;
     setUpdateStatus('checking');
     setUpdateMsg('');
+    setUpdateVersion('');
+    useAppStore.setState({ appUpdateProgress: null });
     try {
       const result = await checkForUpdate({ manual: true });
       if (result.available) {
@@ -38,9 +41,9 @@ export default function AboutDialog({ isOpen, onClose }: { isOpen: boolean; onCl
         setUpdateStatus('no-update');
         setUpdateMsg(t('已是最新版本'));
       }
-    } catch {
+    } catch (error) {
       setUpdateStatus('error');
-      setUpdateMsg(t('检查失败，请稍后重试'));
+      setUpdateMsg(t(updateCheckErrorMessage(error)));
     }
   };
 
@@ -122,13 +125,15 @@ export default function AboutDialog({ isOpen, onClose }: { isOpen: boolean; onCl
               ) : updateStatus === 'available' ? (
                 t('发现 v{version}，点击更新', { version: updateVersion })
               ) : updateStatus === 'error' ? (
-                updateMsg
+                t('重新检查更新')
               ) : (
                 t('检查更新')
               )}
             </button>
           </div>
         </div>
+
+        {updateStatus === 'error' && updateMsg && <p role="alert" className="text-xs text-danger-light">{updateMsg}</p>}
 
         {appUpdateProgress?.phase === 'downloading' ? (
           <DownloadProgress

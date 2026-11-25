@@ -1,7 +1,7 @@
 /**
  * updateService — 回归测试：downloadAndInstallUpdate。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DownloadEvent } from '@tauri-apps/plugin-updater';
 import type { AppUpdateProgress } from '../../src/services/updateService';
 
@@ -35,6 +35,82 @@ beforeEach(() => {
     rid: 42,
     version: '0.8.18',
     downloadAndInstall: mocks.downloadAndInstall,
+  });
+});
+
+afterEach(() => { vi.unstubAllEnvs(); });
+
+describe('update discovery failures', () => {
+  beforeEach(() => { vi.stubEnv('DEV', false); });
+
+  it('retries a transient installed-client check and finds 0.11.8 without installing it', async () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockRejectedValueOnce('error sending request for url (https://gitee.com/feed)')
+      .mockResolvedValueOnce({ version: '0.11.8', currentVersion: '0.11.7', close });
+    const { checkForUpdate } = await import('../../src/services/updateService');
+    await expect(checkForUpdate({ manual: true })).resolves.toMatchObject({ available: true, version: '0.11.8' });
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.check).toHaveBeenLastCalledWith({ timeout: 30_000, headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } });
+    expect(close).toHaveBeenCalledOnce();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('limits failed retries and never reports a network failure as no update', async () => {
+    mocks.check.mockRejectedValue('operation timed out');
+    const { checkForUpdate } = await import('../../src/services/updateService');
+    await expect(checkForUpdate({ manual: true })).rejects.toBe('operation timed out');
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a successful no-update response', async () => {
+    mocks.check.mockResolvedValue(null);
+    const { checkForUpdate } = await import('../../src/services/updateService');
+    await expect(checkForUpdate({ manual: true })).resolves.toEqual({ available: false });
+    expect(mocks.check).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['the platform `darwin-aarch64` was not found in the response `platforms` object', '更新源尚未提供当前系统的安装包，请到官网下载对应版本'],
+    ['invalid peer certificate: UnknownIssuer', '更新源安全连接失败，请检查系统时间、证书或网络代理'],
+  ])('reports permanent check errors without retry: %s', async (error, message) => {
+    mocks.check.mockRejectedValue(error);
+    const { checkForUpdate, updateCheckErrorMessage } = await import('../../src/services/updateService');
+    await expect(checkForUpdate({ manual: true })).rejects.toBe(error);
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(updateCheckErrorMessage(error)).toBe(message);
+  });
+
+  it('reports invalid metadata without displaying raw server content', async () => {
+    const { updateCheckErrorMessage } = await import('../../src/services/updateService');
+    expect(updateCheckErrorMessage('Could not fetch a valid release JSON from the remote')).toBe('更新源返回了无效清单，请稍后重试或到官网下载');
+    expect(updateCheckErrorMessage(new Error('error sending request for url (https://user:password@proxy.invalid)'))).toBe('无法连接更新源，请检查网络或代理设置后重试');
+  });
+
+  it('does not turn resource cleanup failure into a failed update check', async () => {
+    mocks.check.mockResolvedValue({ version: '0.11.8', close: vi.fn().mockRejectedValue('resource missing') });
+    const { checkForUpdate } = await import('../../src/services/updateService');
+    await expect(checkForUpdate({ manual: true })).resolves.toMatchObject({ available: true, version: '0.11.8' });
+    expect(mocks.check).toHaveBeenCalledOnce();
+  });
+
+  it('does not claim to be current when checking in a browser or development build', async () => {
+    vi.stubGlobal('window', {});
+    const browserService = await import('../../src/services/updateService');
+    await expect(browserService.checkForUpdate({ manual: true })).rejects.toThrow('桌面客户端');
+    vi.resetModules(); vi.stubGlobal('window', { __TAURI__: {} }); vi.stubEnv('DEV', true);
+    const devService = await import('../../src/services/updateService');
+    await expect(devService.checkForUpdate({ manual: true })).rejects.toThrow('开发模式');
+    await expect(devService.checkForUpdate()).resolves.toEqual({ available: false });
+    expect(mocks.check).not.toHaveBeenCalled();
+  });
+
+  it('also retries discovery when the user starts an update, but installs only once', async () => {
+    mocks.check.mockRejectedValueOnce('operation timed out');
+    const { downloadAndInstallUpdate } = await import('../../src/services/updateService');
+    await expect(downloadAndInstallUpdate()).resolves.toBe(true);
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
   });
 });
 
