@@ -1908,7 +1908,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       } catch (error) {
         console.warn('[创建项目] 保存失败:', error);
         if (isLatestCreate()) {
-          get().showToast('新项目创建或打开失败，已保留已有数据', 'error');
+          get().showToast(error instanceof Error && error.name === 'ProjectStorageUnavailableError' ? error.message : '新项目创建或打开失败，已保留已有数据', 'error');
         }
         return undefined;
       }

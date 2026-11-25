@@ -2,6 +2,7 @@
  * 通用 / Header / Titlebar / Toast / 节点菜单 / 侧边栏 / 关于弹窗
  */
 const common = {
+  "项目素材目录不可用或归属未能确认，请检查原保存目录及访问权限后重试；原有文件已保留": "Project media storage is unavailable or its ownership could not be verified. Check the original save directory and access permissions, then retry. Existing files have been preserved.",
   "项目存储设置已变化，请重试当前操作": "Project storage settings changed. Please retry the operation.",
   "项目存储配置尚未就绪，请在主窗口重新加载设置后重试": "Project storage is not ready. Reload settings in the main window and retry.",
   "项目存储目录不可用，请确认磁盘已连接，并在「设置 → 文件与应用」中重新选择原保存根目录后重试": "Project storage is unavailable. Check that the drive is connected, then reselect the original save root in Settings → Files & App and retry.",

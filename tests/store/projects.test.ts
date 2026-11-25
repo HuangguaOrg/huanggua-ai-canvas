@@ -9,7 +9,7 @@ import { cancelProjectCanvasDerivations } from '../../src/services/canvasDerivat
 import type { BaseNodeData } from '../../src/types';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
-import { registerNativeProjectFolders as registerNativeProjectFoldersInCore } from '../../src/services/fs/core';
+import { ProjectStorageUnavailableError, registerNativeProjectFolders as registerNativeProjectFoldersInCore } from '../../src/services/fs/core';
 import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sharedAssetSyncRepository';
 import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import { ProjectImportCommittedError } from '../../src/services/projectImportOutcome';
@@ -681,6 +681,38 @@ describe('project creation', () => {
     expect(await useAppStore.getState().switchProject(canvasId!)).toBe(canvasId);
     expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node']);
     expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledOnce();
+  });
+
+  it('新建目录失败展示具体原因、保留原画布，并在恢复后允许再创建', async () => {
+    stubInitializationActions();
+    const old = { id: 'legacy-project', name: '旧项目', createdAt: 1, updatedAt: 1 };
+    const nodes = [{ id: 'retained', type: 'ai-text', position: { x: 0, y: 0 }, data: { type: 'ai-text' as const, label: '保留' } }];
+    const showToast = vi.fn();
+    const message = '项目存储目录不可用，请确认原保存根目录后重试';
+    fileMocks.loadProjectsList.mockResolvedValue([old]);
+    fileMocks.claimNativeProjectDataDir.mockRejectedValueOnce(new ProjectStorageUnavailableError(message, 'offline'));
+    useAppStore.setState({ projects: [old], currentProjectId: old.id, nodes, showToast, saveCurrentProject: vi.fn(async () => old.id) });
+    expect(await useAppStore.getState().createProject('新画布')).toBeUndefined();
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: old.id, nodes, isCreatingProject: false });
+    expect(nativeMocks.create).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(message, 'error');
+    expect(await useAppStore.getState().createProject('新画布')).toMatch(/^c2-/);
+    expect(nativeMocks.create).toHaveBeenCalledOnce();
+  });
+
+  it('切换目录失败保留当前画布并清除遮罩，目录恢复后可重新打开', async () => {
+    const old = { id: 'old', name: '旧项目', createdAt: 1, updatedAt: 1 };
+    const target = { id: 'target', name: '目标项目', createdAt: 1, updatedAt: 1 };
+    const nodes = [{ id: 'retained', type: 'ai-text', position: { x: 0, y: 0 }, data: { type: 'ai-text' as const, label: '保留' } }];
+    const showToast = vi.fn();
+    const message = '项目素材目录不可用或归属未能确认，请检查原保存目录及访问权限后重试；原有文件已保留';
+    useAppStore.setState({ projects: [old, target], currentProjectId: old.id, nodes, showToast, saveCurrentProject: vi.fn(async () => old.id) });
+    fileMocks.loadProjectData.mockRejectedValueOnce(new ProjectStorageUnavailableError(message, 'offline'));
+    expect(await useAppStore.getState().switchProject(target.id)).toBeUndefined();
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: old.id, nodes, switchingProjectName: null });
+    expect(showToast).toHaveBeenCalledWith(message, 'error');
+    fileMocks.loadProjectData.mockResolvedValueOnce({ ...target, nodes: [], edges: [], groups: [] });
+    expect(await useAppStore.getState().switchProject(target.id)).toBe(target.id);
   });
 
   it('零集新剧集可以打开项目根，不会创建旧画布或删除作品', async () => {
