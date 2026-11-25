@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
   "platform": "windows-x86_64",
-  "url": "https://github.com/HuangguaOrg/AI-Canvas-tauri/releases/download/runtime-2026.11.22.1/huanggua-desktop-runtime-windows-x64.zip",
+  "url": "https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/download/runtime-2026.11.22.1/huanggua-desktop-runtime-windows-x64.zip",
   "sha256": "49fc705d38a9370374d13977c42d7bfff47b8eb360e5d82c51c2b23418987918"
 }

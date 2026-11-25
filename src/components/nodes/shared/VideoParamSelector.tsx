@@ -690,6 +690,7 @@ export default function VideoParamSelector({
     generalCapability?.automaticDurationValue,
     generalCapability?.defaultFrameRate,
     generalCapability?.defaultResolution,
+    generalCapability?.resolutions?.length,
     explicitlyUnsupportedAudio,
     generateAudio,
     isNativeSeedance,
