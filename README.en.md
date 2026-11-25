@@ -6,7 +6,7 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/Tenney95/AI-Canvas-tauri?style=flat&label=Star%20on%20GitHub)](https://github.com/Tenney95/AI-Canvas-tauri/stargazers)
 
-**[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download desktop app](https://github.com/Tenney95/AI-Canvas-tauri/releases) · [Share your work](https://github.com/Tenney95/AI-Canvas-tauri/discussions)**
+**[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download desktop app](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [Share your work](https://github.com/Tenney95/AI-Canvas-tauri/discussions)**
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md)
 
@@ -25,9 +25,9 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 
 **Live demo:** <https://tenney95.github.io/AI-Canvas-tauri/> (try it right on the landing page, with a built-in demo canvas)
 
-**Download:** <https://github.com/tenney95/AI-Canvas-tauri/releases> (desktop installers)
+**Download:** <https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest> (desktop installers)
 
-[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download](https://github.com/tenney95/AI-Canvas-tauri/releases) · [Sponsors](#sponsors) · [Capabilities](#capabilities) · [Getting Started](#getting-started) · [Documentation](#documentation) · [License](#license)
+[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [Sponsors](#sponsors) · [Capabilities](#capabilities) · [Getting Started](#getting-started) · [Documentation](#documentation) · [License](#license)
 
 > The web version is ideal for exploring the canvas and interface. File system, credential storage, separate windows, the 3D director desk and local models depend on the Tauri desktop environment; for the full experience, launch the desktop app using the steps below.
 
