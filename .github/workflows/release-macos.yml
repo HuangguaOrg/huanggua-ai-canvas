@@ -1,261 +1,33 @@
-name: Release macOS
-
-run-name: 编译并发布 macOS 客户端 (${{ inputs.tag }})
-
+name: Transfer verified macOS update artifact
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 发布版本标签（需与 tauri.conf.json 版本一致，如 v0.11.8）
-        required: true
-        default: v0.11.8
         type: string
+        required: true
       include_intel:
-        description: 同时构建 Intel x86_64 安装包（默认仅构建 Apple Silicon arm64）
-        required: false
-        default: false
         type: boolean
-
+        default: false
 permissions:
-  contents: read
-
-concurrency:
-  group: release-macos-${{ inputs.tag }}
-  cancel-in-progress: false
-
+  contents: write
+  actions: read
 jobs:
-  frontend:
-    name: Build verified frontend
+  transfer:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Validate release tag against tauri.conf.json
-        id: meta
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          version="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")"
-          expected_tag="v${version}"
-          if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
-            echo "Tag mismatch: input tag '$RELEASE_TAG' != tauri.conf.json '$expected_tag'" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint and build frontend
-        run: |
-          npm run lint
-          npm run build
-
-      - name: Upload verified frontend dist
-        uses: actions/upload-artifact@v7
-        with:
-          name: macos-frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 3
-
-  build-macos:
-    name: Build & publish macOS (${{ matrix.arch_label }})
-    needs: frontend
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(inputs.include_intel && '[{"runner":"macos-latest","rust_target":"aarch64-apple-darwin","runtime_platform":"darwin-aarch64","arch_label":"arm64"},{"runner":"macos-15-intel","rust_target":"x86_64-apple-darwin","runtime_platform":"darwin-x86_64","arch_label":"x64"}]' || '[{"runner":"macos-latest","rust_target":"aarch64-apple-darwin","runtime_platform":"darwin-aarch64","arch_label":"arm64"}]') }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.99.1
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Cache Rust release dependencies
-        uses: Swatinem/rust-cache@v2.9.3
-        with:
-          workspaces: src-tauri -> target
-          shared-key: release-macos-${{ matrix.rust_target }}
-
-      - name: Ensure uv is installed
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v uv >/dev/null 2>&1; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
-          uv --version
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Download verified frontend dist
-        uses: actions/download-artifact@v8
-        with:
-          name: macos-frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist
-
-      - name: Prepare macOS Studio runtime and Director Desk
-        shell: bash
+      - name: Transfer exact verified artifact to existing draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: |
-          set -euo pipefail
-          python3 -B scripts/prepare-macos-studio-runtime.py \
-            --platform "${{ matrix.runtime_platform }}" \
-            --clean
-
-      - name: Pack and preflight verify desktop resources
-        shell: bash
-        env:
-          HUANGGUA_TARGET_PLATFORM: ${{ matrix.runtime_platform }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: |
-          set -euo pipefail
-          npm run build:mcp-adapter
-          npm run release:pack
-          npm run release:preflight
-
-      - name: Compile Rust release binary
-        working-directory: src-tauri
+          GH_REPO: HuangguaOrg/huanggua-ai-canvas
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --target "${{ matrix.rust_target }}" --bins
-
-      - name: Bundle macOS .app, verify signature, and build .dmg installer
-        id: package
-        shell: bash
-        env:
-          CI: 'true'
-          APPLE_SIGNING_IDENTITY: '-'
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          HUANGGUA_TARGET_PLATFORM: ${{ matrix.runtime_platform }}
-          RELEASE_VERSION: ${{ needs.frontend.outputs.version }}
-          ARCH_LABEL: ${{ matrix.arch_label }}
-          RUST_TARGET: ${{ matrix.rust_target }}
-        run: |
-          set -euo pipefail
-          node node_modules/@tauri-apps/cli/tauri.js build \
-            --target "${RUST_TARGET}" \
-            --bundles app \
-            --config scripts/tauri-release-macos.config.json
-
-          bundle_dir="src-tauri/target/${RUST_TARGET}/release/bundle"
-          shopt -s nullglob
-          apps=("$bundle_dir"/macos/*.app)
-          if [[ "${#apps[@]}" -ne 1 ]]; then
-            echo "Expected exactly one .app in ${bundle_dir}/macos, found ${#apps[@]}" >&2
-            exit 1
-          fi
-          app_path="${apps[0]}"
-          codesign --verify --deep --strict --verbose=2 "$app_path"
-
-          updates=("$bundle_dir"/macos/*.app.tar.gz)
-          if [[ "${#updates[@]}" -ne 1 ]]; then
-            echo "Expected one signed macOS updater archive" >&2
-            exit 1
-          fi
-          update_dir="${RUNNER_TEMP}/macos-update-parts"
-          python3 -B scripts/build-macos-update.py \
-            --archive "${updates[0]}" --out "$update_dir" --target "darwin-${{ matrix.rust_target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}"
-          echo "update_dir=${update_dir}" >> "$GITHUB_OUTPUT"
-
-          dmg_stage="${RUNNER_TEMP}/dmg-stage"
-          out_dir="${RUNNER_TEMP}/macos-release-assets"
-          rm -rf "$dmg_stage" "$out_dir"
-          mkdir -p "$dmg_stage" "$out_dir"
-
-          ditto "$app_path" "${dmg_stage}/$(basename "$app_path")"
-          ln -s /Applications "${dmg_stage}/Applications"
-
-          dmg_name="HuangGuaAI-${RELEASE_VERSION}-macos-${ARCH_LABEL}.dmg"
-          dmg_path="${out_dir}/${dmg_name}"
-          hdiutil create \
-            -volname "黄瓜 AI 画布" \
-            -srcfolder "$dmg_stage" \
-            -ov \
-            -format UDZO \
-            "$dmg_path"
-
-          (cd "$out_dir" && shasum -a 256 "$dmg_name" > "${dmg_name}.sha256")
-          ls -lh "$out_dir"
-          echo "out_dir=${out_dir}" >> "$GITHUB_OUTPUT"
-          echo "dmg_name=${dmg_name}" >> "$GITHUB_OUTPUT"
-
-      - name: Save signed Gitee update parts
-        uses: actions/upload-artifact@v7
-        with:
-          name: macos-update-${{ matrix.arch_label }}-${{ github.sha }}
-          path: ${{ steps.package.outputs.update_dir }}/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
-      - name: Publish .dmg installer to GitHub Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_VERSION: ${{ needs.frontend.outputs.version }}
-          OUT_DIR: ${{ steps.package.outputs.out_dir }}
-          DMG_NAME: ${{ steps.package.outputs.dmg_name }}
-        run: |
-          set -euo pipefail
-          notes_file="${RUNNER_TEMP}/release-notes.md"
-          cat > "$notes_file" <<EOF
-          ## 黄瓜 AI 画布 ${RELEASE_TAG}（macOS 客户端）
-
-          - **包含模块**：无限画布 + 离线短剧 Agent（Python 3.12 独立运行时）+ 离线 3D 导演台
-          - **Apple Silicon (M1/M2/M3/M4)**：下载 \`HuangGuaAI-${RELEASE_VERSION}-macos-arm64.dmg\`
-
-          ### macOS 首次打开说明
-          当前安装包采用 Ad-hoc 签名（未附加 Apple 公证证书）。从浏览器下载并拖入 \`Applications\` 后首次打开若提示无法验证开发者，请在终端执行一次：
-          \`\`\`bash
-          xattr -cr "/Applications/黄瓜 AI 画布.app"
-          \`\`\`
-          或在 **系统设置 → 隐私与安全性** 中点击 **仍要打开**。
-          EOF
-
-          if ! gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --repo "$GH_REPO" \
-              --target "$GITHUB_SHA" \
-              --draft \
-              --title "黄瓜 AI 画布 ${RELEASE_TAG}" \
-              --notes-file "$notes_file"
-          fi
-
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GH_REPO" \
-            "${OUT_DIR}/${DMG_NAME}" \
-            "${OUT_DIR}/${DMG_NAME}.sha256" \
-            --clobber
+          test "${{ inputs.tag }}" = "v0.11.11"
+          gh api repos/HuangguaOrg/huanggua-ai-canvas/actions/runs/45668974400 > run.json
+          jq -e '.conclusion == "success" and .head_sha == "2683b0dc393f0b2959305cc2c76dc9f7c3de14d2"' run.json
+          gh api repos/HuangguaOrg/huanggua-ai-canvas/releases/458449675 > release.json
+          jq -e '.draft == true and .tag_name == "v0.11.11"' release.json
+          gh api repos/HuangguaOrg/huanggua-ai-canvas/actions/artifacts/15050512406/zip > macos-gitee-update-transfer.zip
+          echo "6a32057550fe7f53dc6a9838b909c32f9c1803fdb6fe24bd6def35b291bf22ca  macos-gitee-update-transfer.zip" | sha256sum --check
+          gh release upload v0.11.11 macos-gitee-update-transfer.zip --repo "$GH_REPO"
