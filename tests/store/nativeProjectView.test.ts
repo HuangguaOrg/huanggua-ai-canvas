@@ -256,6 +256,24 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     return { gate, entered };
   }
 
+  it('参考图准备失败保留可操作的目录错误且不修改节点', async () => {
+    const { ProjectStorageUnavailableError } = await import('../../src/services/fs/core');
+    const { store } = await fixture('ai-image');
+    const before = store.getState().nodes;
+    const failure = new ProjectStorageUnavailableError('项目存储目录不可用，请重新选择原目录', '项目存储目录尚未同步或不可用');
+    nativeDisplayIo.normalizeMedia.mockRejectedValueOnce(failure);
+    await expect(store.getState().normalizeNativeMediaGenerationInputs(before[0].id)).rejects.toBe(failure);
+    expect(store.getState().nodes).toBe(before);
+  });
+
+  it('普通参考图读取失败不泄露底层文件路径', async () => {
+    const { store } = await fixture('ai-image');
+    const before = store.getState().nodes;
+    nativeDisplayIo.normalizeMedia.mockRejectedValueOnce(new Error('unreadable /private/reference.png'));
+    await expect(store.getState().normalizeNativeMediaGenerationInputs(before[0].id)).rejects.toThrow('参考素材身份准备失败，请检查文件后重试');
+    expect(store.getState().nodes).toBe(before);
+  });
+
   it('生成前只规范化目标与本轮引用，回补媒体身份但保留运行态、标签、位置与历史', async () => {
     const { store, context } = await fixture('ai-image');
     const target = { ...store.getState().nodes[0], data: { ...store.getState().nodes[0].data,
