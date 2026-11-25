@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../store/useAppStore';
 import type { StudioArtifact, StudioExecution } from '../types/studio';
-import { importStudioArtifact } from './fileService';
+import { importStudioArtifact, isStudioArtifactAvailable } from './fileService';
 
 export function studioRequest<T>(operation: string, payload: Record<string, unknown> = {}): Promise<T> {
   const project = useAppStore.getState().studioDraft.projects.find(p => p.id === payload.projectId);
@@ -14,11 +14,17 @@ export function studioError(error: unknown): string {
 }
 const imports = new Map<string, StudioArtifact>();
 let polling = false;
+let retryImports = false;
+let importEpoch: number | undefined;
 /** Polling only reads state; never resubmits generation. Captured IDs isolate late results. */
-export async function pollStudioExecutions(): Promise<void> {
+export async function pollStudioExecutions(options?: { retryImports?: boolean }): Promise<void> {
+  if (options?.retryImports) retryImports = true;
   if (polling || useAppStore.getState().studioConnection !== 'ready') return;
   polling = true;
   const epoch = useAppStore.getState().studioEpoch;
+  if (retryImports || importEpoch !== epoch) imports.clear();
+  retryImports = false;
+  importEpoch = epoch;
   try {
     const draft = useAppStore.getState().studioDraft;
     for (const project of draft.projects) for (const episode of project.episodes) {
@@ -26,10 +32,20 @@ export async function pollStudioExecutions(): Promise<void> {
       try {
         const result = await studioRequest<StudioExecution>('poll', { projectId: project.id, episodeId: episode.id, historyLimit: useAppStore.getState().studioHistoryLimits?.[key] ?? 100 });
         if (useAppStore.getState().studioEpoch !== epoch) return;
+        while (result.artifactCursor) {
+          const page = await studioRequest<Pick<StudioExecution, 'artifacts' | 'artifactCursor'>>('poll', {
+            projectId: project.id, episodeId: episode.id, artifactCursor: result.artifactCursor,
+          });
+          if (useAppStore.getState().studioEpoch !== epoch) return;
+          result.artifacts.push(...page.artifacts);
+          result.artifactCursor = page.artifactCursor;
+        }
         for (const artifact of result.artifacts) {
           if (useAppStore.getState().studioEpoch !== epoch) return;
           const known = imports.get(artifact.id);
-          if (known?.imported) { Object.assign(artifact, { url: known.url, imported: true }); continue; }
+          if (known?.imported && known.url && await isStudioArtifactAvailable(known.url).catch(() => false)) {
+            Object.assign(artifact, { url: known.url, imported: true }); continue;
+          }
           try {
             const url = await importStudioArtifact(result.project, artifact.id);
             Object.assign(artifact, { imported: true, url }); imports.set(artifact.id, { ...artifact });
@@ -42,7 +58,10 @@ export async function pollStudioExecutions(): Promise<void> {
         if (previous) useAppStore.getState().updateStudioExecution(key, { ...previous, error: studioError(error) });
       }
     }
-  } finally { polling = false; }
+  } finally {
+    polling = false;
+    if (retryImports) void pollStudioExecutions();
+  }
 }
 export async function submitStudio(projectId: string, episodeId: string, selectedModels: Record<string, string>, retry = false): Promise<void> {
   const state = useAppStore.getState();

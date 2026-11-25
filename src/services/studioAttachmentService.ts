@@ -18,7 +18,9 @@ export async function uploadStudioAttachment(scope: StudioScope, file: File): Pr
       let binary = ''; for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       await studioWorkspace(scope, 'upload_chunk', { id, data: { offset, chunk: btoa(binary) } });
     }
-    const result = await studioWorkspace<{ id: string; kind?: 'image' | 'video'; projectPath?: string }>(scope, 'upload_finish', { id }); id = undefined;
+    const result = await studioWorkspace<{ id: string; kind?: 'image' | 'video'; projectPath?: string }>(scope, 'upload_finish', { id });
+    if (!result.projectPath) throw 'studio_project_storage_unavailable';
+    id = undefined;
     await pollStudioExecutions();
     return { id: result.id, name: file.name, kind: result.kind ?? (isVideo ? 'video' : 'image'), projectPath: result.projectPath };
   } finally { if (id) await studioWorkspace(scope, 'upload_cancel', { id }).catch(() => {}); }

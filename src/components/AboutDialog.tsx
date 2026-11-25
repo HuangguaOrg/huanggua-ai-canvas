@@ -99,7 +99,7 @@ export default function AboutDialog({ isOpen, onClose }: { isOpen: boolean; onCl
             className="flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-indigo-500/20 transition-transform active:scale-95"
             aria-label={t('黄瓜 AI 画布')}
           >
-            <img src={`${import.meta.env.BASE_URL}icons.svg`} alt="" />
+            <img src={`${import.meta.env.BASE_URL}huanggua-ai.png`} alt="" />
           </button>
           <div>
             <h2 className="text-lg font-semibold text-canvas-text">黄瓜 AI 画布</h2>

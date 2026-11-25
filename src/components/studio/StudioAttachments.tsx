@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'reac
 import { Film, Loader2, X } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import type { StudioAttachment } from '../../types/studio';
-import { studioWorkspace, type StudioScope } from '../../services/studioWorkspaceService';
+import { studioWorkspace, workspaceError, type StudioScope } from '../../services/studioWorkspaceService';
 import { uploadStudioAttachment } from '../../services/studioAttachmentService';
 
 export interface AttachmentHandle {
@@ -35,7 +35,7 @@ export default function StudioAttachments({
     onBusy(true);
     setError('');
     try {
-      if (attachments.length + files.length > 5) throw new Error('limit');
+      if (attachments.length + files.length > 5) throw 'studio_attachment_limit';
       for (const file of files) {
         const refItem = await uploadStudioAttachment(scope, file);
         const state = useAppStore.getState();
@@ -48,8 +48,8 @@ export default function StudioAttachments({
           refItem,
         ]);
       }
-    } catch {
-      setError('最多添加 5 个本地图片（PNG/JPG/WebP ≤ 30 MB）或视频（MP4/MOV/M4V/WebM ≤ 128 MB）。');
+    } catch (error) {
+      setError(workspaceError(error));
     } finally {
       busyRef.current = false;
       setBusy(false);

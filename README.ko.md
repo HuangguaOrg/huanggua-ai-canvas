@@ -1,29 +1,29 @@
-# AI Canvas Tauri
+# 黄瓜 AI 画布
 
 [简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **한국어**
 
 <p align="center">
-  <img src="public/icons.svg" alt="AI Canvas Tauri Icon" width="140" height="140" />
+  <img src="public/huanggua-ai.png" alt="黄瓜 AI" width="140" height="140" />
 </p>
 
 > **Tauri 2 + React 19 + React Flow 12** 기반의 로컬 우선 AI 멀티모달 캔버스 및 대화형 에이전트 데스크톱 애플리케이션.
 
-AI Canvas Tauri는 텍스트, 이미지, 비디오, 오디오, 프레임 단위 애니메이션, Markdown, 샷 리스트, 360° 파노라마, 손글씨 노트를 연결 가능한 캔버스 노드로 구성합니다. 하나의 프로젝트 안에서 생성 파이프라인을 구성하고, 캐릭터 라이브러리와 로컬 에셋을 관리하고, ComfyUI 워크플로를 실행하고, 대화형 어시스턴트로 캔버스를 조회·수정하고, 미디어를 생성하고, 읽기 전용 하위 에이전트를 파견하고, 허가된 파일을 읽고, 프로젝트 메모리를 축적할 수 있습니다. 프로젝트는 시리즈와 에피소드로 나눌 수 있으며, 숏폼 드라마의 각 회차는 하나의 캔버스를 갖고 캐릭터 라이브러리와 에셋은 시리즈 전체에서 공유합니다.
+황과 AI는 텍스트, 이미지, 비디오, 오디오, 프레임 단위 애니메이션, Markdown, 샷 리스트, 360° 파노라마, 손글씨 노트를 연결 가능한 캔버스 노드로 구성합니다. 하나의 프로젝트 안에서 생성 파이프라인을 구성하고, 캐릭터 라이브러리와 로컬 에셋을 관리하고, ComfyUI 워크플로를 실행하고, 대화형 어시스턴트로 캔버스를 조회·수정하고, 미디어를 생성하고, 읽기 전용 하위 에이전트를 파견하고, 허가된 파일을 읽고, 프로젝트 메모리를 축적할 수 있습니다. 프로젝트는 시리즈와 에피소드로 나눌 수 있으며, 숏폼 드라마의 각 회차는 하나의 캔버스를 갖고 캐릭터 라이브러리와 에셋은 시리즈 전체에서 공유합니다.
 
 **0.11.3 · 어시스턴트 창과 최근 Skill:** 독립 창을 닫거나 되돌릴 때 초안 전달과 실제 창 종료를 기다리며, 실패하면 초안을 보존하고 편집을 다시 활성화합니다. 노드의 `/` 메뉴는 업로드 항목과 활성 에이전트 패키지에서 최근 사용한 유효 Skill을 최대 5개 표시하며 어시스턴트의 선택도 같은 최근 기록에 반영합니다. 그룹 접기·펼치기 간격 조정, 새 프로젝트의 미사용 원본 스캔, 7개 팀 역할과 Seedream 5.0 Flash를 지원하고 소재 미리보기 및 일부 macOS 파일 처리를 수정했습니다. 기존 프로젝트의 자동 이전은 계속 비활성화되며 v4와 기존 v1–v3 호환성을 유지합니다. 출력 기록이 포함된 v4는 0.11.0 또는 해당 필드를 지원하는 클라이언트가 필요하며 초기 v4 클라이언트는 거부할 수 있습니다. 설치 패키지 공개 여부와 검증 범위는 [릴리스 노트](.release-notes.md)를 확인하세요.
 
-![Version](https://img.shields.io/badge/version-0.11.9-6366f1)
+![Version](https://img.shields.io/badge/version-0.11.10-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
 ![License](https://img.shields.io/badge/license-source--available-f59e0b)
 
-**온라인 체험:** <https://tenney95.github.io/AI-Canvas-tauri/> (첫 화면에서 바로 사용 가능, 데모 캔버스 내장)
+**공식 사이트:** <https://huanggua.my>
 
 **다운로드:** <https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest> (데스크톱 설치 패키지)
 
-[온라인 체험](https://tenney95.github.io/AI-Canvas-tauri/) · [다운로드](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [후원](#후원) · [주요 기능](#주요-기능) · [빠른 시작](#빠른-시작) · [문서](#문서) · [라이선스](#라이선스)
+[공식 사이트](https://huanggua.my) · [다운로드](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [후원](#후원) · [주요 기능](#주요-기능) · [빠른 시작](#빠른-시작) · [문서](#문서) · [라이선스](#라이선스)
 
 > 웹 버전은 캔버스와 인터페이스 체험에 적합합니다. 파일 시스템, 자격 증명 저장소, 독립 창, 3D 디렉터 데스크, 로컬 모델 등은 Tauri 데스크톱 환경에 의존합니다. 완전한 체험을 원하시면 아래 단계에 따라 데스크톱 앱을 실행하세요.
 

@@ -1,33 +1,33 @@
-# AI Canvas Tauri — AI Canvas, Short Drama & Asset Management
+# 黄瓜 AI 画布 — AI Canvas, Short Drama & Asset Management
 
-![AI Canvas Tauri — From idea to storyboard to video](doc/images/github-social-preview.jpg)
+<p align="center"><img src="public/huanggua-ai.png" width="128" alt="黄瓜 AI" /></p>
 
 **Bring ideas, characters, storyboards and videos onto one canvas, with ComfyUI, AI agents and MCP.**
 
-[![GitHub Stars](https://img.shields.io/github/stars/Tenney95/AI-Canvas-tauri?style=flat&label=Star%20on%20GitHub)](https://github.com/Tenney95/AI-Canvas-tauri/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/HuangguaOrg/huanggua-ai-canvas?style=flat&label=Star%20on%20GitHub)](https://github.com/HuangguaOrg/huanggua-ai-canvas/stargazers)
 
-**[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download desktop app](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [Share your work](https://github.com/Tenney95/AI-Canvas-tauri/discussions)**
+**[Official website](https://huanggua.my) · [Download desktop app](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [Share your work](https://github.com/HuangguaOrg/huanggua-ai-canvas/issues)**
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md)
 
 > A local-first AI canvas and visual workflow desktop app for **AI short drama creation, AI asset management, image/video generation and storyboarding**, with **ComfyUI, conversational AI agents and MCP**, built on **Tauri 2 + React 19 + React Flow 12**.
 
-AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage characters, scenes, props and local media assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of an AI short drama gets its own canvas, while the character library and assets are shared across the whole series.
+Huanggua AI Canvas organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage characters, scenes, props and local media assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of an AI short drama gets its own canvas, while the character library and assets are shared across the whole series.
 
 **0.11.3 · Assistant Windows & Recent Skills:** Closing or docking the assistant waits for draft handoff and the window to close; failed closes preserve drafts and restore editing. Node `/` menus show the 5 most recently used available Skills, including uploads and enabled agent packages. Assistant selections update the same recent-use record. This update also adds group collapse spacing, unused original-file scanning for new projects, seven team roles and Seedream 5.0 Flash support, with media preview and macOS file handling fixes. Existing projects remain unchanged and automatic migration stays disabled. V4 archives retain v1–v3 compatibility; output history requires 0.11.0 or a compatible reader, and early v4 readers may reject it. See the [release notes](.release-notes.md) for package availability and validation scope.
 
-![Version](https://img.shields.io/badge/version-0.11.9-6366f1)
+![Version](https://img.shields.io/badge/version-0.11.10-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
 ![License](https://img.shields.io/badge/license-source--available-f59e0b)
 
-**Live demo:** <https://tenney95.github.io/AI-Canvas-tauri/> (try it right on the landing page, with a built-in demo canvas)
+**Official website:** <https://huanggua.my>
 
 **Download:** <https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest> (desktop installers)
 
-[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [Sponsors](#sponsors) · [Capabilities](#capabilities) · [Getting Started](#getting-started) · [Documentation](#documentation) · [License](#license)
+[Official website](https://huanggua.my) · [Download](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [Sponsors](#sponsors) · [Capabilities](#capabilities) · [Getting Started](#getting-started) · [Documentation](#documentation) · [License](#license)
 
 > The web version is ideal for exploring the canvas and interface. File system, credential storage, separate windows, the 3D director desk and local models depend on the Tauri desktop environment; for the full experience, launch the desktop app using the steps below.
 

@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from runtime.studio.creative_profile import prepare_profile
+from runtime.studio.creative_profile import prepare_profile, desktop_profile_text
 
 
 class CreativeProfileTest(unittest.TestCase):
@@ -32,3 +32,16 @@ class CreativeProfileTest(unittest.TestCase):
             updated = prepare_profile(root / 'engine', root / 'data', resources)
             self.assertNotEqual(profile, updated)
             self.assertTrue((profile / 'CLAUDE.drama.md').exists())
+
+
+class DesktopProfileTest(unittest.TestCase):
+    def test_unavailable_web_actions_are_not_renamed_into_fake_desktop_actions(self):
+        result = desktop_profile_text('请用户在 Web 端「分集」视图里操作。只能由用户在 Web 端「文件」视图里操作。')
+        self.assertNotIn('Web 端', result)
+        self.assertIn('尚未提供', result)
+        self.assertIn('暂不支持', result)
+
+    def test_embedded_batch_contract_waits_for_terminal_response(self):
+        result = desktop_profile_text('一次调用完成入队并返回 durable batch；按返回的 `poll_after_seconds` 调用 `get_generation_batch`，直到 `done: true` 后再处理结果：')
+        self.assertIn('等待批次终态后返回', result)
+        self.assertIn('仅当', result)

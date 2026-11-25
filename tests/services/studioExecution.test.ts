@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppState } from '../../src/store/useAppStore';
 import type { StudioExecution } from '../../src/types/studio';
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), importArtifact: vi.fn(), state: {} as AppState }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), importArtifact: vi.fn(), available: vi.fn(), state: {} as AppState }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
-vi.mock('../../src/services/fileService', () => ({ importStudioArtifact: mocks.importArtifact }));
+vi.mock('../../src/services/fileService', () => ({ importStudioArtifact: mocks.importArtifact, isStudioArtifactAvailable: mocks.available }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.state } }));
 import { submitStudio, pollStudioExecutions } from '../../src/services/studioExecutionService';
 
@@ -11,6 +11,7 @@ function execution(): StudioExecution { return { project:'engine-project', statu
 describe('ArcReel execution delivery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.available.mockResolvedValue(true);
     const episode = { id:'episode', name:'EP01', script:'script', agentBrief:'only storyboard', shots:[] };
     mocks.state = {
       studioDraft: { version:1, projectId:'project', episodeId:'episode', projects:[{ id:'project', name:'Title', updatedAt:0, episodes:[episode] }] },
@@ -114,4 +115,26 @@ describe('ArcReel execution delivery', () => {
     await pollStudioExecutions();
     expect(mocks.state.updateStudioExecution).not.toHaveBeenCalled();
   });
+  it('loads all artifact pages before publishing the execution', async () => {
+    mocks.invoke.mockImplementation(async (_command, args) => args.payload.artifactCursor
+      ? { artifacts: [{ id: 'page-b', name: 'videos/result.mp4', kind: 'video', size: 10 }], artifactCursor: null }
+      : { ...execution(), artifacts: [{ id: 'page-a', name: 'storyboards/frame.png', kind: 'image', size: 10 }], artifactCursor: 'next' });
+    mocks.importArtifact.mockResolvedValue('asset://localhost/imported');
+    await pollStudioExecutions();
+    expect(mocks.state.studioExecutions['project/episode'].artifacts.map(a => a.id)).toEqual(['page-a', 'page-b']);
+  });
+  it('restores missing library copies and honors explicit reimport', async () => {
+    mocks.invoke.mockImplementation(async () => ({ ...execution(), artifacts: [{ id: 'restore-copy', name: 'videos/result.mp4', kind: 'video', size: 10 }] }));
+    mocks.importArtifact.mockResolvedValue('asset://localhost/restored');
+    await pollStudioExecutions();
+    await pollStudioExecutions();
+    expect(mocks.importArtifact).toHaveBeenCalledTimes(1);
+    mocks.available.mockResolvedValue(false);
+    await pollStudioExecutions();
+    expect(mocks.importArtifact).toHaveBeenCalledTimes(2);
+    mocks.available.mockResolvedValue(true);
+    await pollStudioExecutions({ retryImports: true });
+    expect(mocks.importArtifact).toHaveBeenCalledTimes(3);
+  });
+
 });

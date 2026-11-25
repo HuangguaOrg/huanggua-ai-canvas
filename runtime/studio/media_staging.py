@@ -123,7 +123,6 @@ def _probe_video_dimensions_sync(path: Path) -> tuple[int | None, int | None]:
             [ffmpeg_executable(), "-hide_banner", *local_file_input(path)],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=15,
             check=False,
         )
         match = _DIMENSIONS_RE.search(proc.stderr.decode("utf-8", errors="replace"))
@@ -214,7 +213,6 @@ def convert_video_to_mp4_sync(source: Path, destination: Path) -> Path:
                  "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", str(short_out)],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=120,
                 check=False,
             )
             if copy_run.returncode == 0 and short_out.is_file() and short_out.stat().st_size > 0:
@@ -227,7 +225,6 @@ def convert_video_to_mp4_sync(source: Path, destination: Path) -> Path:
              "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", str(short_out)],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=300,
             check=False,
         )
         if transcode.returncode != 0 or not short_out.is_file() or short_out.stat().st_size == 0:
@@ -253,7 +250,6 @@ def extract_video_keyframes_sync(source: Path, count: int = 2) -> list[bytes]:
              "-vf", "fps=1/2,scale='min(1024,iw)':-2", "-frames:v", str(count), "-q:v", "4", str(pattern)],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=30,
             check=False,
         )
         for item in sorted(staging.glob("frame_*.jpg")):
@@ -266,7 +262,6 @@ def extract_video_keyframes_sync(source: Path, count: int = 2) -> list[bytes]:
                  "-frames:v", "1", "-vf", "scale='min(1024,iw)':-2", "-q:v", "4", str(single)],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=30,
                 check=False,
             )
             if single.is_file() and single.stat().st_size > 0:
@@ -349,15 +344,15 @@ async def stage_media_to_huanggua(backend, client: httpx.AsyncClient, path: Path
     upload_url = backend._base + "/v1/media/uploads"
     response = await client.post(
         upload_url,
-        params={"model": backend.model},
         headers=backend.headers(upload_url),
         files={"file": ("reference" + suffix, data, mime)},
         follow_redirects=False,
+        timeout=None,
     )
     if response.status_code == 401:
         raise ValueError("黄瓜 AI API Key 无效或已过期，请重新登录后重试；本次未提交生成。")
     if response.status_code == 403:
-        raise ValueError(f"当前账号或模型（{backend.model}）暂未开放该类型的临时素材托管权限；请检查所选模型。")
+        raise ValueError("当前账号暂时无法使用素材暂存服务，请检查账号状态后重试。")
     if not response.is_success:
         detail = ""
         try:
@@ -381,27 +376,49 @@ async def stage_media_to_huanggua(backend, client: httpx.AsyncClient, path: Path
     return url
 
 
-def _resolve_extra_refs(project: dict, field: str, target_id: str, project_path: Path) -> tuple[list[Path], list[Path]]:
+_reference_warnings: dict[str, dict[str, list[str]]] = {}
+
+
+def reference_warnings(project_name: str) -> list[str]:
+    return list(dict.fromkeys(message for messages in _reference_warnings.get(project_name, {}).values() for message in messages))
+
+
+def _available_reference(path: Path) -> bool:
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _request_reference_warnings(project: str | None, target: str, paths: list[Path]) -> None:
+    if project:
+        _reference_warnings.setdefault(project, {})["request/" + target] = [
+            f"{target} 的参考素材 {path.name} 不可用，将跳过此素材继续生成；可重新上传以恢复参考。"
+            for path in paths if not _available_reference(path)
+        ]
+
+
+def _resolve_extra_refs(project: dict, field: str, target_id: str, project_path: Path, warnings: list[str] | None = None) -> tuple[list[Path], list[Path]]:
     from lib.infra.path_safety import safe_join
     entry = (project.get(field) or {}).get(target_id) or {}
     images: list[Path] = []
     videos: list[Path] = []
-    for rel in entry.get("images") or ():
-        if isinstance(rel, str) and rel:
+    missing: list[str] = []
+    for kind, output in (("images", images), ("videos", videos)):
+        for rel in entry.get(kind) or ():
+            if not isinstance(rel, str) or not rel:
+                continue
             try:
                 candidate = safe_join(project_path, rel)
                 if candidate.is_file() and not candidate.is_symlink():
-                    images.append(candidate)
-            except Exception:
-                continue
-    for rel in entry.get("videos") or ():
-        if isinstance(rel, str) and rel:
-            try:
-                candidate = safe_join(project_path, rel)
-                if candidate.is_file() and not candidate.is_symlink():
-                    videos.append(candidate)
-            except Exception:
-                continue
+                    output.append(candidate)
+                    continue
+            except (OSError, ValueError):
+                pass
+            missing.append(f"{target_id} 的参考素材 {Path(rel).name} 不可用，将跳过此素材继续生成；可重新上传以恢复参考。")
+    _reference_warnings.setdefault(project_path.name, {})[f"{field}/{target_id}"] = missing
+    if warnings is not None:
+        warnings.extend(missing)
     return images, videos
 
 
@@ -419,7 +436,8 @@ async def build_shot_precheck(
     """Inspect all local reference media for a shot generation and return spec confirmation facts."""
     from lib.infra.path_safety import safe_join
     spec = model_media_spec(root, kind, selected_model)
-    extra_images, extra_videos = _resolve_extra_refs(project, SHOT_REFS_FIELD, shot_id, project_path)
+    warnings: list[str] = []
+    extra_images, extra_videos = _resolve_extra_refs(project, SHOT_REFS_FIELD, shot_id, project_path, warnings)
     candidates: list[tuple[str, str, Path, str]] = []
 
     if kind == "image":
@@ -450,8 +468,10 @@ async def build_shot_precheck(
                     if isinstance(rel, str) and rel:
                         try:
                             p = safe_join(project_path, rel)
-                            if p.is_file():
+                            if _available_reference(p):
                                 candidates.append((f"{label}（{key}）", rel, p, "image"))
+                            else:
+                                warnings.append(f"{label}（{key}）本地文件缺失，将跳过此素材继续生成。")
                         except Exception:
                             pass
         for idx, p in enumerate(extra_images, 1):
@@ -477,7 +497,6 @@ async def build_shot_precheck(
 
     inspected = []
     blockers: list[str] = []
-    warnings: list[str] = []
     for role, rel_name, path, media_kind in candidates:
         try:
             info = await inspect_local_media(path, display_name=rel_name, role=role, expected_kind=media_kind)
@@ -485,7 +504,7 @@ async def build_shot_precheck(
             blockers.append(f"{role}（{rel_name}）文件损坏或无法解析，请重新上传本地文件。")
             continue
         if info.get("missing"):
-            blockers.append(f"{role}（{rel_name}）本地文件缺失，请重新上传。")
+            warnings.append(f"{role}（{rel_name}）本地文件缺失，将跳过此素材继续生成；可重新上传以恢复参考。")
             continue
         if media_kind == "video" and info["sizeBytes"] > VIDEO_UPLOAD_MAX_BYTES:
             blockers.append(f"{role}（{rel_name}）大小为 {info['sizeBytes'] / (1024 * 1024):.1f} MB，超过黄瓜 AI 64 MB 暂存上限。")
@@ -555,7 +574,7 @@ async def augment_unit_precheck(root: Path, project_path: Path, project: dict, u
     for uid in target_ids:
         if not uid:
             continue
-        extra_images, extra_videos = _resolve_extra_refs(project, UNIT_REFS_FIELD, uid, project_path)
+        extra_images, extra_videos = _resolve_extra_refs(project, UNIT_REFS_FIELD, uid, project_path, warnings)
         if extra_videos and spec["max_videos"] == 0:
             blockers.append(
                 f"单元 {uid} 含有本地参考视频，但当前模型 {selected_model} 不支持参考视频输入；请切换为 catcode-Seedance-2.0-官转 或 catcode-Seedance-2.5-官转。"
@@ -625,6 +644,12 @@ def install_huanggua_staging(root: Path) -> None:
         limit = await self.reference_image_limit()
         refs = list(request.reference_images or [])
         task_ctx = CURRENT_TASK.get()
+        _request_reference_warnings(
+            task_ctx.get('project_name') if task_ctx else None,
+            str(task_ctx.get('resource_id', '图片')) if task_ctx else '图片',
+            [Path(ref.path) for ref in refs],
+        )
+        refs = [ref for ref in refs if _available_reference(Path(ref.path))]
         if task_ctx and task_ctx.get("task_type") == "storyboard" and task_ctx.get("project_name") and task_ctx.get("resource_id"):
             try:
                 pm = get_project_manager()
@@ -769,6 +794,16 @@ def install_huanggua_staging(root: Path) -> None:
         task_ctx = CURRENT_TASK.get()
         project_name = request.project_name or (task_ctx.get("project_name") if task_ctx else None)
         resource_id = str(task_ctx["resource_id"]) if task_ctx and task_ctx.get("resource_id") else None
+        original_paths = [Path(p) for p in (request.reference_images or [])]
+        original_paths.extend(Path(p) for p in (request.start_image, request.end_image) if p)
+        _request_reference_warnings(project_name, resource_id or '视频', original_paths)
+        request = replace(request,
+            reference_images=[p for p in (request.reference_images or []) if _available_reference(Path(p))],
+            start_image=request.start_image if request.start_image and _available_reference(Path(request.start_image)) else None,
+            end_image=request.end_image if request.end_image and _available_reference(Path(request.end_image)) else None,
+        )
+        if not request.start_image and request.end_image:
+            request = replace(request, reference_images=[*(request.reference_images or []), request.end_image], end_image=None)
         if project_name and resource_id:
             try:
                 pm = get_project_manager()

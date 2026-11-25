@@ -49,6 +49,8 @@ export interface StudioEntry {
 }
 export interface StudioQuestion { question_id: string; questions: Array<{ question: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> }
 export interface StudioExecution {
+  artifactCursor?: string | null;
+  referenceWarnings?: string[];
   episodeNumber?: number;
   hasOlder?: boolean;
   queued?: Array<{ id: string; state: string; text: string; attachments?: StudioAttachment[] }>;

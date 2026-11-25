@@ -14,7 +14,7 @@ export default function StudioResults({ projectId, episodeId }: { projectId: str
   const t = useT();
   const visible = execution?.artifacts.filter(a => !a.name.startsWith('versions/')) ?? [];
   if (!visible.length) return null;
-  return <section className="mt-6 border-t border-canvas-border pt-4"><div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium">{t('生成资源')}</h3><button className="ui-btn ui-btn--sm" onClick={() => void pollStudioExecutions()}>{t('刷新与重试入库')}</button></div>
+  return <section className="mt-6 border-t border-canvas-border pt-4"><div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium">{t('生成资源')}</h3><button className="ui-btn ui-btn--sm" onClick={() => void pollStudioExecutions({ retryImports: true })}>{t('刷新与重试入库')}</button></div>
     <StudioArtifactGrid artifacts={visible} />
   </section>;
 }

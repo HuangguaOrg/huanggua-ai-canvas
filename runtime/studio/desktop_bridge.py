@@ -91,6 +91,7 @@ account_fingerprint = ""
 models: dict[str, list[str]] = {}
 model_refs: dict[str, dict[str, str]] = {}
 artifact_paths: dict[tuple[str, str], Path] = {}
+artifact_pages: dict[str, tuple[str, list[dict]]] = {}
 file_hashes: dict[str, tuple[int, int, str]] = {}
 run_locks: dict[str, asyncio.Lock] = {}
 
@@ -128,7 +129,7 @@ async def desktop_boundary(request: Request, call_next):
 
 def local_client():
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=f"http://127.0.0.1:{PORT}/api/v1/",
-                            headers={"Authorization": "Bearer " + create_token("admin"), "Accept-Language": "zh-CN"}, timeout=180)
+                            headers={"Authorization": "Bearer " + create_token("admin"), "Accept-Language": "zh-CN"}, timeout=None)
 
 async def checked(client, method, path, payload=None):
     response = await client.request(method, path, json=payload)
@@ -314,9 +315,19 @@ def artifacts(project):
             if folder == 'versions' and ext not in {'png', 'jpg', 'jpeg', 'webp', 'mp4', 'mov', 'm4v', 'webm', 'wav', 'mp3'}:
                 continue
             _record_file(path)
-            if len(rows) >= 1000:
-                return rows
     return rows
+
+def artifact_page(binding: str, rows: list[dict]) -> dict:
+    """Keep a stable snapshot across bounded responses; one snapshot per episode."""
+    import uuid
+    page, remaining = rows[:200], rows[200:]
+    cursor = uuid.uuid4().hex if remaining else None
+    if cursor:
+        artifact_pages[binding] = (cursor, remaining)
+    else:
+        artifact_pages.pop(binding, None)
+    return {"artifacts": page, "artifactCursor": cursor}
+
 
 @app.post("/desktop/{operation}")
 async def desktop_operation(operation: str, request: Request):
@@ -398,6 +409,12 @@ async def desktop_operation(operation: str, request: Request):
         session_id = binding.get("session_id")
         service = get_assistant_service()
         if operation == "poll":
+            cursor = body.get('artifactCursor')
+            if cursor is not None:
+                saved = artifact_pages.get(body['_binding'])
+                if not saved or not isinstance(cursor, str) or cursor != saved[0]:
+                    raise ValueError('studio_artifact_cursor_expired')
+                return artifact_page(body['_binding'], saved[1])
             from conversation_api import normalize_session_entries, queued_display
             result = await service.list_session_entries(session_id) if session_id else {"status":"idle", "entries":[], "draft":None}
             meta = await service.get_session(session_id) if session_id else None
@@ -454,6 +471,9 @@ async def desktop_operation(operation: str, request: Request):
             if script and not script.startswith('scripts/'):
                 script = 'scripts/' + script
             result['artifacts'] = [a for a in result['artifacts'] if not (a['name'].startswith('scripts/') and a['name'].endswith('.json')) or a['name'] == script]
+            result.update(artifact_page(body['_binding'], result['artifacts']))
+            from media_staging import reference_warnings
+            result['referenceWarnings'] = reference_warnings(name)
             result['episodeNumber'] = body['_episode']
             result["project"] = name
             result["sessionId"] = session_id
@@ -472,6 +492,8 @@ async def desktop_operation(operation: str, request: Request):
                     raise ValueError("studio_invalid_task")
                 return await checked(client, "POST", f"tasks/{body['taskId']}/cancel")
         raise ValueError("studio_operation_denied")
+    except OSError:
+        return JSONResponse({'error': 'studio_project_storage_unavailable'}, status_code=409)
     except Exception as exc:
         message = str(exc)
         return JSONResponse({"error": message if re.fullmatch(r"studio_[a-z_]+", message) else "studio_execution_failed"}, status_code=409)
