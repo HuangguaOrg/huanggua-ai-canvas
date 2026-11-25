@@ -19,6 +19,7 @@ vi.mock('react', async () => ({
   ...await vi.importActual<typeof import('react')>('react'),
   useMemo: <T,>(fn: () => T) => fn(),
   useCallback: <T,>(fn: T) => fn,
+  useSyncExternalStore: <T,>(_subscribe: unknown, getSnapshot: () => T) => getSnapshot(),
   useRef: <T,>(initial: T) => ({ current: initial }),
   useLayoutEffect: () => {},
   useState: <T,>(initial: T | (() => T)) => {
