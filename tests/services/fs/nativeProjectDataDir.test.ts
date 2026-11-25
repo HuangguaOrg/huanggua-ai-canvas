@@ -15,7 +15,7 @@ const episodeId = 'e2-12345678-1234-4123-8123-123456789abc';
 beforeEach(() => {
   vi.resetModules();
   vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
-  native.invoke.mockReset().mockResolvedValue('/bound/project');
+  native.invoke.mockReset().mockImplementation(async command => command === 'sync_authorized_directories' ? [] : '/bound/project');
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -53,7 +53,7 @@ describe('新旧项目素材根路由', () => {
     await expect(core.getProjectDataDir(canvasId)).rejects.toMatchObject({
       name: 'ProjectStorageUnavailableError', message: expect.stringContaining('原保存根目录'),
     });
-    expect(native.invoke).toHaveBeenCalledTimes(3);
+    expect(native.invoke).toHaveBeenCalledTimes(2);
     expect(native.invoke).toHaveBeenNthCalledWith(2, 'sync_authorized_directories', { directories: ['/offline'], baseDataDir: '/offline' });
   });
 
@@ -112,20 +112,21 @@ describe('新旧项目素材根路由', () => {
   it('创建目录属于写操作，失败时不自动重放', async () => {
     const core = await import('../../../src/services/fs/core');
     core.setBaseDataDir('/chosen');
-    native.invoke.mockRejectedValueOnce('项目存储目录尚未同步或不可用');
-    await expect(core.claimNativeProjectDataDir(projectId, '作品')).rejects.toBe('项目存储目录尚未同步或不可用');
-    expect(native.invoke).toHaveBeenCalledOnce();
+    native.invoke.mockResolvedValueOnce([]).mockRejectedValueOnce('项目存储目录尚未同步或不可用');
+    await expect(core.claimNativeProjectDataDir(projectId, '作品')).rejects.toMatchObject({ name: 'ProjectStorageUnavailableError' });
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'claim_native_project_media_root')).toHaveLength(1);
   });
 
   it('新建透传项目名，实体可读目录由原生绑定返回，读取时不按显示名重新拼路径', async () => {
     const core = await import('../../../src/services/fs/core');
+    core.setBaseDataDir(undefined);
     const directory = '/bound/新项目结构测试-12345678';
-    native.invoke.mockResolvedValue(directory);
+    native.invoke.mockImplementation(async command => command === 'sync_authorized_directories' ? [] : directory);
     core.registerNativeProjectFolders([{ id: canvasId, projectId }]);
     expect(await core.claimNativeProjectDataDir(projectId, '新项目结构测试')).toBe(directory);
     expect(await core.getProjectDataDir(canvasId)).toBe(directory);
-    expect(native.invoke).toHaveBeenNthCalledWith(1, 'claim_native_project_media_root', { projectId, projectName: '新项目结构测试' });
-    expect(native.invoke).toHaveBeenNthCalledWith(2, 'resolve_native_project_media_root', { projectId });
+    expect(native.invoke).toHaveBeenNthCalledWith(2, 'claim_native_project_media_root', { projectId, projectName: '新项目结构测试' });
+    expect(native.invoke).toHaveBeenNthCalledWith(3, 'resolve_native_project_media_root', { projectId });
   });
 
   it('搜索窗口只使用专用只读命令，主窗口同步显式作品列表', async () => {
@@ -139,13 +140,14 @@ describe('新旧项目素材根路由', () => {
   });
   it('通过显式作品与画布绑定解析原生素材根，不回退旧目录', async () => {
     const core = await import('../../../src/services/fs/core');
+    core.setBaseDataDir(undefined);
     core.registerNativeProjectFolders([projectId, canvasId, episodeId].map((id) => ({ id, projectId })));
     expect(await core.claimNativeProjectDataDir(projectId)).toBe('/bound/project');
     expect(await core.getProjectDataDir(canvasId)).toBe('/bound/project');
     expect(await core.ensureProjectDataDir(episodeId)).toBe('/bound/project');
-    expect(native.invoke).toHaveBeenNthCalledWith(1, 'claim_native_project_media_root', { projectId });
-    expect(native.invoke).toHaveBeenNthCalledWith(2, 'resolve_native_project_media_root', { projectId });
+    expect(native.invoke).toHaveBeenNthCalledWith(2, 'claim_native_project_media_root', { projectId });
     expect(native.invoke).toHaveBeenNthCalledWith(3, 'resolve_native_project_media_root', { projectId });
+    expect(native.invoke).toHaveBeenNthCalledWith(4, 'resolve_native_project_media_root', { projectId });
     expect(core.isSharedProjectDataDir(canvasId)).toBe(true);
   });
 
@@ -166,5 +168,51 @@ describe('新旧项目素材根路由', () => {
     core.registerNativeProjectFolders([{ id: canvasId, projectId }]);
     native.invoke.mockRejectedValueOnce(new Error('root unavailable'));
     await expect(core.ensureProjectDataDir(canvasId)).rejects.toThrow('root unavailable');
+  });
+});
+
+
+describe('新建画布目录同步前置', () => {
+  it.each(['/chosen', undefined])('先同步已加载的保存根再执行一次创建：%s', async root => {
+    const core = await import('../../../src/services/fs/core'); core.setBaseDataDir(root);
+    expect(await core.claimNativeProjectDataDir(projectId, '新画布')).toBe('/bound/project');
+    expect(native.invoke.mock.calls).toEqual([
+      ['sync_authorized_directories', { directories: root ? [root] : [], baseDataDir: root ?? null }],
+      ['claim_native_project_media_root', { projectId, projectName: '新画布' }],
+    ]);
+  });
+  it('原目录离线时不创建项目，不回退默认盘，恢复后允许重试', async () => {
+    const core = await import('../../../src/services/fs/core'); core.setBaseDataDir('/offline');
+    native.invoke.mockResolvedValueOnce(['/offline']);
+    await expect(core.claimNativeProjectDataDir(projectId)).rejects.toThrow('原保存根目录');
+    expect(native.invoke).toHaveBeenCalledTimes(1);
+    expect(await core.claimNativeProjectDataDir(projectId)).toBe('/bound/project');
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'claim_native_project_media_root')).toHaveLength(1);
+    expect(native.invoke).toHaveBeenNthCalledWith(2, 'sync_authorized_directories', { directories: ['/offline'], baseDataDir: '/offline' });
+  });
+  it('配置未加载时不把保存根重置成默认位置', async () => {
+    const core = await import('../../../src/services/fs/core');
+    await expect(core.claimNativeProjectDataDir(projectId)).rejects.toThrow('配置尚未就绪');
+    expect(native.invoke).not.toHaveBeenCalled();
+  });
+  it('同步期间切换保存目录后不继续创建', async () => {
+    const core = await import('../../../src/services/fs/core'); core.setBaseDataDir('/old');
+    native.invoke.mockImplementationOnce(async () => { core.setBaseDataDir('/new'); return []; });
+    await expect(core.claimNativeProjectDataDir(projectId)).rejects.toThrow('存储设置已变化');
+    expect(native.invoke).toHaveBeenCalledTimes(1);
+  });
+  it('原生目录归属字符串错误变成可显示的存储异常，不再隐藏成通用切换失败', async () => {
+    const core = await import('../../../src/services/fs/core'); core.setBaseDataDir('/chosen');
+    core.registerNativeProjectFolders([{ id: canvasId, projectId }]);
+    const nativeError = '新项目素材目录不可用或归属未能确认，原有文件已保留';
+    native.invoke.mockRejectedValueOnce(nativeError);
+    await expect(core.getProjectDataDir(canvasId)).rejects.toMatchObject({ name: 'ProjectStorageUnavailableError', message: expect.stringContaining('访问权限'), cause: nativeError });
+    expect(native.invoke).toHaveBeenCalledTimes(1);
+  });
+  it('同步失败不执行创建，也不自动重放写入', async () => {
+    const core = await import('../../../src/services/fs/core'); core.setBaseDataDir('/chosen');
+    native.invoke.mockRejectedValueOnce('network-or-permission');
+    await expect(core.claimNativeProjectDataDir(projectId)).rejects.toThrow('原保存根目录');
+    expect(native.invoke).toHaveBeenCalledTimes(1);
   });
 });

@@ -433,6 +433,40 @@ export class ProjectStorageUnavailableError extends Error {
   }
 }
 
+const storageDirectoryHelp = '项目存储目录不可用，请确认磁盘已连接，并在「设置 → 文件与应用」中重新选择原保存根目录后重试';
+
+function describeNativeStorageError(error: unknown): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === '项目存储目录尚未同步或不可用') return new ProjectStorageUnavailableError(storageDirectoryHelp, error);
+  if (message === '新项目素材目录不可用或归属未能确认，原有文件已保留') {
+    return new ProjectStorageUnavailableError('项目素材目录不可用或归属未能确认，请检查原保存目录及访问权限后重试；原有文件已保留', error);
+  }
+  return error;
+}
+
+/** Synchronize only the loaded root, without creating or replaying project writes. */
+async function synchronizeStorageRoot(revision: number, root: string | null, assertCurrent: () => void): Promise<void> {
+  if (!revision || nativeSearchContext || nativeVideoEditorContext) {
+    throw new ProjectStorageUnavailableError('项目存储配置尚未就绪，请在主窗口重新加载设置后重试', undefined);
+  }
+  assertCurrent();
+  if (storageRecovery?.revision !== revision) {
+    const pending = invoke<string[]>('sync_authorized_directories', {
+      directories: root ? [root] : [], baseDataDir: root,
+    }).then((rejected) => {
+      assertCurrent();
+      if (!Array.isArray(rejected) || root && rejected.includes(root)) {
+        throw new ProjectStorageUnavailableError(storageDirectoryHelp, undefined);
+      }
+    });
+    storageRecovery = { revision, pending };
+  }
+  const recovery = storageRecovery;
+  try { await recovery.pending; }
+  finally { if (storageRecovery === recovery) storageRecovery = undefined; }
+  assertCurrent();
+}
+
 /** Recover read-only root resolution; never replay media writes or generation. */
 async function withStorageRootRecovery<T>(request: () => Promise<T>): Promise<T> {
   const revision = storageConfigRevision;
@@ -448,7 +482,7 @@ async function withStorageRootRecovery<T>(request: () => Promise<T>): Promise<T>
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message !== '项目存储目录尚未同步或不可用') throw error;
+    if (message !== '项目存储目录尚未同步或不可用') throw describeNativeStorageError(error);
     assertCurrent();
     if (!revision || nativeSearchContext || nativeVideoEditorContext) {
       // An unloaded config or a secondary window must not reset the main
@@ -456,16 +490,7 @@ async function withStorageRootRecovery<T>(request: () => Promise<T>): Promise<T>
       throw new ProjectStorageUnavailableError('项目存储配置尚未就绪，请在主窗口重新加载设置后重试', error);
     }
     try {
-      if (storageRecovery?.revision !== revision) {
-        const pending = invoke<string[]>('sync_authorized_directories', {
-          directories: root ? [root] : [], baseDataDir: root,
-        }).then(() => { assertCurrent(); });
-        storageRecovery = { revision, pending };
-      }
-      const recovery = storageRecovery;
-      try { await recovery.pending; }
-      finally { if (storageRecovery === recovery) storageRecovery = undefined; }
-      assertCurrent();
+      await synchronizeStorageRoot(revision, root, assertCurrent);
       // Re-run the original native validation, even if the sync reports success.
       // Invalid/missing roots still fail; no default directory is substituted.
       const result = await request();
@@ -473,7 +498,7 @@ async function withStorageRootRecovery<T>(request: () => Promise<T>): Promise<T>
       return result;
     } catch (retryError) {
       if (retryError instanceof ProjectStorageUnavailableError) throw retryError;
-      throw new ProjectStorageUnavailableError('项目存储目录不可用，请确认磁盘已连接，并在「设置 → 文件与应用」中重新选择原保存根目录后重试', retryError);
+      throw new ProjectStorageUnavailableError(storageDirectoryHelp, retryError);
     }
   }
 }
@@ -556,10 +581,24 @@ export function getNativeProjectOwner(id: string): string | undefined {
 /** 新作品按创建时名称认领独占根；已有绑定复用原目录，未知目录不会被接管。 */
 export async function claimNativeProjectDataDir(projectId: string, projectName?: string): Promise<string> {
   if (!nativeOwnerId.test(projectId) || !isTauriEnv()) throw new Error('新项目素材目录不可用');
-  const directory = await invoke<string>('claim_native_project_media_root', { projectId,
-    ...(projectName !== undefined ? { projectName } : {}) });
-  if (typeof directory !== 'string' || !directory) throw new Error('新项目素材目录不可用');
-  return directory;
+  const revision = storageConfigRevision, root = _baseDataDir;
+  const assertCurrent = () => {
+    if (revision !== storageConfigRevision) throw new ProjectStorageUnavailableError('项目存储设置已变化，请重试当前操作', undefined);
+  };
+  try {
+    // Startup sync may have failed, or an external disk may have reconnected.
+    // Prepare the root before the single write; never replay a failed claim.
+    try { await synchronizeStorageRoot(revision, root, assertCurrent); }
+    catch (error) {
+      if (error instanceof ProjectStorageUnavailableError) throw error;
+      throw new ProjectStorageUnavailableError(storageDirectoryHelp, error);
+    }
+    const directory = await invoke<string>('claim_native_project_media_root', { projectId,
+      ...(projectName !== undefined ? { projectName } : {}) });
+    assertCurrent();
+    if (typeof directory !== 'string' || !directory) throw new Error('新项目素材目录不可用');
+    return directory;
+  } catch (error) { throw describeNativeStorageError(error); }
 }
 
 /** 注册/更新单个项目的数据文件夹名 */
