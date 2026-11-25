@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { ArrowLeft, ArrowRight, BookOpen, Bot, Clapperboard, FolderTree, Landmark, LayoutDashboard, Library, Package, PanelLeftClose, PanelLeftOpen, Plus, Save, Search, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, BookOpen, Bot, Clapperboard, FolderTree, Landmark, LayoutDashboard, Library, Package, PanelLeftClose, PanelLeftOpen, Plus, Save, Search, Trash2, Users, X } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
-import type { StudioArtifact } from '../../types/studio';
+import type { StudioArtifact, StudioProject } from '../../types/studio';
 import StudioAgentPanel from './StudioAgentPanel';
 import StudioEpisodeView, { Empty } from './StudioEpisodeView';
 import StudioResizeHandle from './StudioResizeHandle';
@@ -11,7 +11,7 @@ import { useStudioLayout } from './useStudioLayout';
 import { StudioArtifactGrid } from './StudioResults';
 import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
-import { pollStudioExecutions, studioRequest } from '../../services/studioExecutionService';
+import { pollStudioExecutions, studioError, studioRequest } from '../../services/studioExecutionService';
 import StudioAssetEditor from './StudioAssetEditor';
 import StudioUpload from './StudioUpload';
 import StudioProductionSetup from './StudioProductionSetup';
@@ -21,7 +21,7 @@ import { StudioStylePicker } from './StudioStylePicker';
 import { isStyleDraftComplete, type StudioStylePickerValue } from './styleTemplates';
 import StudioRatioPicker from './StudioRatioPicker';
 import { draftFromStoredStudioRatio, resolveStudioRatioDraft, type StudioRatioDraft } from './studioRatios';
-import { studioWorkspace, uploadStudioLocalFile } from '../../services/studioWorkspaceService';
+import { studioWorkspace, uploadStudioLocalFile, workspaceError } from '../../services/studioWorkspaceService';
 
 type View = 'overview' | 'episodes' | 'characters' | 'scenes' | 'props' | 'files' | 'episode' | 'products';
 const navigation = [
@@ -42,7 +42,7 @@ export default function StudioWorkspace() {
   const t = useT();
   const state = useAppStore(useShallow(s => ({ draft: s.studioDraft, load: s.studioLoad, save: s.studioSave,
     loadStudio: s.loadStudio, saveStudio: s.saveStudio, create: s.createStudioProject, selectProject: s.selectStudioProject,
-    addEpisode: s.addStudioEpisode, selectEpisode: s.selectStudioEpisode, setStage: s.setStudioStage, executions: s.studioExecutions })));
+    deleteProject: s.deleteStudioProject, addEpisode: s.addStudioEpisode, selectEpisode: s.selectStudioEpisode, setStage: s.setStudioStage, executions: s.studioExecutions })));
   const layout = useStudioLayout();
   const [view, setView] = useState<View>(readView);
   const [lobby, setLobby] = useState(false);
@@ -51,6 +51,9 @@ export default function StudioWorkspace() {
   const [newProject, setNewProject] = useState(false);
   const [createStep, setCreateStep] = useState<1 | 2>(1);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<StudioProject | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [contentMode, setContentMode] = useState<'drama' | 'ad'>('drama');
   const [generationMode, setGenerationMode] = useState<'storyboard' | 'reference_video'>('storyboard');
@@ -118,6 +121,26 @@ export default function StudioWorkspace() {
     setNewProjectStyle({ mode: 'template', templateId: null, activeCategory: 'live', uploadedFile: null, uploadedPreview: null });
     setNewProject(true);
   };
+  const requestDeleteProject = (event: MouseEvent, id: string) => {
+    event.stopPropagation();
+    setDeleteError(null);
+    setDeleteTarget(state.draft.projects.find(item => item.id === id) ?? null);
+  };
+  const confirmDeleteProject = async () => {
+    if (!deleteTarget || deletingProject) return;
+    setDeletingProject(true);
+    setDeleteError(null);
+    try {
+      await state.deleteProject(deleteTarget.id);
+      setDeleteTarget(null);
+      setLobby(true);
+      changeView('overview');
+    } catch (error) {
+      setDeleteError(workspaceError(studioError(error)));
+    } finally {
+      setDeletingProject(false);
+    }
+  };
   const submitCreateProject = async () => {
     if (!name.trim() || !resolvedNewProjectRatio.valid || !isStyleDraftComplete(newProjectStyle) || creatingProject) return;
     setCreatingProject(true);
@@ -154,7 +177,8 @@ export default function StudioWorkspace() {
     }
     setCreatingProject(false);
   };
-  const dialog = <ModalOverlay isOpen={newProject} onClose={() => !creatingProject && setNewProject(false)} ariaLabel={t('新建短剧项目')} zIndex={400} className={`ui-scroll max-h-[88vh] overflow-y-auto p-6 ${createStep === 2 ? 'w-[min(780px,calc(100vw-32px))]' : 'w-[min(460px,calc(100vw-32px))]'}`}>
+  const dialog = <>
+    <ModalOverlay isOpen={newProject} onClose={() => !creatingProject && setNewProject(false)} ariaLabel={t('新建短剧项目')} zIndex={400} className={`ui-scroll max-h-[88vh] overflow-y-auto p-6 ${createStep === 2 ? 'w-[min(780px,calc(100vw-32px))]' : 'w-[min(460px,calc(100vw-32px))]'}`}>
     <form onSubmit={event => { event.preventDefault(); if (createStep === 1) { if (name.trim() && resolvedNewProjectRatio.valid) setCreateStep(2); return; } void submitCreateProject(); }}>
       <div className="mb-4 flex items-center justify-between"><div className="space-y-1"><h2 className="text-lg font-semibold">{t('新建短剧项目')}</h2><p className="text-xs text-canvas-text-muted">{createStep === 1 ? '第 1 / 2 步 · 基础信息' : '第 2 / 2 步 · 画面风格（必选模版或上传参考图）'}</p></div><button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" aria-label={t('关闭')} disabled={creatingProject} onClick={() => setNewProject(false)}><X size={16} /></button></div>
       {createStep === 1 ? <>
@@ -180,7 +204,16 @@ export default function StudioWorkspace() {
         </div>
       </>}
     </form>
-  </ModalOverlay>;
+    </ModalOverlay>
+    <ModalOverlay isOpen={!!deleteTarget} onClose={() => !deletingProject && setDeleteTarget(null)} ariaLabel={t('删除短剧项目')} zIndex={410} className="w-[min(440px,calc(100vw-32px))] p-6">
+      <div className="space-y-4">
+        <div className="flex items-start justify-between gap-4"><div><h2 className="text-lg font-semibold">{t('删除短剧项目')}</h2><p className="mt-2 text-sm leading-6 text-canvas-text-secondary">{t('将删除本项目及全部分集的本地草稿和执行数据。个人资源库中已入库的素材保留。')}</p></div><button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" aria-label={t('关闭')} disabled={deletingProject} onClick={() => setDeleteTarget(null)}><X size={16} /></button></div>
+        {deleteTarget && <p className="rounded-md border border-canvas-border bg-canvas-surface px-3 py-2 text-sm font-medium">{deleteTarget.name}</p>}
+        {deleteError && <p role="alert" className="text-sm text-red-400">{deleteError}</p>}
+        <div className="flex justify-end gap-2 border-t border-canvas-border pt-4"><button type="button" className="ui-btn" disabled={deletingProject} onClick={() => setDeleteTarget(null)}>{t('取消')}</button><button type="button" className="ui-btn ui-btn--danger" disabled={deletingProject} onClick={() => void confirmDeleteProject()}>{deletingProject ? t('正在删除…') : t('删除项目')}<Trash2 size={14} /></button></div>
+      </div>
+    </ModalOverlay>
+  </>;
   if (state.load !== 'ready') return <section className="huanggua-studio flex items-center justify-center bg-canvas-bg"><div className="text-center"><p className="text-sm text-canvas-text-secondary">{t(state.load === 'error' ? '无法读取短剧草稿，请重试。' : '正在读取短剧草稿…')}</p>{state.load === 'error' && <button className="ui-btn mt-4" onClick={() => void state.loadStudio()}>{t('重试')}</button>}</div></section>;
   return <section className="huanggua-studio flex flex-col bg-canvas-bg" aria-label={t('短剧工作区')}>
     <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-canvas-border px-3">
@@ -188,7 +221,7 @@ export default function StudioWorkspace() {
       {ready && <span className="hidden truncate text-xs text-canvas-text-muted md:block" role="status">{active.length ? `${active.length} ${t('个任务执行中')}` : t('短剧工作区')}</span>}
       <div className="flex shrink-0 items-center gap-2">{ready && <><span role="status" className="hidden text-[11px] text-canvas-text-muted lg:block">{t(state.save === 'saving' ? '正在保存…' : state.save === 'error' ? '保存失败，请重试' : '已保存到本机')}</span><button className="ui-btn ui-btn--ghost ui-btn--sm" aria-label={t('保存')} onClick={() => void state.saveStudio()}><Save size={14} /></button><button ref={agentToggle} className={`ui-btn ui-btn--sm ${layout.agentOpen ? 'is-active' : ''}`} aria-expanded={layout.agentOpen} aria-controls="studio-agent-panel" onClick={() => layout.setAgentOpen(!layout.agentOpen)}><Bot size={15} />Agent</button></>}<button className="ui-btn ui-btn--sm" onClick={openCreateModal}><Plus size={14} />{t('新建项目')}</button></div>
     </header>
-    {!ready ? <div className="ui-scroll min-h-0 flex-1 overflow-y-auto p-6"><div className="mx-auto max-w-6xl"><div className="mb-6 flex items-center gap-3"><Clapperboard size={22} /><h1 className="text-xl font-semibold">{t('短剧项目')}</h1></div><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"><button className="studio-project-card flex min-h-48 flex-col items-center justify-center gap-3 border-dashed" onClick={openCreateModal}><Plus size={26} /><span>{t('新建短剧项目')}</span></button>{state.draft.projects.map(p => <button className="studio-project-card text-left" key={p.id} onClick={() => { state.selectProject(p.id); setLobby(false); changeView('overview'); }}><Clapperboard size={27} className="mb-8 text-[var(--brand-light)]" /><h2 className="truncate text-sm font-medium">{p.name}</h2><p className="mt-3 text-xs text-canvas-text-muted">{p.episodes.length} {t('集')}</p></button>)}</div></div></div>
+    {!ready ? <div className="ui-scroll min-h-0 flex-1 overflow-y-auto p-6"><div className="mx-auto max-w-6xl"><div className="mb-6 flex items-center gap-3"><Clapperboard size={22} /><h1 className="text-xl font-semibold">{t('短剧项目')}</h1></div><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"><button className="studio-project-card flex min-h-48 flex-col items-center justify-center gap-3 border-dashed" onClick={openCreateModal}><Plus size={26} /><span>{t('新建短剧项目')}</span></button>{state.draft.projects.map(p => <article className="studio-project-card relative flex min-h-48 flex-col" key={p.id}><button type="button" className="flex flex-1 flex-col items-start text-left" onClick={() => { state.selectProject(p.id); setLobby(false); changeView('overview'); }}><Clapperboard size={27} className="mb-8 text-[var(--brand-light)]" /><h2 className="w-full truncate text-sm font-medium">{p.name}</h2><p className="mt-3 text-xs text-canvas-text-muted">{p.episodes.length} {t('集')}</p></button><button type="button" className="ui-btn ui-btn--ghost ui-btn--sm absolute right-3 top-3" aria-label={`${t('删除项目')}：${p.name}`} title={t('删除项目')} onClick={event => requestDeleteProject(event, p.id)}><Trash2 size={14} /></button></article>)}</div></div></div>
       : <div className={`studio-workbench ${collapsed ? 'is-sidebar-collapsed' : ''} ${layout.agentOpen ? 'is-agent-open' : ''} ${layout.compact ? 'is-compact' : ''}`}
         style={{ '--studio-sidebar-width': `${layout.sidebarWidth}px`, '--studio-agent-width': `${layout.agentWidth}px` } as CSSProperties}>
         <aside className="studio-sidebar flex min-h-0 flex-col bg-canvas-surface" aria-label={t('工作区导航')}>

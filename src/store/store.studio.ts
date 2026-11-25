@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { StudioDraftDocument, StudioEpisode, StudioStage } from '../types/studio';
 import { readStudioDrafts, writeStudioDrafts } from '../services/studioDraftRepository';
+import { studioWorkspace } from '../services/studioWorkspaceService';
 
 export interface StudioSlice {
   studioDraft: StudioDraftDocument;
@@ -13,6 +14,7 @@ export interface StudioSlice {
   setStudioStage: (stage: StudioStage) => void;
   createStudioProject: (name: string, contentMode?: 'drama' | 'ad', generationMode?: 'storyboard' | 'reference_video', styleTemplateId?: string | null, aspectRatio?: string, customResolution?: string | null) => { projectId: string; episodeId: string } | null;
   selectStudioProject: (id: string) => void;
+  deleteStudioProject: (id: string) => Promise<boolean>;
   addStudioEpisode: (name: string) => void;
   selectStudioEpisode: (id: string) => void;
   editStudioEpisode: (id: string, patch: Partial<Pick<StudioEpisode, 'name' | 'script' | 'agentBrief' | 'shots' | 'models' | 'rewriteAnchor'>>) => void;
@@ -73,6 +75,47 @@ export const createStudioSlice: StateCreator<AppState, [], [], StudioSlice> = (s
     selectStudioProject: (id) => {
       const project = get().studioDraft.projects.find(p => p.id === id);
       if (project) change({ ...get().studioDraft, projectId: id, episodeId: project.episodes[0]?.id ?? null });
+    },
+    deleteStudioProject: async (id) => {
+      if (get().studioLoad !== 'ready') return false;
+      const project = get().studioDraft.projects.find(p => p.id === id);
+      if (!project) return false;
+      if (project.episodes.some(e => get().studioSubmitting[`${id}/${e.id}`])) throw 'studio_session_busy';
+      const episodeId = project.episodes[0]?.id;
+      if (episodeId) await studioWorkspace({ projectId: id, episodeId }, 'project_delete');
+      // Read after the request: another project may have been edited meanwhile.
+      const draft = get().studioDraft;
+      const projects = draft.projects.filter(item => item.id !== id);
+      const next = projects[0];
+      const removingSelected = draft.projectId === id;
+      const nextDraft = { ...draft, projects,
+        projectId: removingSelected ? next?.id ?? null : draft.projectId,
+        episodeId: removingSelected ? next?.episodes[0]?.id ?? null : draft.episodeId };
+      set({ studioDraft: nextDraft });
+      const currentRevision = ++revision;
+      const snapshot = structuredClone(nextDraft);
+      set({ studioSave: 'saving' });
+      saveQueue = saveQueue.catch(() => {}).then(() => writeStudioDrafts(snapshot));
+      try {
+        await saveQueue;
+        if (currentRevision === revision) set({ studioSave: 'saved' });
+      } catch {
+        // Keep a retryable local entry; the runtime delete operation is idempotent.
+        const latest = get().studioDraft;
+        set({ studioSave: 'error', studioDraft: { ...latest,
+          projects: latest.projects.some(p => p.id === id) ? latest.projects : [...latest.projects, draft.projects.find(p => p.id === id) ?? project],
+          ...(latest.projectId === nextDraft.projectId && latest.episodeId === nextDraft.episodeId
+            ? { projectId: draft.projectId, episodeId: draft.episodeId } : {}),
+        } });
+        throw 'studio_save_failed';
+      }
+      const executionPrefix = `${id}/`;
+      const executions = Object.fromEntries(Object.entries(get().studioExecutions).filter(([key]) => !key.startsWith(executionPrefix)));
+      const submitting = Object.fromEntries(Object.entries(get().studioSubmitting).filter(([key]) => !key.startsWith(executionPrefix)));
+      const historyLimits = Object.fromEntries(Object.entries(get().studioHistoryLimits).filter(([key]) => !key.startsWith(executionPrefix)));
+      set({ studioExecutions: executions, studioSubmitting: submitting, studioHistoryLimits: historyLimits,
+        ...(removingSelected ? { studioStage: 'story' as const } : {}) });
+      return true;
     },
     addStudioEpisode: (name) => {
       const d = get().studioDraft;
