@@ -12,7 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 from workspace_api import workspace
-from conversation_api import attachment_path, normalize_session_entries, save_attachment
+from conversation_api import attachment_path, attachment_meta, queued_display, normalize_session_entries, save_attachment
 
 
 def meta(identity, superseded=None):
@@ -38,6 +38,22 @@ class ConversationTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 attachment_path(Path(folder), 'other-episode', reference['id'])
             service.withdraw_queued_message.assert_awaited_once_with('project', 'session', 'message', intent='edit')
+
+    async def test_queue_preview_keeps_original_attachment_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            buffer = io.BytesIO()
+            image = Image.new('RGB', (32, 32))
+            image.putdata([((i * 17) % 256, (i * 37) % 256, (i * 71) % 256) for i in range(1024)])
+            image.save(buffer, 'PNG')
+            ref = save_attachment(root, 'binding', buffer, filename='original.png', project_dir=root)
+            preview = attachment_path(root, 'binding', ref['id']).read_bytes()
+            message = {'id': 'message', 'content': [{'type': 'image', 'source': {
+                'type': 'base64', 'data': base64.b64encode(preview).decode()}}]}
+            restored = queued_display(root, 'binding', message)
+            self.assertEqual(restored['attachments'][0]['id'], ref['id'])
+            self.assertEqual(attachment_meta(root, 'binding', ref['id'])['project_path'], ref['projectPath'])
+            self.assertEqual((root / ref['projectPath']).read_bytes(), buffer.getvalue())
 
     async def test_superseded_history_stays_visible_without_foreign_sessions(self):
         binding = {'session_id': 'new', 'sessions': ['old', 'new']}

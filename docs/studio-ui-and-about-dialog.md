@@ -55,7 +55,7 @@
 
 ## 3. 0.11.9 审查后的素材与执行修正（待验收）
 
-本批在任务分支实现，未更改版本号，未发布安装包。客户端基线为 `268d215b`；配套主站分支 `fix/canvas-media-staging` 基线为 `e4c68aa`。部署顺序为服务端先支持无模型参数上传，再交付客户端；旧客户端携带的 model 参数由服务端忽略。
+本批在任务分支实现，准备发布 0.11.10；安装包是否已发布以 GitHub Release 为准。客户端基线为 `268d215b`；配套主站分支 `fix/canvas-media-staging` 基线为 `e4c68aa`。部署顺序为服务端先支持无模型参数上传，再交付客户端；旧客户端携带的 model 参数由服务端忽略。
 
 - 缺失参考图片或视频仅提醒，跳过缺失项后使用剩余素材继续；模型本身的素材能力校验仍在生成时执行。
 - 聊天附件必须完整保存到项目目录才返回成功，失败保留用户已有草稿并要求重新上传；不把存储、连接或转码异常显示成附件数量超限。
@@ -75,4 +75,4 @@
 6. 删除素材库副本但保留短剧原件，点击“刷新与重试入库”应恢复；切换素材目录后不能沿用旧目录链接。
 7. Agent 对工具终态不重复轮询或提交；清空回收站等未提供入口不编造客户端按钮；关于页与 README 导航不再使用原项目产品入口。
 
-客户端本次未运行测试，待用户验收。回归入口：`tests/services/huangguaMediaUpload.test.ts`、`uploadServiceMemory.test.ts`、`studioExecution.test.ts`，以及 `runtime/studio/test_conversation.py`、`test_media_staging.py`、`test_bridge.py`、`test_creative_profile.py`。Python 集成测试需按现有运行时测试流程配置隔离引擎；不能使用真实账号目录。
+本地已通过素材上传与入库的 35 项前端定向测试、短剧隔离引擎的 36 项回归测试，以及 Windows `cargo check --lib --locked`；完整前端门禁另行记录在 PR。Tauri 实机交互与真实付费生成仍待用户验收。回归入口：`tests/services/huangguaMediaUpload.test.ts`、`uploadServiceMemory.test.ts`、`studioExecution.test.ts`，以及 `runtime/studio/test_conversation.py`、`test_media_staging.py`、`test_bridge.py`、`test_creative_profile.py`。Python 集成测试需按现有运行时测试流程配置隔离引擎；不能使用真实账号目录。

@@ -54,6 +54,18 @@ def _persist_project_record(project_dir: Path | None, subdir: str, filename: str
     return rel
 
 
+def _cache_image_preview(data_root, binding, raw):
+    identity = hashlib.sha256(raw).hexdigest()
+    folder = data_root / 'attachments' / binding
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / (identity + '.jpg')
+    if not destination.exists():
+        temporary = destination.with_suffix('.tmp')
+        temporary.write_bytes(raw)
+        temporary.replace(destination)
+    return identity, folder
+
+
 def save_attachment(data_root, binding, stream, *, filename=None, project_dir: Path | None = None):
     if not project_dir or not project_dir.is_dir():
         raise ValueError('studio_project_storage_unavailable')
@@ -65,14 +77,7 @@ def save_attachment(data_root, binding, stream, *, filename=None, project_dir: P
     raw = image_bytes(io.BytesIO(original_bytes))
     img_ext = ext if ext in {'.png', '.jpg', '.jpeg', '.webp'} else '.jpg'
     project_rel = _persist_project_record(project_dir, 'images', filename, img_ext, original_bytes)
-    identity = hashlib.sha256(raw).hexdigest()
-    folder = data_root / 'attachments' / binding
-    folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / (identity + '.jpg')
-    if not destination.exists():
-        temporary = destination.with_suffix('.tmp')
-        temporary.write_bytes(raw)
-        temporary.replace(destination)
+    identity, folder = _cache_image_preview(data_root, binding, raw)
     if project_rel:
         meta_path = folder / (identity + '.meta.json')
         meta_path.write_text(json.dumps({'kind': 'image', 'name': filename or '对话附图.jpg', 'project_path': project_rel}, ensure_ascii=False), encoding='utf-8')
@@ -217,8 +222,13 @@ def queued_display(data_root, binding, message):
             source = block.get('source', {})
             if source.get('type') == 'base64':
                 raw = base64.b64decode(source.get('data', ''), validate=True)
-                ref = save_attachment(data_root, binding, io.BytesIO(raw))
-                attachments.append({'id': ref['id'], 'name': '对话附图.jpg'})
+                # Queue content contains previews, not the original uploaded media.
+                identity = hashlib.sha256(raw).hexdigest()
+                try:
+                    attachment_path(data_root, binding, identity)
+                except ValueError:
+                    identity, _ = _cache_image_preview(data_root, binding, image_bytes(io.BytesIO(raw)))
+                attachments.append({'id': identity, 'name': '对话附图.jpg'})
     return {'id': message['id'], 'state': message.get('state', 'queued'), 'text': text[:30000], 'attachments': attachments}
 
 

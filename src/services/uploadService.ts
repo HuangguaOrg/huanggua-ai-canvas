@@ -55,8 +55,6 @@ const UPLOAD_TTL_MS = 150 * 60 * 1000;
 /** localStorage key */
 const CACHE_STORAGE_KEY = 'canvas-upload-cache-v4';
 
-/** 包含排队时间；到期会中止 fetch 或调用 Rust cancel_proxy_fetch。 */
-
 // ── 持久化缓存 ──
 
 interface CacheEntry {
