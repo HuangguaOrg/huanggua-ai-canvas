@@ -56,6 +56,8 @@ mod project_asset_storage;
 #[path = "files/github_fallback.rs"]
 mod github_fallback;
 mod app_update;
+#[cfg(any(target_os = "macos", test))]
+mod app_update_multipart;
 #[path = "files/thumbnail_cache.rs"]
 mod thumbnail_cache;
 #[path = "files/theme_assets.rs"]

@@ -8,8 +8,11 @@ branch (``master`` or ``main``).
 """
 import argparse
 import base64
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -151,7 +154,72 @@ def ensure_release(repo: str, tag: str, branch: str, title: str, notes: str, tok
     return release_id
 
 
-def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = False, preferred_branch: str = "master") -> None:
+def macos_update_files(folder: Path, version: str, repo: str):
+    """Validate local signed-descriptor relationships before uploading any Mac file."""
+    if repo != DEFAULT_REPO or len(version) > 48 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("Mac updater requires the configured repository and a stable release version")
+    feed = json.loads((folder / "latest-macos.json").read_text(encoding="utf-8"))
+    if feed.get("version") != version or len(feed.get("platforms", {})) != 1:
+        raise ValueError("Mac feed version or platform count does not match")
+    target, platform = next(iter(feed["platforms"].items()))
+    arch = {"darwin-aarch64": "arm64", "darwin-x86_64": "x64"}.get(target)
+    if not arch:
+        raise ValueError("Unsupported Mac updater platform")
+    stem = f"HuangGuaAI-{version}-macos-{arch}.app.tar.gz"
+    base = f"https://gitee.com/{repo}/releases/download/v{version}/"
+    descriptor = folder / (stem + ".update.json")
+    if platform.get("url") != base + descriptor.name or platform.get("signature") != descriptor.with_name(descriptor.name + ".sig").read_text().strip():
+        raise ValueError("Mac descriptor URL or signature does not match")
+    index = json.loads(descriptor.read_text(encoding="utf-8"))
+    if index.get("schemaVersion") != 1 or index.get("version") != version or index.get("target") != target or not 1 <= len(index.get("parts", [])) <= 16:
+        raise ValueError("Invalid Mac descriptor")
+    files = []
+    total = 0
+    combined = hashlib.sha256()
+    for ordinal, part in enumerate(index["parts"], 1):
+        path = folder / f"{stem}.part{ordinal:03}"
+        if part.get("url") != base + path.name or not 0 < part.get("bytes", 0) <= 90 * 1024 * 1024:
+            raise ValueError("Invalid Mac part address or size")
+        if part.get("signature") != path.with_name(path.name + ".sig").read_text().strip() or path.stat().st_size != part["bytes"]:
+            raise ValueError("Mac part signature or size does not match")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while data := stream.read(1024 * 1024):
+                digest.update(data); combined.update(data)
+        if digest.hexdigest() != part.get("sha256"):
+            raise ValueError("Mac part checksum mismatch")
+        total += part["bytes"]
+        files.append(path)
+    if total != index.get("totalBytes") or total > 1024 * 1024 * 1024 or combined.hexdigest() != index.get("sha256"):
+        raise ValueError("Mac archive checksum or size mismatch")
+    files.extend([descriptor, descriptor.with_name(descriptor.name + ".sig")])
+    return feed["platforms"], files
+
+
+def upload_macos_updates(folder: Path, version: str, repo: str, release_id: int, token: str):
+    platforms, files = macos_update_files(folder, version, repo)
+    existing = gitee_json("GET", f"/repos/{repo}/releases/{release_id}/attach_files", token) or []
+    names = {item.get("name") for item in existing if isinstance(item, dict)}
+    def upload(path):
+        expected = f"https://gitee.com/{repo}/releases/download/v{version}/{path.name}"
+        if path.name not in names:
+            result = upload_release_attachment(repo, release_id, path, token)
+            if result.get("browser_download_url") != expected:
+                raise ValueError("Uploaded Mac attachment URL differs from its signed descriptor")
+        request = urllib.request.Request(expected, headers={"User-Agent": "HuangGuaAI-ReleaseVerification/1.0"})
+        with _DIRECT_OPENER.open(request, timeout=60) as response:
+            remote_hash = hashlib.file_digest(response, "sha256").hexdigest()
+        with path.open("rb") as stream:
+            local_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+        if remote_hash != local_hash:
+            raise ValueError("Mac attachment checksum differs; refusing to publish or overwrite it")
+        print(f"Uploaded/verified {path.name}")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(upload, files))
+    return platforms
+
+
+def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = False, preferred_branch: str = "master", macos_dir: Path | None = None) -> None:
     manifest_path = update_dir / "latest.json"
     if not manifest_path.is_file():
         raise ValueError(f"Missing {manifest_path}")
@@ -195,6 +263,11 @@ def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = Fa
             manifest_path.write_text(json.dumps(feed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"Uploaded {payload.name} to Gitee Release {tag}")
 
+    if macos_dir is not None:
+        release_id = ensure_release(repo, tag, branch, f"黄瓜 AI 画布 {tag}", str(feed.get("notes") or ""), token)
+        feed.setdefault("platforms", {}).update(upload_macos_updates(macos_dir, version, repo, release_id, token))
+        manifest_path.write_text(json.dumps(feed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     upsert_repo_file(
         repo,
         branch,
@@ -212,6 +285,7 @@ def main() -> None:
     parser.add_argument("--repo", default=DEFAULT_REPO, help="Gitee owner/repo slug")
     parser.add_argument("--branch", default="master", help="Preferred branch if initializing an empty repo")
     parser.add_argument("--manifest-only", action="store_true", help="Only commit latest.json (when binary is hosted externally)")
+    parser.add_argument("--macos-dir", type=Path, help="Signed Mac parts from build-macos-update.py; upload before publishing the shared feed")
     args = parser.parse_args()
     token = os.environ.get("GITEE_TOKEN", "").strip()
     if not token and LOCAL_TOKEN_FILE.is_file():
@@ -220,7 +294,7 @@ def main() -> None:
         raise SystemExit(
             f"Missing GITEE_TOKEN environment variable (or local token file at {LOCAL_TOKEN_FILE})"
         )
-    publish(args.dir.resolve(), args.repo, token, manifest_only=args.manifest_only, preferred_branch=args.branch)
+    publish(args.dir.resolve(), args.repo, token, manifest_only=args.manifest_only, preferred_branch=args.branch, macos_dir=args.macos_dir)
 
 
 if __name__ == "__main__":

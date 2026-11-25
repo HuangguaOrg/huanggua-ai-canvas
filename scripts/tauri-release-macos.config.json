@@ -1,14 +1,11 @@
 {
   "bundle": {
-    "targets": ["app"],
-    "createUpdaterArtifacts": false
+    "targets": [
+      "app"
+    ],
+    "createUpdaterArtifacts": true
   },
   "build": {
     "beforeBuildCommand": "npm run release:preflight"
-  },
-  "plugins": {
-    "updater": {
-      "endpoints": []
-    }
   }
 }
