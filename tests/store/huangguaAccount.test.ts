@@ -80,3 +80,48 @@ describe('Huanggua account and automatic model lifecycle', () => {
     expect(mock.authorize).not.toHaveBeenCalled(); expect(mock.close).toHaveBeenCalledTimes(1); expect(mock.sync).not.toHaveBeenCalled();
   });
 });
+
+
+describe('explicit model refresh and every login', () => {
+  it('fetches new grants on every login, including logging in again', async () => {
+    const store = createHuangguaAccountStore();
+    await store.getState().startLogin('fixture', 'password');
+    await store.getState().logout();
+    const updated = snapshot(); updated.connections[0].models = ['gpt-new'];
+    mock.account.mockResolvedValueOnce(updated);
+    await store.getState().startLogin('fixture', 'password');
+    expect(mock.account).toHaveBeenCalledTimes(2);
+    expect(mock.sync).toHaveBeenLastCalledWith(updated.connections, expect.any(Function));
+  });
+  it('fetches models after verification and session restoration', async () => {
+    mock.login.mockResolvedValue({ kind: 'verification', flowToken: 'fixture', expiresAt: Date.now() + 60000 });
+    mock.verify.mockResolvedValue('fixture-token');
+    const store = createHuangguaAccountStore();
+    await store.getState().startLogin('fixture', 'password');
+    expect(mock.account).not.toHaveBeenCalled();
+    await store.getState().verifyLogin('123456');
+    expect(mock.account).toHaveBeenCalledTimes(1);
+    expect(mock.sync).toHaveBeenCalledWith(snapshot().connections, expect.any(Function));
+    store.getState().dispose();
+    mock.load.mockResolvedValue('fixture-session');
+    await createHuangguaAccountStore().getState().initialize();
+    expect(mock.account).toHaveBeenCalledTimes(2);
+    expect(mock.sync).toHaveBeenCalledTimes(2);
+  });
+  it('deduplicates concurrent refresh requests and replaces the list with the response', async () => {
+    const store = createHuangguaAccountStore();
+    await store.getState().startLogin('fixture', 'password');
+    let resolve!: (value: ReturnType<typeof snapshot>) => void;
+    mock.account.mockReturnValueOnce(new Promise(r => { resolve = r; }));
+    const first = store.getState().refresh();
+    await store.getState().refresh();
+    expect(store.getState().busy).toBe(true);
+    const updated = snapshot(); updated.connections[0].models = ['gpt-new', 'gpt-second'];
+    mock.sync.mockResolvedValueOnce({ text: 2 }); resolve(updated);
+    await first;
+    expect(mock.account).toHaveBeenCalledTimes(2);
+    expect(mock.sync).toHaveBeenLastCalledWith(updated.connections, expect.any(Function));
+    expect(store.getState().modelCounts.text).toBe(2);
+    expect(store.getState().busy).toBe(false);
+  });
+});

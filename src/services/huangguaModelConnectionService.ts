@@ -98,6 +98,8 @@ export async function syncHuangguaModels(grants: HuangguaModelGrant[], isCurrent
   if (!wasDirty && synced.configHydrated && synced.configDirty) {
     await synced.saveConfig?.({ silent: true }).catch(() => {});
   }
+  // An already-open studio has its own filtered catalog; keep it in sync on login and refresh.
+  if (isCurrent()) await useAppStore.getState().refreshStudioModels?.();
   return Object.fromEntries(['text', 'image', 'video'].map((category) => [category, models.filter((m) => m.category === category).length]));
 }
 

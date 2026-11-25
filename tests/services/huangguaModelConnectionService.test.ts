@@ -128,3 +128,19 @@ describe('automatic Huanggua model provisioning', () => {
     expect(JSON.stringify(buildHuangguaConnections(grants))).not.toContain('fixture-video-key');
   });
 });
+
+
+it('updates an open studio after replacing canvas models, without duplicating personal models', async () => {
+  const refreshStudioModels = vi.fn(async () => {
+    expect(config.generalModels?.some(model => model.modelId === 'gpt-latest')).toBe(true);
+    expect(config.generalModels?.some(model => model.modelId === 'gpt-fixture')).toBe(false);
+  });
+  await syncHuangguaModels(grants);
+  const previous = mock.getState.getMockImplementation()!;
+  mock.getState.mockImplementation(() => ({ ...previous(), refreshStudioModels }));
+  await syncHuangguaModels([{ ...grants[0], models: ['gpt-latest'] }]);
+  expect(refreshStudioModels).toHaveBeenCalledTimes(1);
+  expect(config.generalModels).toHaveLength(2);
+  expect(config.generalModels?.find(model => model.id === 'personal-model')).toBeDefined();
+  expect(config.providers['huanggua-account-image']).toBeUndefined();
+});

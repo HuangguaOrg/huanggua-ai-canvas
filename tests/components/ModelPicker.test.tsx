@@ -191,3 +191,14 @@ describe('ModelPicker 表单入口', () => {
     expect(formInput.props.value).toBe('general/ccc');
   });
 });
+
+
+it('keeps the refresh header available in an empty catalog and includes it in keyboard navigation', () => {
+  const header = <button type="button" role="menuitem" data-model-menu-control="">刷新模型列表</button>;
+  const nodes = renderMenu({ groups: [], expandedGroupIds: [], onChange: vi.fn(), onGroupToggle: vi.fn(), header });
+  expect(nodes.some(node => node.props.children === '刷新模型列表')).toBe(true);
+  const refresh = fakeControl();
+  hooks.refs[0].current = fakeMenu([refresh]);
+  for (const layout of hooks.layouts) layout();
+  expect(refresh.focus).toHaveBeenCalled();
+});

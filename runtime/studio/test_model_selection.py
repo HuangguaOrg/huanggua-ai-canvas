@@ -1,5 +1,9 @@
 """Model admission and retry safety without starting a server or calling a model."""
 import ast
+import asyncio
+import hashlib
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 import json
 from pathlib import Path
 import re
@@ -14,8 +18,10 @@ def bridge_functions(**values):
     source = Path(__file__).with_name('desktop_bridge.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
     tree.body = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                 and node.name in {'compatible_video_models', 'ensure_project', 'run_episode', 'is_account_bound_key', 'configure_models'}]
-    scope = {'json': json, 're': re, **values}
+                 and node.name in {'compatible_video_models', 'ensure_project', 'run_episode', 'is_account_bound_key', 'configure_models', 'connect_account', 'desktop_operation'}]
+    for node in tree.body:
+        node.decorator_list = []
+    scope = {'json': json, 're': re, 'Request': object, **values}
     exec(compile(tree, str(source), 'exec'), scope)
     return scope
 
@@ -137,3 +143,42 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
                     await scope['configure_models']({
                         'text': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': bad_key, 'models': ['gpt-5.6']},
                     })
+
+
+class AccountModelRefreshTest(unittest.IsolatedAsyncioTestCase):
+    async def test_status_forces_fresh_account_read(self):
+        scope = bridge_functions(connect_account=AsyncMock())
+        connect = AsyncMock()
+        scope.update(connect_account=connect, models={'text': ['gpt-new']}, compatible_video_models=lambda mode: [])
+        result = await scope['desktop_operation']('status', SimpleNamespace(json=AsyncMock(return_value={})))
+        connect.assert_awaited_once_with(force=True)
+        self.assertEqual(result['models'], {'text': ['gpt-new']})
+
+    async def test_forced_refresh_bypasses_cache_and_failure_invalidates_cache(self):
+        services = {'text': {'models': ['gpt-new']}}
+        response = Mock()
+        response.json.return_value = {'success': True, 'data': {'expires_at': 2000, 'services': services}}
+        remote = MagicMock()
+        remote.__aenter__ = AsyncMock(return_value=remote)
+        remote.__aexit__ = AsyncMock(return_value=False)
+        remote.get = AsyncMock(return_value=response)
+        scope = bridge_functions(
+            account_lock=asyncio.Lock(), account_checked=99, account_fingerprint='',
+            time=SimpleNamespace(monotonic=lambda: 100, time=lambda: 1000),
+            httpx=SimpleNamespace(AsyncClient=Mock(return_value=remote)), SESSION='offline-fixture',
+            hashlib=hashlib, models={}, model_refs={}, secret_values=set(),
+            app=SimpleNamespace(state=SimpleNamespace(generation_worker=SimpleNamespace(start_authorized=AsyncMock()))),
+        )
+        configure = AsyncMock(); scope['configure_models'] = configure
+        await scope['connect_account']()
+        remote.get.assert_not_awaited()
+        await scope['connect_account'](force=True)
+        remote.get.assert_awaited_once()
+        configure.assert_awaited_once_with(services)
+        remote.get.side_effect = OSError('offline')
+        with self.assertRaisesRegex(ValueError, 'studio_login_required'):
+            await scope['connect_account'](force=True)
+        self.assertEqual(scope['account_checked'], 0)
+        remote.get.side_effect = None
+        await scope['connect_account']()
+        self.assertEqual(remote.get.await_count, 3)
