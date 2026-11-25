@@ -36,6 +36,29 @@ pm.save_script(name,{'episode':1,'title':'Test','content_mode':'drama','scenes':
     def call(self, action, **kwargs):
         return json.loads(self.request('/desktop/workspace', {**self.ids, 'action': action, **kwargs}))
 
+    def test_delete_project_is_scoped_retryable_and_blocks_recreation(self):
+        scope = {'projectId': '12345678-1234-1234-1234-123456789030',
+                 'episodeId': '12345678-1234-1234-1234-123456789031'}
+        self.call('blank_script', **scope, episodeTitle='待删除项目')
+        self.assertIsNotNone(self.call('project', **scope)['project'])
+        self.assertTrue(self.call('project_delete', **scope)['ok'])
+        self.assertTrue(self.call('project_delete', **scope)['ok'])
+        mapping = json.loads((self.root / 'project-scopes' / (scope['projectId'] + '.json')).read_text(encoding='utf-8'))
+        self.assertTrue(mapping['deleted'])
+        self.assertFalse((self.root / 'data' / 'projects' / mapping['project']).exists())
+        self.assertIsNotNone(self.call('project')['project'])
+        for action in ('blank_script', 'legacy_merge', 'upload_begin'):
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.call(action, **scope)
+            self.assertEqual(json.loads(rejected.exception.read())['error'], 'studio_invalid_project')
+            rejected.exception.close()
+
+    def test_delete_uninitialized_project(self):
+        scope = {'projectId': '12345678-1234-1234-1234-123456789032',
+                 'episodeId': '12345678-1234-1234-1234-123456789033'}
+        self.assertTrue(self.call('project_delete', **scope)['ok'])
+        self.assertTrue(self.call('project_delete', **scope)['ok'])
+
     def test_asset_crud_and_script_revision(self):
         self.call('asset_create', category='characters', data={'name':'离线验收角色','description':'第一版','voice_style':'轻柔'})
         self.call('asset_update', category='characters', id='离线验收角色', data={'description':'第二版'})
