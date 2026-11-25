@@ -2,6 +2,14 @@
  * 通用 / Header / Titlebar / Toast / 节点菜单 / 侧边栏 / 关于弹窗
  */
 const common = {
+  "请在已安装的桌面客户端中检查更新": "Check for updates in the installed desktop app.",
+  "开发模式不检查更新，请使用正式安装版": "Updates are not checked in development mode. Use the release build.",
+  "更新源尚未提供当前系统的安装包，请到官网下载对应版本": "The update channel has no package for this system. Download the matching version from the official website.",
+  "更新源安全连接失败，请检查系统时间、证书或网络代理": "Could not securely connect to the update channel. Check your system clock, certificates, or proxy.",
+  "无法连接更新源，请检查网络或代理设置后重试": "Cannot reach the update channel. Check your network or proxy settings and retry.",
+  "更新源返回了无效清单，请稍后重试或到官网下载": "The update channel returned an invalid manifest. Retry later or download from the official website.",
+  "检查更新失败，请稍后重试或到官网下载": "Update check failed. Retry later or download from the official website.",
+  "重新检查更新": "Check for updates again",
   // ── 通用 ──
   '设置': 'Settings',
   '关闭设置': 'Close settings',
