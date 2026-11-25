@@ -155,6 +155,8 @@ jobs:
         env:
           CI: 'true'
           APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           HUANGGUA_TARGET_PLATFORM: ${{ matrix.runtime_platform }}
           RELEASE_VERSION: ${{ needs.frontend.outputs.version }}
           ARCH_LABEL: ${{ matrix.arch_label }}
@@ -175,6 +177,16 @@ jobs:
           fi
           app_path="${apps[0]}"
           codesign --verify --deep --strict --verbose=2 "$app_path"
+
+          updates=("$bundle_dir"/macos/*.app.tar.gz)
+          if [[ "${#updates[@]}" -ne 1 ]]; then
+            echo "Expected one signed macOS updater archive" >&2
+            exit 1
+          fi
+          update_dir="${RUNNER_TEMP}/macos-update-parts"
+          python3 -B scripts/build-macos-update.py \
+            --archive "${updates[0]}" --out "$update_dir" --target "darwin-${{ matrix.rust_target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}"
+          echo "update_dir=${update_dir}" >> "$GITHUB_OUTPUT"
 
           dmg_stage="${RUNNER_TEMP}/dmg-stage"
           out_dir="${RUNNER_TEMP}/macos-release-assets"
@@ -197,6 +209,15 @@ jobs:
           ls -lh "$out_dir"
           echo "out_dir=${out_dir}" >> "$GITHUB_OUTPUT"
           echo "dmg_name=${dmg_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Save signed Gitee update parts
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-update-${{ matrix.arch_label }}-${{ github.sha }}
+          path: ${{ steps.package.outputs.update_dir }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Publish .dmg installer to GitHub Release
         shell: bash
@@ -228,6 +249,7 @@ jobs:
             gh release create "$RELEASE_TAG" \
               --repo "$GH_REPO" \
               --target "$GITHUB_SHA" \
+              --draft \
               --title "黄瓜 AI 画布 ${RELEASE_TAG}" \
               --notes-file "$notes_file"
           fi

@@ -3,18 +3,23 @@ use std::{sync::Mutex, time::{Duration, Instant}};
 use tauri::{ipc::Channel, Manager, Webview};
 use tauri_plugin_updater::Update;
 
+#[derive(Clone, Copy, PartialEq)]
+enum ProgressMode { Standard, #[cfg(target_os = "macos")] Silent, #[cfg(target_os = "macos")] Part }
+
 static UPDATING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn download(update: &Update, events: &Channel<serde_json::Value>) -> Result<Vec<u8>, crate::github_fallback::Failure> {
+async fn download(update: &Update, events: &Channel<serde_json::Value>, progress: ProgressMode) -> Result<Vec<u8>, crate::github_fallback::Failure> {
     use crate::github_fallback::{policy, Failure};
     let last_chunk = Mutex::new((Instant::now(), false));
     let mut started = false;
     let request = update.download(|chunk, total| {
         if let Ok(mut last) = last_chunk.lock() { *last = (Instant::now(), true); }
-        if !started {
+        if !started && progress == ProgressMode::Standard {
             started = true;
             let _ = events.send(serde_json::json!({ "event": "Started", "data": { "contentLength": total } }));
         }
+        #[cfg(target_os = "macos")]
+        if progress == ProgressMode::Silent { return; }
         let _ = events.send(serde_json::json!({ "event": "Progress", "data": { "chunkLength": chunk } }));
     }, || {});
     tokio::pin!(request);
@@ -43,6 +48,31 @@ async fn download(update: &Update, events: &Channel<serde_json::Value>) -> Resul
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn download_multipart(update: &Update, events: &Channel<serde_json::Value>) -> Result<Vec<u8>, String> {
+    use crate::app_update_multipart::{descriptor_url, Manifest};
+    let target = format!("darwin-{}", std::env::consts::ARCH);
+    if update.download_url != descriptor_url(&update.version, &target)? {
+        return Err("更新清单不属于当前官方发布通道".into());
+    }
+    // The descriptor and every part are independently verified with the updater's pinned public key.
+    let descriptor = download(update, events, ProgressMode::Silent).await.map_err(|error| error.message)?;
+    let manifest = Manifest::parse(&descriptor, &update.version, &target)?;
+    let mut archive = Vec::new();
+    archive.try_reserve_exact(manifest.total_bytes).map_err(|_| "更新包所需内存不足")?;
+    let _ = events.send(serde_json::json!({ "event": "Started", "data": { "contentLength": manifest.total_bytes } }));
+    for (index, part) in manifest.parts.iter().enumerate() {
+        let mut request = update.clone();
+        request.download_url = part.url.parse().map_err(|_| "更新分片地址无效")?;
+        request.signature = part.signature.clone();
+        let bytes = download(&request, events, ProgressMode::Part).await.map_err(|error| error.message)?;
+        manifest.append_part(&mut archive, index, &bytes)?;
+    }
+    // The signed descriptor binds the order, sizes and complete archive hash.
+    manifest.verify_archive(&archive)?;
+    Ok(archive)
+}
+
 #[tauri::command]
 pub async fn download_app_update(webview: Webview, rid: tauri::ResourceId, on_event: Channel<serde_json::Value>) -> Result<(), String> {
     crate::path_policy::ensure_trusted_caller(&webview)?;
@@ -53,7 +83,14 @@ pub async fn download_app_update(webview: Webview, rid: tauri::ResourceId, on_ev
     // check() 的超时也会进入 Update；大包按无进度时长超时，不设整包下载时长限制。
     update.timeout = None;
     // Only the configured Huanggua release channel, no third-party proxy fallback.
-    let bytes = download(&update, &on_event).await.map_err(|error| error.message)?;
+    #[cfg(target_os = "macos")]
+    let bytes = if update.download_url.path().ends_with(".update.json") {
+        download_multipart(&update, &on_event).await?
+    } else {
+        download(&update, &on_event, ProgressMode::Standard).await.map_err(|error| error.message)?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let bytes = download(&update, &on_event, ProgressMode::Standard).await.map_err(|error| error.message)?;
     // download() 返回前已经验签；校验失败不能切源，安装永远只执行一次。
     let _ = on_event.send(serde_json::json!({ "event": "Finished" }));
     let app = webview.app_handle().clone();
