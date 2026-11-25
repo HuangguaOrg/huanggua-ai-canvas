@@ -229,9 +229,11 @@ async def configure_models(services):
         await checked(client, "PATCH", "system/config", defaults)
     models, model_refs = available, refs
 
-def project_name(body):
+def project_name(body, *, allow_deleted=False):
     from project_scope import resolve_scope, legacy_name
     name, number, _, mapping = resolve_scope(DATA, DataRootLayout.current().projects_dir, body)
+    if mapping.get('deleted') and not allow_deleted:
+        raise ValueError('studio_invalid_project')
     body['_source_projects'] = mapping.get('merged_sources', [])
     body['_episode'] = number
     body['_binding'] = legacy_name(body['projectId'], body['episodeId'])
@@ -242,6 +244,28 @@ def binding_path(project):
     folder = DATA / "bindings"
     folder.mkdir(exist_ok=True)
     return folder / (project + ".json")
+
+async def delete_studio_project(name, body, client):
+    from project_scope import resolve_scope, save_scope
+    from workspace_api import uploads
+    _, _, path, mapping = resolve_scope(DATA, DataRootLayout.current().projects_dir, body)
+    if mapping.get('deleted'):
+        return {'ok': True}
+    # Active agents can still write files, so require the user to stop them first.
+    service = get_assistant_service()
+    if await service.list_sessions(project_name=name, status='running', limit=1):
+        raise ValueError('studio_session_busy')
+    response = await client.delete(f'projects/{name}')
+    if not response.is_success and response.status_code != 404:
+        raise ValueError('studio_engine_rejected')
+    # Keep the stable mapping, including merged legacy sources. A persistent
+    # tombstone blocks late requests and makes a lost deletion response retryable.
+    save_scope(path, {**mapping, 'deleted': True})
+    for key, entry in list(uploads.items()):
+        if entry.get('project') == name:
+            entry['file'].close()
+            uploads.pop(key, None)
+    return {'ok': True}
 
 def read_binding(project):
     try:
@@ -314,9 +338,13 @@ async def desktop_operation(operation: str, request: Request):
                 async with AsyncExitStack() as stack:
                     for source in sorted(preview['sources'], key=lambda s: s['name']):
                         await stack.enter_async_context(run_locks.setdefault(source['name'], asyncio.Lock()))
+                    scope_path = DATA / 'project-scopes' / (body['projectId'] + '.json')
+                    if scope_path.exists() and json.loads(scope_path.read_text(encoding='utf-8')).get('deleted'):
+                        raise ValueError('studio_invalid_project')
                     async with local_client() as client:
                         return await merge_workspace(DATA, DataRootLayout.current().projects_dir, body, client, get_assistant_service())
-        name = project_name(body)
+        deleting = operation == 'workspace' and body.get('action') == 'project_delete'
+        name = project_name(body, allow_deleted=deleting)
         if operation == "run":
             await connect_account()
             async with run_locks.setdefault(name, asyncio.Lock()):
@@ -326,8 +354,11 @@ async def desktop_operation(operation: str, request: Request):
         if operation == "workspace":
             from workspace_api import workspace
             async with run_locks.setdefault(name, asyncio.Lock()):
-                if project_name(body) != name:
+                if project_name(body, allow_deleted=deleting) != name:
                     raise ValueError('studio_edit_conflict')
+                if deleting:
+                    async with local_client() as client:
+                        return await delete_studio_project(name, body, client)
                 if body.get('action') == 'message_attachments':
                     from conversation_api import is_synthetic_user_text, queued_display
                     session = read_binding(body['_binding']).get('session_id')

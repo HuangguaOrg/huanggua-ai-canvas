@@ -1298,9 +1298,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     assertCurrent();
     let normalized: Node<BaseNodeData>[];
     try { normalized = await normalizeProjectMediaNodes(context.canvasId, originals); }
-    catch {
+    catch (error) {
       assertCurrent();
-      throw new Error('参考素材身份准备失败，请检查文件后重试');
+      if (error instanceof Error && error.name === 'ProjectStorageUnavailableError') throw error;
+      throw new Error('参考素材身份准备失败，请检查文件后重试', { cause: error });
     }
     assertCurrent();
     const normalizedById = new Map(normalized.map((node) => [node.id, node]));

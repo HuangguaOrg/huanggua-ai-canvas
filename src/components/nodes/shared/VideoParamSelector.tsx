@@ -27,7 +27,7 @@ import { getDreaminaVideoCapability } from '../../../services/ai/dreaminaModels'
 import { MUSE_VIDEO_CAPABILITY, MUSE_VIDEO_MODEL } from '../../../services/ai/museModels';
 import { getGrsaiVideoCapability } from '../../../services/ai/grsaiModels';
 import { AUTODL_H3_WORKFLOW } from '../../../services/workflowApi/autodlWorkflowManifest';
-import { resolveConfiguredVideoCapability } from '../../../services/ai/videoModelCapabilityResolver';
+import { resolveConfiguredVideoCapability, resolveSupportedVideoResolution } from '../../../services/ai/videoModelCapabilityResolver';
 import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
 import {
   resolveVideoDurationSeconds,
@@ -229,7 +229,7 @@ export function resolveGeneralVideoParameterDisplayState(
   current: GeneralVideoParameterDisplayState,
 ): GeneralVideoParameterDisplayState {
   return {
-    resolution: current.resolution ?? capability?.defaultResolution,
+    resolution: resolveSupportedVideoResolution(current.resolution, capability),
     ratio: current.ratio ?? capability?.defaultRatio,
     duration: current.duration
       ?? capability?.defaultDuration
@@ -661,7 +661,7 @@ export default function VideoParamSelector({
   useEffect(() => {
     if (!parameterCapability) return;
     if (displayedResolution !== undefined
-      && (isNativeSeedance || generalCapability?.defaultResolution !== undefined)
+      && (isNativeSeedance || generalCapability?.resolutions?.length || generalCapability?.defaultResolution !== undefined)
       && displayedResolution !== seedanceResolution) {
       onChangeSeedanceResolution?.(displayedResolution);
     }
@@ -690,6 +690,7 @@ export default function VideoParamSelector({
     generalCapability?.automaticDurationValue,
     generalCapability?.defaultFrameRate,
     generalCapability?.defaultResolution,
+    generalCapability?.resolutions?.length,
     explicitlyUnsupportedAudio,
     generateAudio,
     isNativeSeedance,

@@ -423,10 +423,66 @@ export async function getDefaultBaseDir(): Promise<string | null> {
 
 /** 用户自定义的文件保存根目录，由 store.config 在加载配置时注入 */
 let _baseDataDir: string | null = null;
+let storageConfigRevision = 0;
+let storageRecovery: { revision: number; pending: Promise<void> } | undefined;
+
+export class ProjectStorageUnavailableError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'ProjectStorageUnavailableError';
+  }
+}
+
+/** Recover read-only root resolution; never replay media writes or generation. */
+async function withStorageRootRecovery<T>(request: () => Promise<T>): Promise<T> {
+  const revision = storageConfigRevision;
+  const root = _baseDataDir;
+  const assertCurrent = () => {
+    if (revision !== storageConfigRevision) {
+      throw new ProjectStorageUnavailableError('项目存储设置已变化，请重试当前操作', undefined);
+    }
+  };
+  try {
+    const result = await request();
+    assertCurrent();
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== '项目存储目录尚未同步或不可用') throw error;
+    assertCurrent();
+    if (!revision || nativeSearchContext || nativeVideoEditorContext) {
+      // An unloaded config or a secondary window must not reset the main
+      // window's root to a default/stale directory.
+      throw new ProjectStorageUnavailableError('项目存储配置尚未就绪，请在主窗口重新加载设置后重试', error);
+    }
+    try {
+      if (storageRecovery?.revision !== revision) {
+        const pending = invoke<string[]>('sync_authorized_directories', {
+          directories: root ? [root] : [], baseDataDir: root,
+        }).then(() => { assertCurrent(); });
+        storageRecovery = { revision, pending };
+      }
+      const recovery = storageRecovery;
+      try { await recovery.pending; }
+      finally { if (storageRecovery === recovery) storageRecovery = undefined; }
+      assertCurrent();
+      // Re-run the original native validation, even if the sync reports success.
+      // Invalid/missing roots still fail; no default directory is substituted.
+      const result = await request();
+      assertCurrent();
+      return result;
+    } catch (retryError) {
+      if (retryError instanceof ProjectStorageUnavailableError) throw retryError;
+      throw new ProjectStorageUnavailableError('项目存储目录不可用，请确认磁盘已连接，并在「设置 → 文件与应用」中重新选择原保存根目录后重试', retryError);
+    }
+  }
+}
 
 /** 设置用户自定义的文件保存根目录 */
 export function setBaseDataDir(dir: string | undefined): void {
-  _baseDataDir = dir && dir.trim() ? dir.trim() : null;
+  const root = dir && dir.trim() ? dir.trim() : null;
+  if (!storageConfigRevision || root !== _baseDataDir) storageConfigRevision += 1;
+  _baseDataDir = root;
 }
 
 /** 获取文件保存根目录（用户自定义或系统默认），不含项目 ID */
@@ -555,9 +611,11 @@ export async function getProjectDataDir(projectId: string): Promise<string | nul
     if (!isTauriEnv()) return null;
     if (nativeVideoEditorContext && (owner !== nativeVideoEditorContext.projectId
       || projectId !== owner && projectId !== nativeVideoEditorContext.canvasId)) throw new Error('剪辑窗口素材身份已变化');
-    const directory = nativeVideoEditorContext
-      ? await invoke<string>('resolve_video_editor_native_root', nativeVideoEditorContext)
-      : await invoke<string>(nativeSearchContext ? 'resolve_asset_search_native_project_root' : 'resolve_native_project_media_root', { projectId: owner });
+    const editorContext = nativeVideoEditorContext;
+    const command = nativeSearchContext ? 'resolve_asset_search_native_project_root' : 'resolve_native_project_media_root';
+    const directory = await withStorageRootRecovery(() => editorContext
+      ? invoke<string>('resolve_video_editor_native_root', editorContext)
+      : invoke<string>(command, { projectId: owner }));
     if (typeof directory !== 'string' || !directory) throw new Error('新项目素材目录不可用');
     return directory;
   }

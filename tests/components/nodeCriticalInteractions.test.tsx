@@ -1963,7 +1963,9 @@ describe('critical canvas node interactions', () => {
       }));
       expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({
         nodeId: 'imported-image', model: 'general/image-model', provider: 'general',
-        prompt: 'ai-image:@{reference:参考图} 重绘', imageSize: '1K', aspectRatio: aspectRatio ?? '1:1', imageQuality: 'low', imageBackground: 'transparent',
+        prompt: 'ai-image:@{reference:参考图} 重绘', imageSize: '1K',
+        // 对话框使用模型声明的默认比例；工具栏的既有缺省比例仍是 1:1。
+        aspectRatio: aspectRatio ?? (entry === 'dialog' ? '3:4' : '1:1'), imageQuality: 'low', imageBackground: 'transparent',
       }));
       expect(generateText).not.toHaveBeenCalled();
       expect(store.nodes[0]).toMatchObject({ id: 'imported-image', type, position: { x: 12, y: 34 },
@@ -2815,7 +2817,7 @@ describe('critical canvas node interactions', () => {
     { label: '未设比例重选同一原生模型', from: 'volcengine/doubao-seedance-2-5', fromProvider: 'volcengine', to: 'volcengine/doubao-seedance-2-5', provider: 'volcengine', ratio: undefined },
     { label: '工作流转通用模型', from: 'comfyui/workflow-a', fromProvider: 'comfyui', to: 'general/video-b', provider: 'general', ratio: '9:16', workflowId: 'workflow-a' },
     { label: '未设置任何参数到原生', from: 'general/video-a', fromProvider: 'general', to: 'dreamina/seedance2.5', provider: 'dreamina', ratio: undefined, unsetParameters: true },
-  ])('视频模型切换保留已有参数（$label）', async ({ from, fromProvider, to, provider, ratio, workflowId, unsetParameters }) => {
+  ])('视频模型切换保留兼容参数并补齐分辨率默认值（$label）', async ({ from, fromProvider, to, provider, ratio, workflowId, unsetParameters }) => {
     const parameters = { videoResolution: unsetParameters ? undefined : 1280, videoFps: unsetParameters ? undefined : 30,
       videoFrames: unsetParameters ? undefined : 301, seedanceResolution: unsetParameters ? undefined : '1080p',
       seedanceDuration: unsetParameters ? undefined : 10, generateAudio: unsetParameters ? undefined : false };
@@ -2844,10 +2846,14 @@ describe('critical canvas node interactions', () => {
     (panel().props.onModelSelect as (model: Record<string, unknown>) => void)({ value: to, provider });
     expect(store.nodes[0].data).toMatchObject({ model: to, provider, seedanceRatio: ratio,
       aspectRatio: ratio, nodeWidth: 280, nodeHeight: 498, workflowId: undefined,
-      ...parameters });
+      ...parameters, seedanceResolution: unsetParameters ? '720p' : parameters.seedanceResolution });
     expect(panel().props.seedanceRatio).toBe(ratio);
-    expect(panel().props.seedanceResolution).toBe(parameters.seedanceResolution);
+    expect(panel().props.seedanceResolution).toBe(unsetParameters ? '720p' : parameters.seedanceResolution);
     for (const key of ['seedanceRatio', ...Object.keys(parameters)]) {
+      if (unsetParameters && key === 'seedanceResolution') {
+        expect(store.updateNodeData.mock.calls.at(-1)?.[1]).toHaveProperty(key, '720p');
+        continue;
+      }
       expect(store.updateNodeData.mock.calls.at(-1)?.[1]).not.toHaveProperty(key);
     }
     expect(generateVideo).not.toHaveBeenCalled();

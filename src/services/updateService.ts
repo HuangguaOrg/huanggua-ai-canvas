@@ -1,12 +1,51 @@
 /**
  * 应用更新服务
  *
- * 启动时静默检查 GitHub Releases 是否有新版本。
+ * 启动时静默检查已配置的签名更新通道是否有新版本。
  * 不自动下载，用户可在吉祥物的聊天气泡中决定是否更新。
  */
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 // 每个更新源单独超时；失败后由原生 updater 尝试配置中的下一个地址。
 const UPDATE_CHECK_TIMEOUT_MS = 30_000;
+
+const DESKTOP_REQUIRED = '请在已安装的桌面客户端中检查更新';
+const RELEASE_REQUIRED = '开发模式不检查更新，请使用正式安装版';
+
+function classifyCheckError(error: unknown): { message: string; retryable: boolean } {
+  const text = error instanceof Error ? error.message : String(error);
+  if (text === DESKTOP_REQUIRED || text === RELEASE_REQUIRED) return { message: text, retryable: false };
+  if (/platforms?.*(?:not found|were found)|unsupported.*(?:architecture|os)/i.test(text)) {
+    return { message: '更新源尚未提供当前系统的安装包，请到官网下载对应版本', retryable: false };
+  }
+  if (/certificate|tls|ssl|invalid peer/i.test(text)) {
+    return { message: '更新源安全连接失败，请检查系统时间、证书或网络代理', retryable: false };
+  }
+  if (/release JSON|expected value|missing field|invalid.*(?:json|type)|deserialize/i.test(text)) {
+    return { message: '更新源返回了无效清单，请稍后重试或到官网下载', retryable: true };
+  }
+  if (/timeout|timed out|network|connect|dns|ENOTFOUND|fetch|sending request|request.*failed|decode.*response body|error decoding/i.test(text)) {
+    return { message: '无法连接更新源，请检查网络或代理设置后重试', retryable: true };
+  }
+  return { message: '检查更新失败，请稍后重试或到官网下载', retryable: false };
+}
+
+/** Only expose actionable messages, never raw transport URLs or proxy credentials. */
+export function updateCheckErrorMessage(error: unknown): string {
+  return classifyCheckError(error).message;
+}
+
+async function checkUpdateChannel() {
+  const { check } = await import('@tauri-apps/plugin-updater');
+  const options = { timeout: UPDATE_CHECK_TIMEOUT_MS, headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } };
+  try {
+    return await check(options);
+  } catch (error) {
+    if (!classifyCheckError(error).retryable) throw error;
+    // Retry discovery only. Download, signature verification and installation
+    // are never resubmitted here; the native updater still compares versions.
+    return check(options);
+  }
+}
 
 /** 开发模式下跳过更新检查：Vite 编译时常量，打包后恒为 false */
 function isDevMode(): boolean {
@@ -44,16 +83,19 @@ let updateInFlight: Promise<boolean> | null = null;
  * 仅在 Tauri 环境下生效。
  */
 export async function checkForUpdate(options: { manual?: boolean } = {}): Promise<UpdateCheckResult> {
-  if (!isTauri) return { available: false };
+  if (!isTauri) {
+    if (options.manual) throw new Error(DESKTOP_REQUIRED);
+    return { available: false };
+  }
 
   try {
     if (isDevMode()) {
+      if (options.manual) throw new Error(RELEASE_REQUIRED);
       console.log('[Updater] 开发模式，跳过更新检查');
       return { available: false };
     }
 
-    const { check } = await import('@tauri-apps/plugin-updater');
-    const update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
+    const update = await checkUpdateChannel();
 
     if (!update) {
       console.log('[Updater] 当前已是最新版本');
@@ -64,7 +106,8 @@ export async function checkForUpdate(options: { manual?: boolean } = {}): Promis
     try {
       return { available: true, version: update.version, body: update.body, date: update.date };
     } finally {
-      await update.close();
+      // Cleanup failure must not hide a successfully discovered release.
+      await update.close().catch(() => {});
     }
   } catch (err) {
     if (options.manual) throw err;
@@ -105,10 +148,9 @@ async function performUpdate(onProgress?: (progress: AppUpdateProgress) => void)
   try {
     report({});
 
-    const { check } = await import('@tauri-apps/plugin-updater');
     const { relaunch } = await import('@tauri-apps/plugin-process');
 
-    update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
+    update = await checkUpdateChannel();
     if (!update) {
       report({ phase: 'no-update', message: '已是最新版本' });
       return false;
@@ -151,7 +193,7 @@ async function performUpdate(onProgress?: (progress: AppUpdateProgress) => void)
       : progress.phase === 'installing'
         ? '更新安装失败，请稍后重试'
         : progress.phase === 'checking'
-          ? '检查失败，请稍后重试'
+          ? updateCheckErrorMessage(err)
           : '下载失败，请稍后重试';
     report({ phase: 'error', message });
     return false;

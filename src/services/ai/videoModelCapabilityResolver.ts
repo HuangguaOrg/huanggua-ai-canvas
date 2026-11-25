@@ -107,6 +107,27 @@ function fromNativeCapability(capability: ApimartSeedanceCapability): VideoModel
   };
 }
 
+/**
+ * 将节点中已有的分辨率收敛到模型声明的候选值；未知能力保持原值。
+ * 没有显式默认值时，只在已有值不兼容的情况下使用首个候选值，
+ * 避免把“模型未声明默认值”误写成一个新的用户选择。
+ */
+export function resolveSupportedVideoResolution(
+  current: string | undefined,
+  capability: VideoModelCapability | undefined,
+): string | undefined {
+  if (!capability) return current;
+  const resolutions = capability.resolutions?.filter(Boolean);
+  if (!resolutions?.length) return current ?? capability.defaultResolution;
+  if (current !== undefined) {
+    const supported = resolutions.find((value) => value.toLowerCase() === current.toLowerCase());
+    if (supported) return supported;
+  }
+  if (current === undefined) return capability.defaultResolution;
+  return resolutions.find((value) => value.toLowerCase() === capability.defaultResolution?.toLowerCase())
+    ?? resolutions[0];
+}
+
 /** 只返回参数能力，不输出连接地址、协议模板或凭据。 */
 export function resolveVideoModelCapability(
   modelId: string,

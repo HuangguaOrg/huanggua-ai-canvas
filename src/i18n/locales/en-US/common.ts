@@ -2,6 +2,17 @@
  * 通用 / Header / Titlebar / Toast / 节点菜单 / 侧边栏 / 关于弹窗
  */
 const common = {
+  "项目存储设置已变化，请重试当前操作": "Project storage settings changed. Please retry the operation.",
+  "项目存储配置尚未就绪，请在主窗口重新加载设置后重试": "Project storage is not ready. Reload settings in the main window and retry.",
+  "项目存储目录不可用，请确认磁盘已连接，并在「设置 → 文件与应用」中重新选择原保存根目录后重试": "Project storage is unavailable. Check that the drive is connected, then reselect the original save root in Settings → Files & App and retry.",
+  "请在已安装的桌面客户端中检查更新": "Check for updates in the installed desktop app.",
+  "开发模式不检查更新，请使用正式安装版": "Updates are not checked in development mode. Use the release build.",
+  "更新源尚未提供当前系统的安装包，请到官网下载对应版本": "The update channel has no package for this system. Download the matching version from the official website.",
+  "更新源安全连接失败，请检查系统时间、证书或网络代理": "Could not securely connect to the update channel. Check your system clock, certificates, or proxy.",
+  "无法连接更新源，请检查网络或代理设置后重试": "Cannot reach the update channel. Check your network or proxy settings and retry.",
+  "更新源返回了无效清单，请稍后重试或到官网下载": "The update channel returned an invalid manifest. Retry later or download from the official website.",
+  "检查更新失败，请稍后重试或到官网下载": "Update check failed. Retry later or download from the official website.",
+  "重新检查更新": "Check for updates again",
   // ── 通用 ──
   '设置': 'Settings',
   '关闭设置': 'Close settings',
@@ -79,7 +90,6 @@ const common = {
   '已是最新版本': 'You are on the latest version',
   '发现新版本 v{version}': 'New version v{version} available',
   '发现 v{version}，点击更新': 'v{version} available — click to update',
-  '检查失败，请稍后重试': 'Check failed, please try again later',
   '下载失败，请稍后重试': 'Download failed, please try again later',
   "黄瓜 AI 画布 是一个智能多媒体创意画布，通过可视化节点编排的方式，调用多种 AI 模型来生成文本、图像、视频和音频内容。支持多厂商模型接入、ComfyUI 工作流、本地文件管理与实时协作。":
     "Huanggua AI is a multimedia creative canvas that orchestrates AI models through visual nodes to generate text, images, video and audio. It supports multi-vendor model providers, ComfyUI workflows, local file management and real-time collaboration.",

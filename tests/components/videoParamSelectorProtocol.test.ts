@@ -414,4 +414,13 @@ curl https://api.paipu.net/v1/videos \\
       duration: 20,
     });
   });
+
+  it('切换到仅支持新分辨率的模型时回落到兼容档位', () => {
+    expect(resolveGeneralVideoParameterDisplayState({
+      resolutions: ['768p'],
+    }, { resolution: '1080p' }).resolution).toBe('768p');
+    expect(resolveGeneralVideoParameterDisplayState({
+      resolutions: ['768p'],
+    }, {}).resolution).toBeUndefined();
+  });
 });

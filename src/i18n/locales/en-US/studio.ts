@@ -50,6 +50,9 @@ const studio: Record<string, string> = {
   "成片": "Final cut",
 
   "新建短剧项目": "New drama project",
+  "删除短剧项目": "Delete drama project",
+  "将删除本项目及全部分集的本地草稿和执行数据。个人资源库中已入库的素材保留。": "This deletes the local drafts and runtime data for this project and all its episodes. Assets already imported into your personal library are kept.",
+  "正在删除…": "Deleting…",
   "给你的故事起个名字": "Give your story a name",
   "项目将保存到本机，可先编写剧本和分镜。": "Your project is saved locally. Start with scripts and shots.",
   "无法读取短剧草稿，请重试。": "Could not load drama drafts. Please retry.",
