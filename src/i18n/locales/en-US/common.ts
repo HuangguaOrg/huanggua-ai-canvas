@@ -90,7 +90,6 @@ const common = {
   '已是最新版本': 'You are on the latest version',
   '发现新版本 v{version}': 'New version v{version} available',
   '发现 v{version}，点击更新': 'v{version} available — click to update',
-  '检查失败，请稍后重试': 'Check failed, please try again later',
   '下载失败，请稍后重试': 'Download failed, please try again later',
   "黄瓜 AI 画布 是一个智能多媒体创意画布，通过可视化节点编排的方式，调用多种 AI 模型来生成文本、图像、视频和音频内容。支持多厂商模型接入、ComfyUI 工作流、本地文件管理与实时协作。":
     "Huanggua AI is a multimedia creative canvas that orchestrates AI models through visual nodes to generate text, images, video and audio. It supports multi-vendor model providers, ComfyUI workflows, local file management and real-time collaboration.",
