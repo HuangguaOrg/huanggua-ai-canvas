@@ -21,9 +21,9 @@ AI Canvas Tauri は、テキスト・画像・動画・音声・コマ撮りア�
 
 **オンライン体験:** <https://tenney95.github.io/AI-Canvas-tauri/>（トップ画面ですぐ試せます。デモキャンバス内蔵）
 
-**ダウンロード:** <https://github.com/tenney95/AI-Canvas-tauri/releases>（デスクトップインストーラー）
+**ダウンロード:** <https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest>（デスクトップインストーラー）
 
-[オンライン体験](https://tenney95.github.io/AI-Canvas-tauri/) · [ダウンロード](https://github.com/tenney95/AI-Canvas-tauri/releases) · [スポンサー](#スポンサー) · [主な機能](#主な機能) · [クイックスタート](#クイックスタート) · [ドキュメント](#ドキュメント) · [ライセンス](#ライセンス)
+[オンライン体験](https://tenney95.github.io/AI-Canvas-tauri/) · [ダウンロード](https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/latest) · [スポンサー](#スポンサー) · [主な機能](#主な機能) · [クイックスタート](#クイックスタート) · [ドキュメント](#ドキュメント) · [ライセンス](#ライセンス)
 
 > Web 版はキャンバスと UI の体験に適しています。ファイルシステム、認証情報ストレージ、独立ウィンドウ、3D ディレクターデスク、ローカルモデルなどは Tauri デスクトップ環境に依存します。完全な体験をご希望の場合は、以下の手順でデスクトップアプリを起動してください。
 
