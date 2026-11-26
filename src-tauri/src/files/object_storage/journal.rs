@@ -16,7 +16,11 @@ impl Root {
         let default = app.path().app_data_dir().map_err(|_| unavailable())?.join("data");
         let user = crate::path_policy::user_storage_root(app);
         let (anchor, base) = if let Some(base) = user.filter(|base| root.starts_with(base) && root != *base) { ("user", base) }
-            else { ("app", default) };
+            else {
+                let automatic = crate::default_project_storage::default_project_data_root(app).map_err(|_| unavailable())?;
+                if root.starts_with(&automatic) && root != automatic { ("default", automatic) }
+                else { ("app", default) }
+            };
         let base = crate::path_policy::authorize_existing_plain_directory(app, &base.to_string_lossy()).map_err(|_| protocol::invalid())?;
         let relative = root.strip_prefix(&base).map_err(|_| protocol::invalid())?;
         if !safe_relative(relative) { return Err(protocol::invalid()); }
@@ -28,7 +32,9 @@ impl Root {
         if !safe_relative(Path::new(&self.relative)) || !protocol::valid_digest(&self.fingerprint) { return Err(protocol::invalid()); }
         let base = match self.anchor.as_str() {
             "user" => crate::path_policy::user_storage_root(app).ok_or_else(|| StorageError::new("conflict"))?,
+            // Keep old journals anchored to their original application-data root.
             "app" => app.path().app_data_dir().map_err(|_| unavailable())?.join("data"),
+            "default" => crate::default_project_storage::default_project_data_root(app).map_err(|_| unavailable())?,
             _ => return Err(protocol::invalid()),
         };
         let root = crate::path_policy::authorize_existing_plain_directory(app, &base.join(&self.relative).to_string_lossy()).map_err(|_| StorageError::new("conflict"))?;
