@@ -51,8 +51,9 @@ function drag(type: DropEvent['payload']['type'], path = '/external/source.mp4')
   driver.onDrag!({ payload: { type, paths: [path], position: { x: 20, y: 30 } } });
 }
 describe('成功导入后的最近使用记录', () => {
-  it('剧本整页的原生及 HTML5 拖放不会往隐藏画布添加节点', async () => {
-    driver.state.projectWorkspaceView = 'script';
+  it.each(['script', 'library'])('%s 页的原生及 HTML5 拖放不会往隐藏画布添加节点', async (page) => {
+    driver.state.projectWorkspaceView = page === 'script' ? 'script' : 'canvas';
+    driver.state.projectLibraryOpen = page === 'library';
     driver.state.pasteExternalFromDataTransfer = vi.fn(async () => undefined);
     drag('enter'); drag('drop');
     const creation = useNodeCreation();
@@ -65,12 +66,13 @@ describe('成功导入后的最近使用记录', () => {
     expect(driver.copy).not.toHaveBeenCalled();
   });
 
-  it('切换剧本整页后，已放置的媒体占位仍完成复制', async () => {
+  it.each(['script', 'library'])('切换到 %s 页后，已放置的媒体占位仍完成复制', async (page) => {
     let finish!: (result: unknown) => void;
     driver.copy.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     drag('drop');
     expect(driver.state.nodes[0].data.status).toBe('loading');
-    driver.state.projectWorkspaceView = 'script';
+    driver.state.projectWorkspaceView = page === 'script' ? 'script' : 'canvas';
+    driver.state.projectLibraryOpen = page === 'library';
     finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
     await vi.waitFor(() => expect(driver.state.nodes[0].data.status).toBe('success'));
     expect(driver.state.addNode).toHaveBeenCalledOnce();

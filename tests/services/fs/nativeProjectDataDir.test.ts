@@ -15,7 +15,7 @@ const episodeId = 'e2-12345678-1234-4123-8123-123456789abc';
 beforeEach(() => {
   vi.resetModules();
   vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
-  native.invoke.mockReset().mockImplementation(async command => command === 'sync_authorized_directories' ? [] : '/bound/project');
+  native.invoke.mockReset().mockImplementation(async command => command === 'sync_authorized_directories' ? [] : command === 'get_default_project_data_root' ? '/app/data' : '/bound/project');
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -157,7 +157,7 @@ describe('新旧项目素材根路由', () => {
     core.registerProjectFolder(canvasId, undefined);
     expect(await core.getProjectDataDir(canvasId)).toBe(`/app/data/${canvasId}`);
     expect(() => core.registerNativeProjectFolders([{ id: canvasId, projectId }])).toThrow('身份冲突');
-    expect(native.invoke).not.toHaveBeenCalled();
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith('get_default_project_data_root');
   });
 
   it('原生根不可用时不静默回退；批量绑定冲突不提交部分映射', async () => {

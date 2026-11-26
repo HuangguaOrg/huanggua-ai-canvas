@@ -1694,11 +1694,11 @@ describe('returning to the startup page', () => {
       currentProjectId: 'logo-project', projectName: 'Logo 项目',
       nodes: [{ id: 'text', type: 'ai-text', position: { x: 0, y: 0 }, data: { label: '已编辑内容' } as BaseNodeData }],
       selectedNodeIds: ['text'], assetsPanelOpen: true, chatOpen: true,
-      activeNodeId: 'text', projectLibraryOpen: true,
+      activeNodeId: 'text', projectLibraryOpen: false,
     });
   }
 
-  it('returns after saving even when thumbnail encoding remains pending', async () => {
+  it('opens the project list while thumbnail encoding remains pending', async () => {
     openProject();
     let finishSnapshot!: (snapshot: string) => void;
     snapshotMocks.captureCurrentCanvasSnapshot.mockReturnValue(new Promise((resolve) => { finishSnapshot = resolve; }));
@@ -1706,7 +1706,8 @@ describe('returning to the startup page', () => {
     const edges = useAppStore.getState().edges;
 
     expect(await useAppStore.getState().returnToStartPage()).toBe(true);
-    expect(useAppStore.getState().currentProjectId).toBeNull();
+    expect(useAppStore.getState().currentProjectId).toBe('logo-project');
+    await vi.advanceTimersByTimeAsync(0);
     expect(snapshotMocks.captureCurrentCanvasSnapshot).toHaveBeenCalledWith('logo-project', { nodes, edges }, { fresh: true });
     expect(fileMocks.saveProject).toHaveBeenCalledOnce();
 
@@ -1714,7 +1715,7 @@ describe('returning to the startup page', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(metadataMocks.updateProjectSnapshot).toHaveBeenCalledWith('logo-project', 'data:image/webp;base64,LATE_PREVIEW');
     expect(fileMocks.saveProject).toHaveBeenCalledOnce();
-    expect(useAppStore.getState().currentProjectId).toBeNull();
+    expect(useAppStore.getState().currentProjectId).toBe('logo-project');
   });
 
   it('refreshes the thumbnail on departure even if store references have not changed', async () => {
@@ -1870,46 +1871,30 @@ describe('returning to the startup page', () => {
     expect(metadataMocks.updateProjectSnapshot).toHaveBeenCalledOnce();
   });
 
-  it('does not wait forever for a suspended animation frame before returning', async () => {
+  it('opens the list immediately while saving and preserves the live canvas for returning', async () => {
     openProject();
-    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
-    vi.stubGlobal('cancelAnimationFrame', vi.fn());
-    try {
-      const returning = useAppStore.getState().returnToStartPage();
-      await vi.advanceTimersByTimeAsync(100);
-      expect(await returning).toBe(true);
-      expect(cancelAnimationFrame).toHaveBeenCalledWith(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('waits for saving before leaving the canvas and keeps the project available to reopen', async () => {
-    openProject();
+    const nodes = useAppStore.getState().nodes;
+    const history = useAppStore.getState().history;
     let finishSave!: (id: string) => void;
     fileMocks.saveProject.mockImplementation(() => new Promise<string>((resolve) => { finishSave = resolve; }));
-    const pending = useAppStore.getState().returnToStartPage();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(useAppStore.getState().currentProjectId).toBe('logo-project');
-    expect(useAppStore.getState().isReturningToStartPage).toBe(true);
-    finishSave('logo-project');
-    expect(await pending).toBe(true);
-    expect(fileMocks.saveProject).toHaveBeenCalledWith(expect.objectContaining({ id: 'logo-project', nodes: expect.arrayContaining([expect.objectContaining({ id: 'text' })]) }));
+    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
     expect(useAppStore.getState()).toMatchObject({
-      currentProjectId: null, projectLoadStatus: 'ready', nodes: [], edges: [], groups: [],
-      selectedNodeIds: [], activeNodeId: null, assetsPanelOpen: false, chatOpen: false,
-      projectLibraryOpen: false, isReturningToStartPage: false,
+      projectLibraryOpen: true, currentProjectId: 'logo-project', isReturningToStartPage: false,
+      activeNodeId: null, assetsPanelOpen: false, chatOpen: false,
     });
-    expect(useAppStore.getState().projects).toHaveLength(1);
-    fileMocks.loadProjectData.mockResolvedValue({ id: 'logo-project', nodes: [], edges: [] });
-    await useAppStore.getState().switchProject('logo-project');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
+    expect(fileMocks.saveProject).toHaveBeenCalledOnce();
+    useAppStore.getState().setProjectLibraryOpen(false);
+    expect(useAppStore.getState().nodes).toBe(nodes);
+    expect(useAppStore.getState().history).toBe(history);
+    finishSave('logo-project');
+    await vi.advanceTimersByTimeAsync(0);
     expect(useAppStore.getState().currentProjectId).toBe('logo-project');
   });
 
-  it.each(['added', 'completed'] as const)('keeps MCP media %s during an in-flight return save', async (change) => {
+  it.each(['added', 'completed'] as const)('keeps MCP media %s while browsing the project list', async (change) => {
     openProject();
-    const showToast = vi.fn();
-    useAppStore.setState({ showToast });
     const media = {
       id: 'mcp-image', type: 'source-image', position: { x: 300, y: 0 },
       data: { label: 'MCP 图片', type: 'source-image', status: 'loading' } as BaseNodeData,
@@ -1917,71 +1902,53 @@ describe('returning to the startup page', () => {
     if (change === 'completed') useAppStore.getState().addNodes([media]);
     let finishSave!: (id: string) => void;
     fileMocks.saveProject.mockImplementationOnce(() => new Promise<string>((resolve) => { finishSave = resolve; }));
-    const pending = useAppStore.getState().returnToStartPage();
+    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
     await vi.advanceTimersByTimeAsync(0);
-
     const result: Partial<BaseNodeData> = {
       status: 'success', filePath: 'project-dir/mcp.png', imageUrl: 'asset://project-dir/mcp.png',
     };
     if (change === 'added') useAppStore.getState().addNodes([{ ...media, data: { ...media.data, ...result } }]);
     else useAppStore.getState().updateNodeDataTransient(media.id, result);
     finishSave('logo-project');
-
-    expect(await pending).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
     expect(useAppStore.getState()).toMatchObject({
-      currentProjectId: 'logo-project', isReturningToStartPage: false,
+      currentProjectId: 'logo-project', projectLibraryOpen: true,
       nodes: expect.arrayContaining([expect.objectContaining({ id: media.id, data: expect.objectContaining(result) })]),
     });
-    expect(showToast).toHaveBeenCalledWith('保存期间画布有新变化，已保留当前项目，请稍后再返回启动页', 'error');
-
-    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
-    expect(fileMocks.saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
-      id: 'logo-project',
-      nodes: expect.arrayContaining([expect.objectContaining({ id: media.id, data: expect.objectContaining(result) })]),
-    }));
-    expect(useAppStore.getState().autoSaveFailure).toBeNull();
   });
 
-  it('keeps the current canvas when saving fails', async () => {
+  it('keeps navigation available and retains unsaved content when saving fails', async () => {
     openProject();
     fileMocks.saveProject.mockRejectedValue(new Error('Save unavailable'));
-    expect(await useAppStore.getState().returnToStartPage()).toBe(false);
-    expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'logo-project', nodes: [expect.objectContaining({ id: 'text' })], isReturningToStartPage: false });
+    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useAppStore.getState()).toMatchObject({
+      currentProjectId: 'logo-project', nodes: [expect.objectContaining({ id: 'text' })],
+      projectLibraryOpen: true, isReturningToStartPage: false,
+    });
+    expect(useAppStore.getState().autoSaveFailure).not.toBeNull();
+    useAppStore.getState().setProjectLibraryOpen(false);
+    expect(useAppStore.getState().nodes[0].id).toBe('text');
   });
 
-  it('does not replace a different project selected while saving was in progress', async () => {
+  it('does not reset navigation when a background save completes', async () => {
     openProject();
     let finishSave!: (id: string) => void;
     fileMocks.saveProject.mockImplementation(() => new Promise<string>((resolve) => { finishSave = resolve; }));
-    const pending = useAppStore.getState().returnToStartPage();
+    await useAppStore.getState().returnToStartPage();
     await vi.advanceTimersByTimeAsync(0);
-    useAppStore.setState({ currentProjectId: 'another-project' });
+    useAppStore.setState({ currentProjectId: 'another-project', projectLibraryOpen: false });
     finishSave('logo-project');
-    expect(await pending).toBe(false);
-    expect(useAppStore.getState().currentProjectId).toBe('another-project');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'another-project', projectLibraryOpen: false });
   });
 
-  it('ignores repeated returns and blocks create/switch until saving finishes', async () => {
-    openProject();
-    let finishSave!: (id: string) => void;
-    fileMocks.saveProject.mockImplementation(() => new Promise<string>((resolve) => { finishSave = resolve; }));
-    const pending = useAppStore.getState().returnToStartPage();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(await useAppStore.getState().returnToStartPage()).toBe(false);
-    expect(await useAppStore.getState().createProject()).toBeUndefined();
-    await useAppStore.getState().switchProject('logo-project');
-    expect(fileMocks.loadProjectData).not.toHaveBeenCalled();
-    expect(fileMocks.saveProject).toHaveBeenCalledOnce();
-    finishSave('logo-project');
-    await pending;
-  });
-
-  it('leaves an unready project intact', async () => {
+  it('opens the list from an unready project without overwriting it', async () => {
     openProject();
     useAppStore.setState({ projectLoadStatus: 'error' });
-    expect(await useAppStore.getState().returnToStartPage()).toBe(false);
+    expect(await useAppStore.getState().returnToStartPage()).toBe(true);
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
-    expect(useAppStore.getState().currentProjectId).toBe('logo-project');
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'logo-project', projectLibraryOpen: true });
   });
 });
 

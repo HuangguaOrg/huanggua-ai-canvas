@@ -440,7 +440,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
   },
 
   pasteExternalFromDataTransfer: async (dt, position, maxItems = 10, actionName = '粘贴') => {
-    if (!dt || get().projectWorkspaceView === 'script') return;
+    if (!dt || get().projectWorkspaceView === 'script' || get().projectLibraryOpen) return;
     const currentProjectId = get().currentProjectId;
     const projectId = currentProjectId && currentProjectId !== 'default' ? currentProjectId : null;
     const isSameProject = () => get().currentProjectId === currentProjectId;

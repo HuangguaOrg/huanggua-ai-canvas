@@ -36,8 +36,9 @@ export function useNodeCreation() {
   // ── Drag-over visual state (shared by browser HTML5 + Tauri native) ──
   const [isDragOver, setIsDragOver] = useState(false);
   const enterCount = useRef(0);
-  const cancelForScriptPage = useCallback(() => {
-    if (useAppStore.getState().projectWorkspaceView !== 'script') return false;
+  const cancelForInactiveCanvas = useCallback(() => {
+    const state = useAppStore.getState();
+    if (state.projectWorkspaceView !== 'script' && !state.projectLibraryOpen) return false;
     enterCount.current = 0;
     setIsDragOver(false);
     return true;
@@ -71,25 +72,25 @@ export function useNodeCreation() {
   // ===========================
 
   const onDragEnter = useCallback((e: React.DragEvent) => {
-    if (cancelForScriptPage()) return;
+    if (cancelForInactiveCanvas()) return;
     if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
     if (useAppStore.getState().workflowPanelOpen || isExternalDropCaptured()) return;
     enterCount.current++;
     if (e.dataTransfer?.types?.length > 0) setIsDragOver(true);
-  }, [cancelForScriptPage]);
+  }, [cancelForInactiveCanvas]);
 
   const onDragOver = useCallback((e: React.DragEvent) => {
-    if (cancelForScriptPage()) return;
+    if (cancelForInactiveCanvas()) return;
     if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  }, [cancelForScriptPage]);
+  }, [cancelForInactiveCanvas]);
 
   const onDragLeave = useCallback((e: React.DragEvent) => {
-    if (cancelForScriptPage()) return;
+    if (cancelForInactiveCanvas()) return;
     if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -98,11 +99,11 @@ export function useNodeCreation() {
       enterCount.current = 0;
       setIsDragOver(false);
     }
-  }, [cancelForScriptPage]);
+  }, [cancelForInactiveCanvas]);
 
   const onDrop = useCallback(
     async (e: React.DragEvent) => {
-      if (cancelForScriptPage()) return;
+      if (cancelForInactiveCanvas()) return;
       if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
       e.preventDefault();
       e.stopPropagation();
@@ -114,7 +115,7 @@ export function useNodeCreation() {
       const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       await useAppStore.getState().pasteExternalFromDataTransfer(dt, pos, 20, '已拖入');
     },
-    [rf, cancelForScriptPage],
+    [rf, cancelForInactiveCanvas],
   );
 
   // ===========================
@@ -149,7 +150,7 @@ export function useNodeCreation() {
       let lastDropTs = 0;
 
       const handleDrag = async (payload: DragPayload) => {
-        if (cancelled || cancelForScriptPage()) return;
+        if (cancelled || cancelForInactiveCanvas()) return;
         if (payload.type === 'drop') {
           if (Date.now() - lastDropTs < 400) return;
           lastDropTs = Date.now();
@@ -304,7 +305,7 @@ export function useNodeCreation() {
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
-  }, [rf, cancelForScriptPage]);
+  }, [rf, cancelForInactiveCanvas]);
 
   // ===========================
   //  Double-click → text node

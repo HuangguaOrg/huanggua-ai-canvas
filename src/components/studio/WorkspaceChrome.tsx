@@ -36,7 +36,7 @@ export default function WorkspaceChrome() {
       <div className="flex-1" data-tauri-drag-region />
       <nav className="flex items-center gap-1" aria-label={t('公共工作区')}>
         <button className="ui-btn ui-btn--ghost ui-btn--sm" title={t('画布项目')} onClick={() => {
-          setMode('canvas'); useAppStore.getState().setProjectLibraryOpen(true);
+          setMode('canvas'); void useAppStore.getState().returnToStartPage();
         }}><FolderOpen size={16} /><span className="hidden lg:inline">{t('画布项目')}</span></button>
         <button className="ui-btn ui-btn--ghost ui-btn--sm" title={t('个人资源库')} onClick={() => useAppStore.getState().setAssetsPanelOpen(true, 'modal', { tab: 'permanent' })}>
           <Library size={16} /><span className="hidden lg:inline">{t('个人资源库')}</span></button>

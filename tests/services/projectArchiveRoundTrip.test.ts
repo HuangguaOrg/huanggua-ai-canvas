@@ -64,6 +64,7 @@ beforeEach(async () => {
   native.files.clear(); native.directories.clear(); native.archives.clear(); native.corruptSerialized = false;
   let output = 0; native.save.mockImplementation(async () => `/exports/project-${++output}.aicanvas`);
   native.invoke.mockImplementation(async (command: string, input: NativeInput) => {
+    if (command === 'get_default_project_data_root') return '/app/data';
     if (command === 'inspect_project_archive_assets') return filesUnder(input.assetsDir!).filter(({ path }) =>
       input.selectedPaths !== undefined ? input.selectedPaths.includes(path)
         : !/^imports\//i.test(path) || input.includeImportPaths === undefined || input.includeImportPaths.includes(path))

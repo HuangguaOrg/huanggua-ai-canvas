@@ -49,6 +49,8 @@ mod muse;
 mod xiaohongshu_reference;
 #[path = "files/transfer.rs"]
 mod file_transfer;
+#[path = "files/default_project_storage.rs"]
+mod default_project_storage;
 #[path = "files/native_project_media.rs"]
 mod native_project_media;
 #[path = "files/object_storage/mod.rs"]
@@ -1892,6 +1894,7 @@ pub fn run() {
         .manage(studio_runtime::StudioRuntime::default())
         .manage(project_asset_storage::ObjectStorageState::default())
         .manage(path_policy::UserStorageRoot::default())
+        .manage(default_project_storage::DefaultProjectStorage::default())
         .manage(native_project_media::AssetSearchNativeRoots::default())
         .manage(native_project_media::VideoEditorNativeRoot::default())
         .manage(billing::BillingStoragePath::default())
@@ -1916,6 +1919,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             studio_runtime::studio_request,
             studio_runtime::studio_import_artifact,
+            default_project_storage::get_default_project_data_root,
             native_project_media::claim_native_project_media_root,
             native_project_media::resolve_native_project_media_root,
             native_project_media::sync_native_asset_search_roots,

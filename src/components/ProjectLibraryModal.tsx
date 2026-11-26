@@ -228,7 +228,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
       setRenameProjectName('');
       return;
     }
-    if (!isStartPage) closeLibrary();
+    if (!isStartPage || currentProjectId) closeLibrary();
   };
 
   const openProject = async (projectId: string, openWorkbench = false) => {
@@ -379,6 +379,13 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
 
           <div className={`flex flex-wrap items-center gap-2 ${isStartPage ? '' : 'mt-3'}`}>
             {isStartPage && projectHeading}
+            {isStartPage && currentProjectId && (
+              <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={projectBusy}
+                onClick={closeLibrary}>
+                <Icon icon="lucide:arrow-left" width="14" height="14" aria-hidden="true" />
+                {t('返回画布')}
+              </button>
+            )}
             {isStartPage && (
               <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm"
                 onClick={() => {

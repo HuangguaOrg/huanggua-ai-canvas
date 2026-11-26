@@ -2,7 +2,6 @@
  * 应用主侧栏，集中承载节点创建、项目入口、功能面板切换、更新状态与快捷操作。
  */
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
@@ -18,7 +17,6 @@ import { getPreferredNodeModel } from '../services/modelPreferenceService';
 import { createUiNodeData } from '../services/uiNodeCreationData';
 import AnimatedButton from './shared/AnimatedButton';
 import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
-import ProjectLibraryModal from './ProjectLibraryModal';
 import { openDetachedChatWindow } from '../services/chat/chatWindowLifecycle';
 import { useT } from '../i18n';
 import {
@@ -348,54 +346,23 @@ function AvatarMenu() {
    ============================================ */
 function LogoMenu() {
   const t = useT();
-  const { projectLibraryOpen, setProjectLibraryOpen } = useAppStore(
-    useShallow((state) => ({
-      projectLibraryOpen: state.projectLibraryOpen,
-      setProjectLibraryOpen: state.setProjectLibraryOpen,
-    })),
-  );
-
-  useEffect(() => {
-    if (!projectLibraryOpen) return;
-    const projectId = useAppStore.getState().currentProjectId;
-    if (!projectId) return;
-    const timer = window.setTimeout(() => {
-      const store = useAppStore.getState();
-      if (!store.projectLibraryOpen || store.currentProjectId !== projectId) return;
-      void store.captureCurrentProjectSnapshot({ persistSnapshot: true })
-        .catch((error) => console.warn('[项目库] 更新预览失败:', error));
-    }, 220);
-    return () => window.clearTimeout(timer);
-  }, [projectLibraryOpen]);
-
   return (
-    <>
-      <button
-        type="button"
-        className={`sidebar-btn-v3 sidebar-canvas-btn ${projectLibraryOpen ? 'active' : ''}`}
-        data-tooltip={t('画布 / 项目')}
-        aria-haspopup="dialog"
-        aria-expanded={projectLibraryOpen}
-        onClick={() => setProjectLibraryOpen(true)}
-      >
-        <svg className="ico-normal" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path fillRule="evenodd" d="M3 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm0 14a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM18 3a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 8a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm-6-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1zm-8 1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm8-8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 15a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm8-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1z" clipRule="evenodd" />
-        </svg>
-        <svg className="ico-hover" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-          <rect x="3" y="4" width="13" height="16" rx="2" />
-          <path d="m19 8 3 4-3 4" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M13 12h9" strokeLinecap="round" />
-        </svg>
-      </button>
-
-      {createPortal(
-        <ProjectLibraryModal
-          isOpen={projectLibraryOpen}
-          onClose={() => setProjectLibraryOpen(false)}
-        />,
-        document.body,
-      )}
-    </>
+    <button
+      type="button"
+      className="sidebar-btn-v3 sidebar-canvas-btn"
+      data-tooltip={t('画布 / 项目')}
+      aria-label={t('画布 / 项目')}
+      onClick={() => void useAppStore.getState().returnToStartPage()}
+    >
+      <svg className="ico-normal" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M3 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm0 14a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM18 3a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 8a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm-6-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1zm-8 1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm8-8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 15a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm8-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1z" clipRule="evenodd" />
+      </svg>
+      <svg className="ico-hover" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <rect x="3" y="4" width="13" height="16" rx="2" />
+        <path d="m19 8 3 4-3 4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M13 12h9" strokeLinecap="round" />
+      </svg>
+    </button>
   );
 }
 

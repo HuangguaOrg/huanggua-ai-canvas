@@ -286,15 +286,9 @@ fn bind_root(base: &Path, registry: &Path, project_id: &str, create: bool, proje
     Ok(target)
 }
 
-fn media_base<R: Runtime>(app: &tauri::AppHandle<R>, create: bool) -> Result<PathBuf, String> {
+fn media_base<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let base = if let Some(root) = verified_user_storage_root(app)? { root }
-    else {
-        let app_data = app.path().app_data_dir().map_err(|_| ERROR)?;
-        plain_chain(&app_data)?;
-        let root = app_data.join("data");
-        if create { directory(&root)?; } else { plain_dir(&root)?; }
-        root
-    };
+    else { crate::default_project_storage::default_project_data_root(app)? };
     plain_chain(&base)?;
     authorize_path(app, base.to_str().ok_or(ERROR)?, PathAccess::Write).map_err(|_| ERROR.into())
 }
@@ -312,7 +306,7 @@ fn media_root<R: Runtime>(webview: &Webview<R>, project_id: &str, create: bool, 
     if webview.label() == "video-editor" { ensure_local_frontend_caller(webview).map_err(|_| ERROR)?; }
     else { ensure_trusted_caller(webview).map_err(|_| ERROR)?; }
     let app = webview.app_handle();
-    let base = media_base(app, create)?;
+    let base = media_base(app)?;
     let private = crate::project_model_safety::private_root(app)?;
     if create { private_directory(&private)?; }
     plain_chain(&private)?;
@@ -321,7 +315,7 @@ fn media_root<R: Runtime>(webview: &Webview<R>, project_id: &str, create: bool, 
     plain_chain(&registry)?;
     let target = bind_root(&base, &registry, project_id, create, project_name)?;
     // 配置可能在准备期间改变，不能把旧根当成当前授权。
-    if media_base(app, false)? != base { return Err(ERROR.into()); }
+    if media_base(app)? != base { return Err(ERROR.into()); }
     let authorized = authorize_path(app, target.to_str().ok_or(ERROR)?, PathAccess::Write).map_err(|_| ERROR)?;
     if authorized.parent() != Some(base.as_path()) { return Err(ERROR.into()); }
     authorized.to_str().map(str::to_owned).ok_or_else(|| ERROR.into())
@@ -410,14 +404,15 @@ pub fn resolve_native_project_media_subroot<R: Runtime>(webview: Webview<R>, pro
     authorized.to_str().map(str::to_owned).ok_or_else(|| ERROR.into())
 }
 
-// Windows: keep every directory open without FILE_SHARE_WRITE or FILE_SHARE_DELETE, from the filesystem
-// root to the final directory. OPEN_REPARSE_POINT inspects the entry itself; if an
-// existing DELETE handle prevents acquiring the lease, fail closed.
+// Windows: prevent directory replacement while publishing media. FILE_SHARE_WRITE is
+// required: Windows opens the destination directory for writing during a file rename.
+// Denying it makes our own temporary-to-final rename fail with ERROR_SHARING_VIOLATION.
+// OPEN_REPARSE_POINT and the binding rechecks still reject redirected project roots.
 #[cfg(windows)]
 fn lease_directory(path: &Path) -> Result<File, String> {
     use std::os::windows::fs::OpenOptionsExt;
     let file = OpenOptions::new().read(true).custom_flags(0x02000000 | 0x00200000)
-        .share_mode(0x00000001).open(path).map_err(|_| ERROR)?;
+        .share_mode(0x00000001 | 0x00000002).open(path).map_err(|_| ERROR)?;
     let metadata = file.metadata().map_err(|_| ERROR)?;
     if is_link(&metadata) || !metadata.is_dir() { return Err(ERROR.into()); }
     Ok(file)
@@ -851,6 +846,37 @@ mod tests {
         write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).unwrap();
         assert_eq!(fs::read_dir(&media).unwrap().count(), files.len());
         fs::remove_dir_all(media).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_media_publishes_with_directory_leases_and_binding_rechecks() {
+        let fixture = fixture();
+        let base = fixture.join("base"); let registry = fixture.join("registry");
+        for path in [&base, &registry] { fs::create_dir(path).unwrap(); }
+        let root = bind_root(&base, &registry, PROJECT, true, Some("本地画布")).unwrap();
+        let mut leases = Vec::new();
+        for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev().filter(|p| !p.as_os_str().is_empty()) {
+            leases.push(lease_directory(ancestor).unwrap());
+        }
+        let media = root.join("media");
+        directory(&media).unwrap();
+        leases.push(lease_directory(&media).unwrap());
+        let bytes = b"inline reference image or mask";
+        let (name, reference) = windows_media_reference(bytes);
+        let verify = || {
+            assert_eq!(bind_root(&base, &registry, PROJECT, false, None).unwrap(), root);
+            Ok(())
+        };
+        write_windows_media_file(&media, &name, &reference, bytes, verify).unwrap();
+        assert_eq!(read_media_file(&media.join(&name), &reference).unwrap(), bytes);
+        // A repeated autosave reuses the same media, without leaving staging files.
+        write_windows_media_file(&media, &name, &reference, bytes, verify).unwrap();
+        assert_eq!(fs::read_dir(&media).unwrap().count(), 1);
+        // Sharing directory writes does not permit moving the project underneath us.
+        assert!(fs::rename(&root, base.join("moved")).is_err());
+        drop(leases);
+        fs::remove_dir_all(fixture).unwrap();
     }
 
     #[cfg(windows)]

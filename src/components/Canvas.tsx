@@ -1035,7 +1035,8 @@ function CanvasInner({ onReady }: CanvasProps) {
   // ── External clipboard paste (native paste event → DataTransfer) ──
   useEffect(() => {
     const handler = (e: ClipboardEvent) => {
-      if (useAppStore.getState().projectWorkspaceView === 'script' || useAppStore.getState().clientWorkspaceMode === 'drama') return;
+      if (useAppStore.getState().projectWorkspaceView === 'script' || useAppStore.getState().projectLibraryOpen
+        || useAppStore.getState().clientWorkspaceMode === 'drama') return;
       // Skip if user is editing an input
       if (isEditableTarget(e.target)) return;
       // Skip if internal clipboard has nodes (handled by keyboard shortcut)

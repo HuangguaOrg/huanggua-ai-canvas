@@ -48,15 +48,16 @@ export function useCanvasSecondaryClickMenu({
 
   useEffect(() => {
     const drag = { x: 0, y: 0, moved: false, down: false };
-    const cancelForScriptPage = () => {
-      if (useAppStore.getState().projectWorkspaceView !== 'script') return false;
+    const cancelForInactiveCanvas = () => {
+      const state = useAppStore.getState();
+      if (state.projectWorkspaceView !== 'script' && !state.projectLibraryOpen) return false;
       drag.down = false;
       drag.moved = false;
       shouldPreventNativeMenu.current = false;
       return true;
     };
     const onDown = (event: PointerEvent) => {
-      if (cancelForScriptPage()) return;
+      if (cancelForInactiveCanvas()) return;
       if (event.button !== 2) return;
       drag.x = event.clientX;
       drag.y = event.clientY;
@@ -64,7 +65,7 @@ export function useCanvasSecondaryClickMenu({
       drag.down = true;
     };
     const onMove = (event: PointerEvent) => {
-      if (cancelForScriptPage()) return;
+      if (cancelForInactiveCanvas()) return;
       if (!drag.down) return;
       const deltaX = event.clientX - drag.x;
       const deltaY = event.clientY - drag.y;
@@ -74,7 +75,7 @@ export function useCanvasSecondaryClickMenu({
       drag.down = false;
     };
     const onUp = (event: PointerEvent) => {
-      if (cancelForScriptPage()) return;
+      if (cancelForInactiveCanvas()) return;
       if (event.button !== 2 || !drag.down) return;
       drag.down = false;
       if (drag.moved && interactionModeRef.current === 'default') return;
@@ -125,7 +126,7 @@ export function useCanvasSecondaryClickMenu({
       } as unknown as React.MouseEvent);
     };
     const onContextMenu = (event: MouseEvent) => {
-      if (cancelForScriptPage()) return;
+      if (cancelForInactiveCanvas()) return;
       if (!shouldPreventNativeMenu.current) return;
       event.preventDefault();
       shouldPreventNativeMenu.current = false;

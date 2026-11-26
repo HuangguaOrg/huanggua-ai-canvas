@@ -237,6 +237,15 @@ describe('project startup page', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it('returns to the retained canvas without loading it again', async () => {
+    driver.state.currentProjectId = 'p1';
+    driver.state.projectLibraryOpen = true;
+    await click(button(render(), '返回画布'));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(driver.state.switchProject).not.toHaveBeenCalled();
+    expect(driver.state.saveCurrentProject).not.toHaveBeenCalled();
+  });
+
   it('keeps the existing project management modal for canvas sessions', () => {
     const tree = render(false);
     expect(tree.type).toBe('modal-overlay');
@@ -400,7 +409,9 @@ describe('startup page keyboard boundary', () => {
     }
   });
 
-  it('does not create, paste, or undo nodes before opening a project', async () => {
+  it.each([null, 'p1'])('does not edit a hidden canvas from the project list (project %s)', async (projectId) => {
+    driver.state.currentProjectId = projectId;
+    driver.state.projectLibraryOpen = true;
     let keydown: ((event: unknown) => Promise<void>) | undefined;
     vi.stubGlobal('document', {
       body: {}, documentElement: {}, querySelector: () => null,

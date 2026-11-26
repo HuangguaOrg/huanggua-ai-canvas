@@ -3305,57 +3305,23 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   returnToStartPage: async () => {
     const state = get();
-    if (!state.currentProjectId) return true;
-    if (state.isReturningToStartPage || state.isCreatingProject || state.switchingProjectName !== null) return false;
-    if (state.projectLoadStatus !== 'ready') {
-      state.showToast('项目尚未成功加载，暂时无法返回启动页', 'error');
-      return false;
-    }
-    const projectId = state.currentProjectId;
-    const sequence = projectSwitchSequence;
-    set({ isReturningToStartPage: true });
-    try {
-      // 先绘制返回状态。缩略图是派生预览，不能阻塞必要保存和导航。
-      await waitForLoadingPaint();
-      if (get().currentProjectId !== projectId || projectSwitchSequence !== sequence) return false;
-      const savingState = get();
-      // 正文先入队，空图清理或缓存预览的补丁随后排队，不能抢占必要保存。
-      const saving = savingState.saveCurrentProjectSilent();
-      void get().captureCurrentProjectSnapshot({ allowProjectChange: true, persistSnapshot: true })
+    if (state.isCreatingProject || state.switchingProjectName !== null) return false;
+    // 返回列表只是切换视图。保留画布、撤销历史与运行中的任务，不以素材落盘为导航门槛。
+    set({
+      projectLibraryOpen: true,
+      activeNodeId: null, dialogPosition: null, pendingPresetAction: null,
+      nodeMenuVisible: false, nodePickerOpen: false,
+      assetsPanelOpen: false, characterLibraryOpen: false, characterActionLibraryOpen: false,
+      historyPanelOpen: false, dramaAssetsPanelOpen: false, workflowPanelOpen: false,
+      chatOpen: false,
+    });
+    if (!state.projectLibraryOpen && state.currentProjectId && state.projectLoadStatus === 'ready') {
+      // 自动保存仍会报告真实故障；列表中的“返回画布”可随时恢复未保存内容。
+      void state.saveCurrentProjectSilent().catch(() => undefined);
+      void state.captureCurrentProjectSnapshot({ allowProjectChange: true, persistSnapshot: true })
         .catch(() => undefined);
-      const savedId = await saving;
-      if (savedId !== projectId || get().currentProjectId !== projectId || projectSwitchSequence !== sequence) return false;
-      const latest = get();
-      // 保存期间 MCP 或生成任务仍可回填；卸载前必须确认没有落在这次快照之后的新内容。
-      if (latest.nodes !== savingState.nodes || latest.edges !== savingState.edges
-        || latest.groups !== savingState.groups || latest.dramaAssets !== savingState.dramaAssets) {
-        latest.showToast('保存期间画布有新变化，已保留当前项目，请稍后再返回启动页', 'error');
-        return false;
-      }
-      cancelProjectCanvasDerivations(projectId);
-      if (lastCapturedCanvasState?.projectId === projectId) lastCapturedCanvasState = null;
-      set({
-        currentProjectId: null,
-        projectWorkspaceView: 'canvas',
-        scriptWorkbenchOpenProjectId: null,
-        projectExecutionContext: undefined,
-        projectName: '',
-        projectLoadStatus: 'ready',
-        nodes: [], edges: [], groups: [],
-        history: [], historyIndex: -1, selectedNodeIds: [],
-        activeNodeId: null, dialogPosition: null, pendingPresetAction: null,
-        nodeMenuVisible: false, nodePickerOpen: false, projectLibraryOpen: false,
-        assetsPanelOpen: false, characterLibraryOpen: false, characterActionLibraryOpen: false,
-        historyPanelOpen: false, dramaAssetsPanelOpen: false, workflowPanelOpen: false,
-        chatOpen: false, activeConversationId: null, chatComposerLiveDraft: '', reversePromptRequest: null,
-      });
-      return true;
-    } catch {
-      get().showToast('返回启动页失败，已保留当前画布，请重试', 'error');
-      return false;
-    } finally {
-      set({ isReturningToStartPage: false });
     }
+    return true;
   },
 
   saveCurrentProject: () => trackProjectSave(get().currentProjectId, async (projectId) => {
