@@ -38,6 +38,7 @@ const studio: Record<string, string> = {
   "无限画布": "Infinite canvas",
   "短剧 Agent": "Drama Agent",
   "公共工作区": "Shared workspace",
+  "返回画布": "Back to canvas",
   "画布项目": "Canvas projects",
   "个人资源库": "Personal library",
   "任务概览": "Task overview",

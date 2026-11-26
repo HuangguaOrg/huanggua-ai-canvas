@@ -88,7 +88,7 @@ export function useKeyboardShortcuts() {
       const target = e.target as HTMLElement;
       const isEditing = isEditableTarget(target);
       // 剧本整页保留编辑器原生按键，保存交由工作台当前页签；不操作未显示的画布。
-      if (useAppStore.getState().projectWorkspaceView === 'script') {
+      if (useAppStore.getState().projectWorkspaceView === 'script' && !useAppStore.getState().projectLibraryOpen) {
         if ((e.ctrlKey || e.metaKey || e.altKey) && e.key.toLowerCase() === 's') {
           e.preventDefault();
           e.stopPropagation();
@@ -158,7 +158,7 @@ export function useKeyboardShortcuts() {
       }
 
       // 启动页保留应用入口快捷键，禁止创建、粘贴或撤销画布内容。
-      if (useAppStore.getState().currentProjectId === null) {
+      if (useAppStore.getState().currentProjectId === null || useAppStore.getState().projectLibraryOpen) {
         if (e.key === 'Escape') useAppStore.getState().setSettingsOpen(false);
         const togglesMascot = (e.ctrlKey || e.metaKey) && e.shiftKey
           && (e.code === 'KeyM' || e.key === 'm' || e.key === 'M');

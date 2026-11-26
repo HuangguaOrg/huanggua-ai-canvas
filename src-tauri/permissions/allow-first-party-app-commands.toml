@@ -2,6 +2,7 @@
 identifier = "allow-first-party-app-commands"
 description = "Allows registered AI Canvas application commands for trusted first-party windows."
 commands.allow = [
+  "get_default_project_data_root",
   "studio_request",
   "studio_import_artifact",
   "download_app_update",

@@ -236,7 +236,7 @@ export default function FileAppSettings({ active }: { active: boolean }) {
           </div>
 
           <div className="text-[11px] text-canvas-text-muted leading-relaxed mb-3">
-            {t('文件保存为：')}<span className="text-canvas-text-secondary font-mono">{baseDataDir || t('系统目录')}/{'{项目ID}'}/...</span>
+            {t('文件保存为：')}<span className="text-canvas-text-secondary font-mono">{baseDataDir || defaultBaseDir || t('默认存储目录')}/{'{项目ID}'}/...</span>
           </div>
 
           <div className="space-y-2 py-2 border-y border-canvas-border">

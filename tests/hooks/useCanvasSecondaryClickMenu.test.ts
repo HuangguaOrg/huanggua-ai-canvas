@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const driver = vi.hoisted(() => ({
   cleanup: undefined as (() => void) | undefined,
-  state: { projectWorkspaceView: 'canvas' as 'canvas' | 'script' },
+  state: { projectWorkspaceView: 'canvas' as 'canvas' | 'script', projectLibraryOpen: false },
 }));
 vi.mock('react', () => ({
   useRef: <T>(value: T) => ({ current: value }),
@@ -18,6 +18,7 @@ import { useCanvasSecondaryClickMenu } from '../../src/hooks/useCanvasSecondaryC
 afterEach(() => {
   driver.cleanup?.();
   driver.state.projectWorkspaceView = 'canvas';
+  driver.state.projectLibraryOpen = false;
   vi.unstubAllGlobals();
 });
 
@@ -45,10 +46,11 @@ function SecondaryClickProbe(expanded = true) {
 }
 
 describe('分组右键命中', () => {
-  it('剧本页不命中后台画布或抑制原生右键，切回画布恢复菜单', () => {
+  it.each(['script', 'library'])('%s 页不命中后台画布或抑制原生右键，切回画布恢复菜单', (page) => {
     const test = SecondaryClickProbe();
     test.doc.dispatchEvent(Object.assign(new Event('pointerdown'), { button: 2, clientX: 500, clientY: 20 }));
-    driver.state.projectWorkspaceView = 'script';
+    driver.state.projectWorkspaceView = page === 'script' ? 'script' : 'canvas';
+    driver.state.projectLibraryOpen = page === 'library';
     test.rightClick(500, 20);
     expect(test.doc.elementFromPoint).not.toHaveBeenCalled();
     expect(test.doc.querySelectorAll).not.toHaveBeenCalled();
@@ -59,6 +61,7 @@ describe('分组右键命中', () => {
     expect(contextmenu.defaultPrevented).toBe(false);
 
     driver.state.projectWorkspaceView = 'canvas';
+    driver.state.projectLibraryOpen = false;
     test.doc.dispatchEvent(Object.assign(new Event('pointerup'), { button: 2, clientX: 500, clientY: 20 }));
     expect(test.openNodeMenu).not.toHaveBeenCalled();
     test.rightClick(500, 20);

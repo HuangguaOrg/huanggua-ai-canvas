@@ -3,6 +3,7 @@
  */
 import { useState } from 'react';
 import { motion } from 'framer-motion';
+import { ArrowLeft } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { listEpisodes } from '../store/store.utils';
@@ -56,9 +57,10 @@ export default function Header() {
           data-tooltip={isReturningToStartPage ? t('正在保存项目…') : t('返回启动页')}
           disabled={isReturningToStartPage || isCreatingProject || episodeNameOpen || switchingProjectName !== null}
           onClick={() => void returnToStartPage()}
-          className="ui-btn ui-btn--ghost ui-btn--sm w-7 shrink-0 p-0 focus-visible:ring-2 focus-visible:ring-indigo-400"
+          className="ui-btn ui-btn--ghost ui-btn--sm shrink-0 gap-1 px-1.5 focus-visible:ring-2 focus-visible:ring-indigo-400"
         >
-          <img src={`${import.meta.env.BASE_URL}huanggua-ai.png`} alt="" draggable={false} className="h-6 w-6 shrink-0 object-contain" />
+          <ArrowLeft size={16} aria-hidden="true" />
+          <span>{t('画布项目')}</span>
         </button>
         <span className="text-[11px] font-semibold text-canvas-text/90">{t('无限画布')}</span>
       </div>

@@ -194,19 +194,21 @@ export default function App() {
   const nativePerformanceSynced = useRef(false);
   const [projectBootReady, setProjectBootReady] = useState(false);
   const showCanvas = projectBootReady && currentProjectId !== null;
+  const projectLibraryOpen = useAppStore((state) => state.projectLibraryOpen);
+  const projectLibraryVisible = projectBootReady && (!showCanvas || projectLibraryOpen);
   const projectWorkspaceView = useAppStore((state) => state.projectWorkspaceView);
   const clientWorkspaceMode = useAppStore((state) => state.clientWorkspaceMode);
-  const scriptWorkbenchPageVisible = showCanvas && projectWorkspaceView === 'script' && clientWorkspaceMode === 'canvas';
-  const canvasVisible = showCanvas && projectWorkspaceView === 'canvas' && clientWorkspaceMode === 'canvas';
+  const scriptWorkbenchPageVisible = showCanvas && !projectLibraryVisible && projectWorkspaceView === 'script' && clientWorkspaceMode === 'canvas';
+  const canvasVisible = showCanvas && !projectLibraryVisible && projectWorkspaceView === 'canvas' && clientWorkspaceMode === 'canvas';
   const projectLoading = projectLoadStatus === 'loading' || switchingProjectName !== null || isCreatingProject || isReturningToStartPage;
   // 启动页没有挂载画布；再次打开同一项目也必须重新等待本次首帧。
   if (!showCanvas && (canvasReadyProjectId !== null || revealedProjectId !== null)) {
     setCanvasReadyProjectId(null);
     setRevealedProjectId(null);
   }
-  const showProjectSplash = !splashDone || projectLoading || (showCanvas && revealedProjectId !== currentProjectId);
+  const showProjectSplash = !splashDone || projectLoading || (showCanvas && !projectLibraryVisible && revealedProjectId !== currentProjectId);
   const splashReady = projectBootReady && !projectLoading
-    && (!showCanvas || canvasReadyProjectId === currentProjectId);
+    && (projectLibraryVisible || !showCanvas || canvasReadyProjectId === currentProjectId);
   const completeProjectSplash = useCallback(() => {
     setSplashDone(true);
     setRevealedProjectId(currentProjectId);
@@ -628,7 +630,7 @@ export default function App() {
         <WorkspaceChrome />
         <StudioExecutionBridge />
         <div className="absolute inset-x-0 bottom-0 top-14" hidden={clientWorkspaceMode !== 'canvas'} inert={clientWorkspaceMode !== 'canvas' ? true : undefined}>
-        {showCanvas ? (
+        {showCanvas && (
           <div
             inert={!canvasVisible ? true : undefined}
             aria-hidden={!canvasVisible ? true : undefined}
@@ -636,14 +638,14 @@ export default function App() {
             <CanvasBackground />
             <Canvas key={currentProjectId} onReady={setCanvasReadyProjectId} />
           </div>
-        ) : projectBootReady ? (
-          <ProjectLibraryModal
+        )}
+        {projectLibraryVisible && <ProjectLibraryModal
             isOpen
             presentation="page"
             sharedChrome
             onClose={() => useAppStore.getState().setProjectLibraryOpen(false)}
-          />
-        ) : <LazyLoadFallback label="项目列表" />}
+          />}
+        {!projectBootReady && <LazyLoadFallback label="项目列表" />}
         {showCanvas && (
           <div id="script-workbench-page"
             hidden={!scriptWorkbenchPageVisible}
@@ -715,7 +717,7 @@ export default function App() {
       {canvasVisible && <Sidebar />}
 
       {/* 剧集栏贴窗口右缘，和侧栏一样必须放在裁剪容器外面 */}
-      {showCanvas && clientWorkspaceMode === 'canvas' && <SeriesRail />}
+      {showCanvas && !projectLibraryVisible && clientWorkspaceMode === 'canvas' && <SeriesRail />}
 
       {/* 吉祥物 — 可拖动浮层，默认隐藏，Ctrl+Shift+M 切换 */}
       {mascotVisible && (

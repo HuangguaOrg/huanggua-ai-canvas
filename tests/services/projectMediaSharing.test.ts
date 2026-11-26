@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getProjectDataDir, isSharedProjectDataDir, registerProjectFolders } from '../../src/services/fs/core';
 
+vi.mock('@tauri-apps/api/core', () => ({ invoke: async () => '/app/data' }));
 vi.mock('@tauri-apps/api/path', () => ({
   appDataDir: async () => '/app', executableDir: async () => '/app',
 }));

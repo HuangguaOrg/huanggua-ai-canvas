@@ -19,7 +19,7 @@ import {
   type WatchEvent,
 } from '@tauri-apps/plugin-fs';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { appDataDir, executableDir } from '@tauri-apps/api/path';
+import { executableDir } from '@tauri-apps/api/path';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 
 /** 检测是否运行在 Tauri 桌面环境中 */
@@ -386,24 +386,6 @@ export function getConvertFileSrc(): ((path: string) => string) | null {
   return (isTauriEnv() ? convertFileSrc : null) as ((path: string) => string) | null;
 }
 
-let cachedAppDataDir: string | undefined;
-let pendingAppDataDir: Promise<string | null> | undefined;
-
-/** 只复用当前窗口固定的系统目录；自定义根目录与项目映射仍由各入口实时解析。 */
-async function getAppDataDir(): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  if (cachedAppDataDir) return cachedAppDataDir;
-  if (!pendingAppDataDir) {
-    pendingAppDataDir = Promise.resolve().then(() => appDataDir()).then((directory) => {
-      if (directory) cachedAppDataDir = directory;
-      return directory || null;
-    }).catch(() => null).finally(() => {
-      pendingAppDataDir = undefined;
-    });
-  }
-  return pendingAppDataDir;
-}
-
 /** 获取应用可执行文件所在目录（Tauri: executableDir, 浏览器: null） */
 export async function getAppExecutableDir(): Promise<string | null> {
   if (!isTauriEnv()) return null;
@@ -414,11 +396,21 @@ export async function getAppExecutableDir(): Promise<string | null> {
   }
 }
 
-/** 获取系统默认的文件保存根目录，不受用户自定义目录影响 */
+let cachedDefaultBaseDir: string | undefined;
+let pendingDefaultBaseDir: Promise<string | null> | undefined;
+
+/** 原生端自动选择可写目录，并保持升级前的项目存储位置。 */
 export async function getDefaultBaseDir(): Promise<string | null> {
-  const base = await getAppDataDir();
-  if (!base) return null;
-  return joinPath(base, 'data');
+  if (!isTauriEnv()) return null;
+  if (cachedDefaultBaseDir) return cachedDefaultBaseDir;
+  if (!pendingDefaultBaseDir) {
+    pendingDefaultBaseDir = Promise.resolve().then(() => invoke<string>('get_default_project_data_root')).then((directory) => {
+      if (typeof directory !== 'string' || !directory) throw new Error('无法准备默认项目目录');
+      cachedDefaultBaseDir = directory;
+      return directory;
+    }).finally(() => { pendingDefaultBaseDir = undefined; });
+  }
+  return pendingDefaultBaseDir;
 }
 
 /** 用户自定义的文件保存根目录，由 store.config 在加载配置时注入 */
@@ -664,10 +656,8 @@ export async function getProjectDataDir(projectId: string): Promise<string | nul
   if (_baseDataDir) {
     return joinPath(_baseDataDir, folder);
   }
-  // 回退到系统应用数据目录
-  const base = await getAppDataDir();
-  if (!base) return null;
-  return joinPath(base, 'data', folder);
+  const base = await getDefaultBaseDir();
+  return base ? joinPath(base, folder) : null;
 }
 
 /** 确保项目数据目录存在（Tauri 端） */
@@ -863,15 +853,11 @@ export async function renameProjectDataDir(
   }
 
   const oldFolder = oldFolderName?.trim() || resolveProjectFolder(projectId);
-  const baseDir = _baseDataDir || await getAppDataDir();
+  const baseDir = await getBaseDir();
   if (!baseDir) return null;
 
-  const oldDir = _baseDataDir
-    ? joinPath(baseDir, oldFolder)
-    : joinPath(baseDir, 'data', oldFolder);
-  const newDir = _baseDataDir
-    ? joinPath(baseDir, newFolderName)
-    : joinPath(baseDir, 'data', newFolderName);
+  const oldDir = joinPath(baseDir, oldFolder);
+  const newDir = joinPath(baseDir, newFolderName);
 
   if (!oldDir || !newDir || oldDir === newDir) {
     registerProjectFolder(projectId, newFolderName);
