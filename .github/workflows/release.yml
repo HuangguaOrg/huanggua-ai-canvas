@@ -288,7 +288,13 @@ jobs:
   build-windows-legacy:
     name: Build Windows x64 legacy
     needs: quality
-    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
+    if: >-
+      ${{
+        !cancelled()
+        && github.event_name == 'workflow_dispatch'
+        && inputs.mode != 'test'
+        && needs.quality.result == 'success'
+      }}
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -594,7 +600,16 @@ jobs:
   finalize-release:
     name: Publish GitHub Release
     needs: [quality, build-windows, build-windows-legacy, build-macos]
-    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
+    if: >-
+      ${{
+        !cancelled()
+        && github.event_name == 'workflow_dispatch'
+        && inputs.mode != 'test'
+        && needs.quality.result == 'success'
+        && needs.build-windows.result == 'success'
+        && needs.build-windows-legacy.result == 'success'
+        && needs.build-macos.result == 'success'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -683,7 +698,14 @@ jobs:
   publish-gitee:
     name: Publish Gitee update & latest.json
     needs: [quality, finalize-release]
-    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
+    if: >-
+      ${{
+        !cancelled()
+        && github.event_name == 'workflow_dispatch'
+        && inputs.mode != 'test'
+        && needs.quality.result == 'success'
+        && needs.finalize-release.result == 'success'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -740,7 +762,15 @@ jobs:
   summarize-test-build:
     name: Summarize dual-platform test packages
     needs: [test-prepare, build-windows, build-macos]
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'test'
+    if: >-
+      ${{
+        !cancelled()
+        && github.event_name == 'workflow_dispatch'
+        && inputs.mode == 'test'
+        && needs.test-prepare.result == 'success'
+        && needs.build-windows.result == 'success'
+        && needs.build-macos.result == 'success'
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
