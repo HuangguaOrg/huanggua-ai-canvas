@@ -32,6 +32,8 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -83,6 +85,8 @@ jobs:
         include: ${{ fromJSON(inputs.include_intel && '[{"runner":"macos-latest","rust_target":"aarch64-apple-darwin","runtime_platform":"darwin-aarch64","arch_label":"arm64"},{"runner":"macos-15-intel","rust_target":"x86_64-apple-darwin","runtime_platform":"darwin-x86_64","arch_label":"x64"}]' || '[{"runner":"macos-latest","rust_target":"aarch64-apple-darwin","runtime_platform":"darwin-aarch64","arch_label":"arm64"}]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

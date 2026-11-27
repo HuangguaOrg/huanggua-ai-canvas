@@ -2,30 +2,41 @@
 
 Reads ``GITEE_TOKEN`` from the environment (never passed on the command line or
 logged). Supports initializing an empty Gitee repository, creating or reusing
-the ``v<version>`` Release, uploading the signed ``.exe`` update package as a
-Release attachment, and committing ``latest.json`` to the repository's default
-branch (``master`` or ``main``).
+the ``v<version>`` Release, streaming signed Windows and macOS update payloads
+with automatic retries and remote SHA-256 verification, and committing
+``latest.json`` to the repository's default branch (``master`` or ``main``).
 """
+from __future__ import annotations
+
 import argparse
 import base64
-import hashlib
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import http.client
 import json
 import os
-import re
 from pathlib import Path
-import shutil
-import subprocess
-import tempfile
+import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 DEFAULT_REPO = "xiang834740239/huanggua-aiagent"
 API_BASE = "https://gitee.com/api/v5"
+GITEE_HOST = "gitee.com"
 GITEE_ASSET_LIMIT_BYTES = 100 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+PROGRESS_STEP_BYTES = 8 * 1024 * 1024
 LOCAL_TOKEN_FILE = Path(__file__).resolve().parents[3] / ".secrets/huanggua-desktop/gitee.token"
 _DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _redact(text: str, token: str) -> str:
+    if token and token in text:
+        return text.replace(token, "***")
+    return text
 
 
 def gitee_json(method: str, path: str, token: str, payload: dict | None = None, *, allow_404: bool = False):
@@ -49,47 +60,116 @@ def gitee_json(method: str, path: str, token: str, payload: dict | None = None, 
     except urllib.error.HTTPError as exc:
         if allow_404 and exc.code == 404:
             return None
-        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        detail = _redact(exc.read().decode("utf-8", errors="replace")[:300], token)
         raise RuntimeError(f"Gitee API {method} {path} failed (HTTP {exc.code}): {detail}") from None
 
 
-def upload_release_attachment(repo: str, release_id: int, file_path: Path, token: str) -> dict:
-    """Stream multipart upload to Gitee Release via HTTP/1.1 curl."""
-    curl_bin = shutil.which("curl.exe") or shutil.which("curl")
-    if not curl_bin:
-        raise RuntimeError("curl is required for streaming release attachment uploads")
-    url = f"{API_BASE}/repos/{repo}/releases/{release_id}/attach_files"
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg_path = Path(tmp) / "curl.cfg"
-        out_path = Path(tmp) / "resp.json"
-        # Pass token via temporary curl config file so it never appears on process command line.
-        escaped_file = str(file_path).replace("\\", "/")
-        cfg_path.write_text(
-            "\n".join([
-                "http1.1",
-                "progress-bar",
-                "show-error",
-                "retry = 2",
-                "retry-delay = 3",
-                "max-time = 2400",
-                f'url = "{url}"',
-                'header = "User-Agent: Mozilla/5.0"',
-                'header = "Accept: application/json"',
-                f'form-string = "access_token={token}"',
-                f'form = "file=@{escaped_file}"',
-                f'output = "{str(out_path).replace(chr(92), "/")}"',
-                'write-out = "%{http_code}"',
-            ]),
-            encoding="utf-8",
-        )
-        res = subprocess.run([curl_bin, "--config", str(cfg_path)], text=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
-        http_code = (res.stdout or "").strip()
-        raw_body = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else ""
-        if res.returncode != 0 or not http_code.startswith("2"):
+def _delete_attachment_by_name(repo: str, release_id: int, filename: str, token: str) -> None:
+    existing = gitee_json("GET", f"/repos/{repo}/releases/{release_id}/attach_files", token) or []
+    for item in existing:
+        if isinstance(item, dict) and item.get("name") == filename and isinstance(item.get("id"), int):
+            gitee_json("DELETE", f"/repos/{repo}/releases/{release_id}/attach_files/{item['id']}", token)
+
+
+def _stream_multipart_once(repo: str, release_id: int, file_path: Path, token: str) -> dict:
+    endpoint = f"/api/v5/repos/{repo}/releases/{release_id}/attach_files"
+    file_size = file_path.stat().st_size
+    boundary = "----HuangGuaRelease" + uuid.uuid4().hex
+    prefix = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="access_token"\r\n\r\n'
+        f"{token}\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8")
+    suffix = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    total_length = len(prefix) + file_size + len(suffix)
+    total_mib = max(1, (file_size + (1024 * 1024 - 1)) // (1024 * 1024))
+
+    conn = http.client.HTTPSConnection(GITEE_HOST, timeout=240)
+    try:
+        conn.putrequest("POST", endpoint)
+        conn.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+        conn.putheader("Content-Length", str(total_length))
+        conn.putheader("Accept", "application/json")
+        conn.putheader("User-Agent", "HuangGuaAI-Release/1.0")
+        conn.endheaders()
+        conn.send(prefix)
+        sent = 0
+        last_logged = 0
+        with file_path.open("rb") as stream:
+            while chunk := stream.read(UPLOAD_CHUNK_BYTES):
+                conn.send(chunk)
+                sent += len(chunk)
+                if sent - last_logged >= PROGRESS_STEP_BYTES:
+                    print(f"UPLOAD_MIB {file_path.name} {sent // (1024 * 1024)}/{total_mib}", flush=True)
+                    last_logged = sent
+        conn.send(suffix)
+        response = conn.getresponse()
+        raw = response.read().decode("utf-8", errors="replace")
+        if response.status not in (200, 201):
             raise RuntimeError(
-                f"Gitee attachment upload failed (exit={res.returncode}, HTTP={http_code}): {raw_body[:300]}"
+                f"Gitee attachment upload failed for {file_path.name} (HTTP {response.status}): {_redact(raw[:300], token)}"
             )
-        return json.loads(raw_body)
+        return json.loads(raw)
+    finally:
+        conn.close()
+
+
+def upload_release_attachment(repo: str, release_id: int, file_path: Path, token: str, *, max_attempts: int = 3) -> dict:
+    """Stream multipart upload to Gitee Release over HTTPS with automatic clean retries."""
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if attempt > 1:
+                print(f"RETRY_UPLOAD {file_path.name} attempt={attempt}/{max_attempts}", flush=True)
+                _delete_attachment_by_name(repo, release_id, file_path.name, token)
+            return _stream_multipart_once(repo, release_id, file_path, token)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            delay = 3 * attempt
+            print(
+                f"WARN upload {file_path.name} attempt {attempt} failed ({type(exc).__name__}: {_redact(str(exc), token)}); retrying in {delay}s",
+                flush=True,
+            )
+            time.sleep(delay)
+    assert last_error is not None
+    raise RuntimeError(_redact(str(last_error), token)) from None
+
+
+def _sha256_stream(stream) -> str:
+    if hasattr(hashlib, "file_digest"):
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+    digest = hashlib.sha256()
+    while chunk := stream.read(1024 * 1024):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_remote_attachment(url: str, local_path: Path, *, max_attempts: int = 3) -> None:
+    with local_path.open("rb") as stream:
+        local_hash = _sha256_stream(stream)
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "HuangGuaAI-ReleaseVerification/1.0"})
+            with _DIRECT_OPENER.open(request, timeout=120) as response:
+                remote_hash = _sha256_stream(response)
+            if remote_hash != local_hash:
+                raise ValueError(f"Remote attachment checksum mismatch for {local_path.name}")
+            return
+        except ValueError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            time.sleep(2 * attempt)
+    assert last_error is not None
+    raise RuntimeError(f"Failed to verify remote attachment {local_path.name}: {last_error}") from None
 
 
 def ensure_default_branch(repo: str, token: str, preferred_branch: str = "master") -> str:
@@ -185,7 +265,8 @@ def macos_update_files(folder: Path, version: str, repo: str):
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             while data := stream.read(1024 * 1024):
-                digest.update(data); combined.update(data)
+                digest.update(data)
+                combined.update(data)
         if digest.hexdigest() != part.get("sha256"):
             raise ValueError("Mac part checksum mismatch")
         total += part["bytes"]
@@ -200,26 +281,65 @@ def upload_macos_updates(folder: Path, version: str, repo: str, release_id: int,
     platforms, files = macos_update_files(folder, version, repo)
     existing = gitee_json("GET", f"/repos/{repo}/releases/{release_id}/attach_files", token) or []
     names = {item.get("name") for item in existing if isinstance(item, dict)}
-    def upload(path):
+
+    def upload(path: Path):
         expected = f"https://gitee.com/{repo}/releases/download/v{version}/{path.name}"
         if path.name not in names:
             result = upload_release_attachment(repo, release_id, path, token)
             if result.get("browser_download_url") != expected:
                 raise ValueError("Uploaded Mac attachment URL differs from its signed descriptor")
-        request = urllib.request.Request(expected, headers={"User-Agent": "HuangGuaAI-ReleaseVerification/1.0"})
-        with _DIRECT_OPENER.open(request, timeout=60) as response:
-            remote_hash = hashlib.file_digest(response, "sha256").hexdigest()
-        with path.open("rb") as stream:
-            local_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-        if remote_hash != local_hash:
-            raise ValueError("Mac attachment checksum differs; refusing to publish or overwrite it")
-        print(f"Uploaded/verified {path.name}")
-    with ThreadPoolExecutor(max_workers=4) as pool:
+        try:
+            verify_remote_attachment(expected, path)
+        except ValueError:
+            raise ValueError("Mac attachment checksum differs; refusing to publish or overwrite it") from None
+        print(f"Uploaded/verified {path.name}", flush=True)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(upload, files))
     return platforms
 
 
-def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = False, preferred_branch: str = "master", macos_dir: Path | None = None) -> None:
+def verify_public_feed(repo: str, branch: str, expected_version: str, expected_platforms: set[str], *, max_attempts: int = 6) -> dict:
+    url = f"https://gitee.com/{repo}/raw/{branch}/latest.json"
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "HuangGuaAI-ReleaseVerification/1.0", "Cache-Control": "no-cache"})
+            with _DIRECT_OPENER.open(req, timeout=30) as resp:
+                feed = json.loads(resp.read().decode("utf-8"))
+            if str(feed.get("version") or "").strip() != expected_version:
+                raise RuntimeError(f"Public latest.json version is {feed.get('version')!r}, expected {expected_version!r}")
+            platforms = feed.get("platforms") if isinstance(feed.get("platforms"), dict) else {}
+            missing = expected_platforms - set(platforms.keys())
+            if missing:
+                raise RuntimeError(f"Public latest.json missing platforms: {sorted(missing)}")
+            for platform_key in expected_platforms:
+                entry = platforms.get(platform_key) or {}
+                if not str(entry.get("url") or "").startswith(f"https://gitee.com/{repo}/releases/download/v{expected_version}/"):
+                    raise RuntimeError(f"Public latest.json has unexpected URL for {platform_key}")
+                if not str(entry.get("signature") or "").strip():
+                    raise RuntimeError(f"Public latest.json has empty signature for {platform_key}")
+            print(f"Verified public feed {url} -> version={expected_version}, platforms={sorted(platforms.keys())}", flush=True)
+            return feed
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            time.sleep(3)
+    assert last_error is not None
+    raise RuntimeError(f"Public Gitee feed verification failed ({url}): {last_error}") from None
+
+
+def publish(
+    update_dir: Path,
+    repo: str,
+    token: str,
+    *,
+    manifest_only: bool = False,
+    preferred_branch: str = "master",
+    macos_dir: Path | None = None,
+    verify_feed: bool = False,
+) -> None:
     manifest_path = update_dir / "latest.json"
     if not manifest_path.is_file():
         raise ValueError(f"Missing {manifest_path}")
@@ -233,11 +353,13 @@ def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = Fa
     delta = feed.get("huangguaDelta") if isinstance(feed.get("huangguaDelta"), dict) else {}
     is_baseline = bool(delta.get("baseVersion")) and version == str(delta.get("baseVersion"))
     exes = sorted(update_dir.glob("*.exe"))
+    release_id: int | None = None
 
     if not manifest_only and is_baseline and (not exes or exes[0].stat().st_size > GITEE_ASSET_LIMIT_BYTES):
         print(
             f"Baseline release {tag}: full installer is distributed externally (Plan 1); "
-            "committing baseline latest.json to Gitee so subsequent incremental updates (0.11.8+) have baseline history."
+            "committing baseline latest.json to Gitee so subsequent incremental updates (0.11.8+) have baseline history.",
+            flush=True,
         )
         manifest_only = True
 
@@ -252,19 +374,30 @@ def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = Fa
                 "Host the full installer externally, rebuild latest.json with --download-url-base, and rerun with --manifest-only."
             )
         release_id = ensure_release(repo, tag, branch, f"黄瓜 AI 画布 {tag}", str(feed.get("notes") or ""), token)
+        expected_win_url = f"https://gitee.com/{repo}/releases/download/{tag}/{payload.name}"
         existing_files = gitee_json("GET", f"/repos/{repo}/releases/{release_id}/attach_files", token) or []
-        for item in existing_files:
-            if isinstance(item, dict) and item.get("name") == payload.name and isinstance(item.get("id"), int):
-                gitee_json("DELETE", f"/repos/{repo}/releases/{release_id}/attach_files/{item['id']}", token)
-        uploaded = upload_release_attachment(repo, release_id, payload, token)
-        download_url = uploaded.get("browser_download_url")
+        has_existing_win = any(isinstance(item, dict) and item.get("name") == payload.name for item in existing_files)
+        if has_existing_win:
+            try:
+                verify_remote_attachment(expected_win_url, payload)
+                download_url = expected_win_url
+                print(f"Reused verified {payload.name} on Gitee Release {tag}", flush=True)
+            except Exception:
+                _delete_attachment_by_name(repo, release_id, payload.name, token)
+                has_existing_win = False
+        if not has_existing_win:
+            uploaded = upload_release_attachment(repo, release_id, payload, token)
+            download_url = uploaded.get("browser_download_url")
+            if isinstance(download_url, str) and download_url.startswith("https://"):
+                verify_remote_attachment(download_url, payload)
         if isinstance(download_url, str) and download_url.startswith("https://"):
             feed.setdefault("platforms", {}).setdefault("windows-x86_64", {})["url"] = download_url
             manifest_path.write_text(json.dumps(feed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print(f"Uploaded {payload.name} to Gitee Release {tag}")
+        print(f"Uploaded/verified {payload.name} to Gitee Release {tag}", flush=True)
 
     if macos_dir is not None:
-        release_id = ensure_release(repo, tag, branch, f"黄瓜 AI 画布 {tag}", str(feed.get("notes") or ""), token)
+        if release_id is None:
+            release_id = ensure_release(repo, tag, branch, f"黄瓜 AI 画布 {tag}", str(feed.get("notes") or ""), token)
         feed.setdefault("platforms", {}).update(upload_macos_updates(macos_dir, version, repo, release_id, token))
         manifest_path.write_text(json.dumps(feed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -276,7 +409,11 @@ def publish(update_dir: Path, repo: str, token: str, *, manifest_only: bool = Fa
         f"chore(release): update latest.json for {tag}",
         token,
     )
-    print(f"Published latest.json to https://gitee.com/{repo}/raw/{branch}/latest.json")
+    print(f"Published latest.json to https://gitee.com/{repo}/raw/{branch}/latest.json", flush=True)
+
+    if verify_feed:
+        expected_platforms = set((feed.get("platforms") or {}).keys())
+        verify_public_feed(repo, branch, version, expected_platforms)
 
 
 def main() -> None:
@@ -286,6 +423,7 @@ def main() -> None:
     parser.add_argument("--branch", default="master", help="Preferred branch if initializing an empty repo")
     parser.add_argument("--manifest-only", action="store_true", help="Only commit latest.json (when binary is hosted externally)")
     parser.add_argument("--macos-dir", type=Path, help="Signed Mac parts from build-macos-update.py; upload before publishing the shared feed")
+    parser.add_argument("--verify-public-feed", action="store_true", help="Read back public raw latest.json after committing")
     args = parser.parse_args()
     token = os.environ.get("GITEE_TOKEN", "").strip()
     if not token and LOCAL_TOKEN_FILE.is_file():
@@ -294,7 +432,15 @@ def main() -> None:
         raise SystemExit(
             f"Missing GITEE_TOKEN environment variable (or local token file at {LOCAL_TOKEN_FILE})"
         )
-    publish(args.dir.resolve(), args.repo, token, manifest_only=args.manifest_only, preferred_branch=args.branch, macos_dir=args.macos_dir)
+    publish(
+        args.dir.resolve(),
+        args.repo,
+        token,
+        manifest_only=args.manifest_only,
+        preferred_branch=args.branch,
+        macos_dir=args.macos_dir.resolve() if args.macos_dir else None,
+        verify_feed=args.verify_public_feed,
+    )
 
 
 if __name__ == "__main__":

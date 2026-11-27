@@ -65,11 +65,11 @@ def build(archive, out, version, target, signer=sign, part_bytes=PART_BYTES):
     descriptor = {"schemaVersion": 1, "version": version, "target": target,
                   "totalBytes": size, "sha256": total_hash.hexdigest(), "parts": parts}
     manifest = out / (name + ".update.json")
-    manifest.write_text(json.dumps(descriptor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    manifest.write_bytes((json.dumps(descriptor, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     signature = signer(manifest)
     feed = {"version": version, "pub_date": datetime.now(timezone.utc).isoformat(),
             "platforms": {target: {"url": base + manifest.name, "signature": signature}}}
-    (out / "latest-macos.json").write_text(json.dumps(feed, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (out / "latest-macos.json").write_bytes((json.dumps(feed, indent=2) + "\n").encode("utf-8"))
     print(f"Built {len(parts)} signed parts ({size:,} bytes) and a signed descriptor for {target}")
     return descriptor
 

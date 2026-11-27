@@ -101,6 +101,48 @@ class MacUpdateTests(unittest.TestCase):
                 module.build(archive, folder / "out", "0.11.11", "darwin-aarch64", lambda _: "unused")
             self.assertEqual((folder / "out/keep").read_text(), "keep")
 
+    def test_upload_retries_cleanly_and_redacts_token_on_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = Path(temporary) / "HuangGuaAI-0.11.14-windows-x64-update.exe"
+            payload.write_bytes(b"signed-update-payload")
+            upload_fn = publisher["upload_release_attachment"]
+            deleted = []
+            calls = []
+
+            def fake_stream(repo, release_id, file_path, token):
+                calls.append(file_path.name)
+                if len(calls) == 1:
+                    raise RuntimeError(f"broken pipe carrying {token}")
+                return {"browser_download_url": f"https://gitee.com/{repo}/releases/download/v0.11.14/{file_path.name}"}
+
+            with patch.dict(
+                upload_fn.__globals__,
+                {
+                    "_stream_multipart_once": fake_stream,
+                    "_delete_attachment_by_name": lambda repo, rid, name, tok: deleted.append(name),
+                    "time": Mock(sleep=lambda *_: None),
+                },
+            ):
+                result = upload_fn(publisher["DEFAULT_REPO"], 99, payload, "secret-token-xyz", max_attempts=2)
+                self.assertEqual(
+                    result["browser_download_url"],
+                    "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.14/HuangGuaAI-0.11.14-windows-x64-update.exe",
+                )
+                self.assertEqual(deleted, [payload.name])
+
+            with patch.dict(
+                upload_fn.__globals__,
+                {
+                    "_stream_multipart_once": lambda *a: (_ for _ in ()).throw(RuntimeError("leaked secret-token-xyz")),
+                    "_delete_attachment_by_name": lambda *a: None,
+                    "time": Mock(sleep=lambda *_: None),
+                },
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    upload_fn(publisher["DEFAULT_REPO"], 99, payload, "secret-token-xyz", max_attempts=2)
+                self.assertNotIn("secret-token-xyz", str(ctx.exception))
+                self.assertIn("***", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

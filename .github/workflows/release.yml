@@ -1,5 +1,10 @@
 name: Release
-run-name: ${{ github.event_name == 'push' && format('调度 {0}', github.ref_name) || format('发布 {0}', inputs.tag) }}
+run-name: >-
+  ${{
+    github.event_name == 'push' && format('调度 {0}', github.ref_name)
+    || (inputs.mode == 'test' && format('双端测试包 ({0})', inputs.target_ref || github.ref_name))
+    || format('发布 {0}（Windows + macOS + Gitee）', inputs.tag)
+  }}
 
 on:
   push:
@@ -7,18 +12,31 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 构建模式：release（正式双端发布+Gitee热更）或 test（双端测试包，不发Release不改Gitee）
+        required: false
+        default: release
+        type: choice
+        options:
+          - release
+          - test
       tag:
-        description: 已推送的正式版本标签（vX.Y.Z）
-        required: true
+        description: 已推送的正式版本标签 vX.Y.Z（mode=release 时必填）
+        required: false
+        default: ''
+        type: string
+      target_ref:
+        description: 测试包目标分支或提交 SHA（mode=test 时可选，默认当前触发分支）
+        required: false
+        default: ''
         type: string
 
 permissions:
   contents: read
 
-# tag 入口与实际发布共用标签锁；排队，不中断已经开始的安装包上传。
 concurrency:
-  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
-  cancel-in-progress: false
+  group: release-${{ github.event_name == 'push' && github.ref_name || (inputs.mode == 'test' && format('test-{0}', inputs.target_ref || github.ref_name) || inputs.tag) }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'test' }}
 
 jobs:
   dispatch:
@@ -29,7 +47,7 @@ jobs:
       actions: write
       contents: read
     steps:
-      - name: Dispatch fixed release workflow
+      - name: Dispatch unified release workflow
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -42,11 +60,11 @@ jobs:
             echo 'Expected a stable vX.Y.Z release tag' >&2
             exit 1
           fi
-          gh workflow run release.yml --repo "$GH_REPO" --ref "$DEFAULT_BRANCH" --field "tag=$RELEASE_TAG"
+          gh workflow run release.yml --repo "$GH_REPO" --ref "$DEFAULT_BRANCH" --field mode=release --field "tag=$RELEASE_TAG"
 
   quality:
     name: Quality gate
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -85,26 +103,71 @@ jobs:
           RELEASE_TAG: ${{ steps.target.outputs.tag }}
           RELEASE_SHA: ${{ steps.target.outputs.sha }}
 
-  publish:
-    name: Publish ${{ matrix.target }}
-    needs: quality
+  test-prepare:
+    name: Prepare test frontend
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
-      contents: write
-      actions: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-    runs-on: ${{ matrix.os }}
-    env:
-      RELEASE_TAG: ${{ needs.quality.outputs.tag }}
-      RELEASE_SHA: ${{ needs.quality.outputs.sha }}
+      contents: read
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.quality.outputs.sha }}
+          ref: ${{ inputs.target_ref || github.ref_name }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Resolve test commit and version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          version="$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint, typecheck, and build frontend
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run build
+      - name: Stamp test frontend artifact
+        env:
+          GITHUB_SHA: ${{ steps.meta.outputs.sha }}
+        run: node scripts/release-workflow.mjs stamp-frontend
+      - name: Upload test frontend dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  build-windows:
+    name: Build Windows x64
+    needs: [quality, test-prepare]
+    if: ${{ !cancelled() && ((inputs.mode != 'test' && needs.quality.result == 'success') || (inputs.mode == 'test' && needs.test-prepare.result == 'success')) }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      IS_RELEASE: ${{ needs.quality.result == 'success' && 'true' || 'false' }}
+      RELEASE_TAG: ${{ needs.quality.outputs.tag }}
+      RELEASE_SHA: ${{ needs.quality.outputs.sha || needs.test-prepare.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.quality.outputs.version || needs.test-prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -113,109 +176,121 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.99.1
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
       - name: Cache native release dependencies
         uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: src-tauri -> target
-          shared-key: release-${{ matrix.target }}-standard
+          shared-key: release-x86_64-pc-windows-msvc-standard
+          save-if: ${{ env.IS_RELEASE == 'true' }}
       - name: Install npm dependencies
         run: npm ci
-      - name: Download exact verified frontend
+      - name: Download verified release frontend
+        if: env.IS_RELEASE == 'true'
         uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.quality.outputs.artifact_id }}
           run-id: ${{ needs.quality.outputs.artifact_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: dist
+      - name: Download verified test frontend
+        if: env.IS_RELEASE != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: test-frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
       - name: Verify frontend file hashes and source
         run: node scripts/release-workflow.mjs verify-frontend
       - name: Restore pinned Huanggua desktop dependencies
         run: python scripts/restore-desktop-runtime.py
       - name: Verify Huanggua release resources
+        shell: pwsh
         run: |
           npm run release:pack
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run release:preflight
       - name: Guard release tag and draft
+        if: env.IS_RELEASE == 'true'
         run: node scripts/release-workflow.mjs assert-publishable
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build with Tauri Action
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Windows x64 standard installer
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
-        with:
-          tagName: ${{ needs.quality.outputs.tag }}
-          releaseCommitish: ${{ needs.quality.outputs.sha }}
-          releaseName: ${{ needs.quality.outputs.release_name }}
-          releaseBody: ${{ needs.quality.outputs.release_body }}
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: false
-          args: --target ${{ matrix.target }} --config scripts/tauri-release.config.json
-      - name: Build signed Windows incremental update
-        if: runner.os == 'Windows'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.IS_RELEASE == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.IS_RELEASE == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          $extraArgs = if ($env:IS_RELEASE -eq 'true') { @('--release') } else { @() }
+          node scripts/release-client.mjs ci-tauri-build --target x86_64-pc-windows-msvc --config scripts/tauri-release.config.json @extraArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows standard Tauri build failed' }
+      - name: Package release installer and signed Gitee incremental update
+        if: env.IS_RELEASE == 'true'
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          $setup = @(Get-ChildItem -LiteralPath "src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter '*-setup.exe' -File)
-          if ($setup.Count -ne 1) { throw 'Expected exactly one standard NSIS installer' }
-          python scripts/build-incremental-update.py --installer-script "src-tauri/target/${{ matrix.target }}/release/nsis/x64/installer.nsi" --full-installer $setup[0].FullName --out "$env:RUNNER_TEMP/huanggua-update"
-      - name: Attach update manifest and payload to the verified draft
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REQUIRE_DRAFT: 'true'
-        run: |
-          node scripts/release-workflow.mjs assert-publishable
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $files = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/huanggua-update" -File | ForEach-Object FullName)
-          gh release upload "$env:RELEASE_TAG" @files --clobber
-      - name: Verify ad-hoc signature and macOS app startup
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          bundle_dir="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          shopt -s nullglob
-          apps=("$bundle_dir"/*.app)
-          if [ "${#apps[@]}" -ne 1 ]; then
-            echo "Expected exactly one macOS app in $bundle_dir" >&2
-            exit 1
-          fi
-          app="${apps[0]}"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          signature="$(codesign --display --verbose=4 "$app" 2>&1)"
-          if ! grep -q '^Signature=adhoc$' <<< "$signature"; then
-            echo "Expected an ad-hoc signature on $app" >&2
-            exit 1
-          fi
-          smoke_dir="$(mktemp -d "${RUNNER_TEMP}/ai-canvas-macos-smoke.XXXXXX")"
-          trap 'rm -rf "$smoke_dir"' EXIT
-          ditto "$app" "$smoke_dir/$(basename "$app")"
-          smoke_app="$smoke_dir/$(basename "$app")"
-          open -a "$smoke_app"
-          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$smoke_app/Contents/Info.plist")"
-          for attempt in {1..20}; do
-            if pgrep -x "$executable" >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Ad-hoc signed app did not remain running: $executable" >&2
-          exit 1
+          $setup = @(Get-ChildItem -LiteralPath 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File)
+          if ($setup.Count -ne 1) { throw "Expected exactly one standard NSIS installer, found $($setup.Count)" }
 
-  publish-windows-legacy:
+          $updateOut = Join-Path $env:RUNNER_TEMP 'windows-gitee-update'
+          python scripts/build-incremental-update.py `
+            --installer-script 'src-tauri/target/x86_64-pc-windows-msvc/release/nsis/x64/installer.nsi' `
+            --full-installer $setup[0].FullName `
+            --out $updateOut
+          if ($LASTEXITCODE -ne 0) { throw 'Incremental update build failed' }
+
+          $releaseOut = Join-Path $env:RUNNER_TEMP 'windows-release'
+          $cleanExe = Join-Path $releaseOut "HuangGuaAI-$($env:RELEASE_VERSION)-windows-x64-setup.exe"
+          node scripts/release-client.mjs ci-win-sign-hash --src $setup[0].FullName --dest $cleanExe --sign
+          if ($LASTEXITCODE -ne 0) { throw 'Signing or checksumming Windows release installer failed' }
+          Get-ChildItem -LiteralPath $releaseOut | Format-Table Name, Length
+          Get-ChildItem -LiteralPath $updateOut | Format-Table Name, Length
+      - name: Package test Windows installer
+        if: env.IS_RELEASE != 'true'
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem -LiteralPath 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File)
+          if ($setup.Count -ne 1) { throw "Expected exactly one test NSIS installer, found $($setup.Count)" }
+          $shortSha = $env:RELEASE_SHA.Substring(0, 7)
+          $testOut = Join-Path $env:RUNNER_TEMP 'windows-test'
+          $cleanExe = Join-Path $testOut "HuangGuaAI-$($env:RELEASE_VERSION)-test-$shortSha-windows-x64-setup.exe"
+          node scripts/release-client.mjs ci-win-sign-hash --src $setup[0].FullName --dest $cleanExe
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging test Windows installer failed' }
+      - name: Upload Windows release installer artifact
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-release-${{ env.RELEASE_SHA }}
+          path: ${{ runner.temp }}/windows-release/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed Windows Gitee update artifact
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-gitee-update-${{ env.RELEASE_SHA }}
+          path: ${{ runner.temp }}/windows-gitee-update/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Upload test Windows installer artifact
+        if: env.IS_RELEASE != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-windows-x64-${{ env.RELEASE_SHA }}
+          path: ${{ runner.temp }}/windows-test/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  build-windows-legacy:
     name: Build Windows x64 legacy
     needs: quality
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
     runs-on: windows-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
@@ -256,6 +331,7 @@ jobs:
       - name: Restore pinned Huanggua desktop dependencies
         run: python scripts/restore-desktop-runtime.py
       - name: Verify Huanggua release resources
+        shell: pwsh
         run: |
           npm run release:pack
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -270,30 +346,257 @@ jobs:
             -- `
             --no-default-features
           if ($LASTEXITCODE -ne 0) { throw 'Legacy build failed' }
-      - name: Collect only this version's Legacy installers
+      - name: Collect standardized Legacy installer and checksum
         shell: pwsh
         run: |
-          $bundleRoot = Resolve-Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
+          $bundleRoot = Resolve-Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
           $artifactDirectory = Join-Path $env:RUNNER_TEMP 'legacy-installers'
           New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-          $artifacts = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File | Where-Object {
-            $_.Extension -in '.exe', '.msi' -and $_.Name.Contains('Legacy') -and $_.Name.Contains("_$($env:RELEASE_VERSION)_")
+          $artifacts = @(Get-ChildItem -LiteralPath $bundleRoot -Filter '*-setup.exe' -File | Where-Object {
+            $_.Name.Contains('Legacy') -and $_.Name.Contains("_$($env:RELEASE_VERSION)_")
           })
-          if ($artifacts.Count -eq 0) { throw 'No installers for this Legacy version were generated' }
-          foreach ($artifact in $artifacts) { Copy-Item -LiteralPath $artifact.FullName -Destination $artifactDirectory }
+          if ($artifacts.Count -ne 1) { throw "Expected exactly 1 Legacy NSIS installer, found $($artifacts.Count)" }
+          $cleanName = "HuangGuaAI-$($env:RELEASE_VERSION)-windows-x64-legacy-setup.exe"
+          $cleanExe = Join-Path $artifactDirectory $cleanName
+          Copy-Item -LiteralPath $artifacts[0].FullName -Destination $cleanExe -Force
+          $hash = (Get-FileHash -LiteralPath $cleanExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$cleanExe.sha256", "$hash  $cleanName`n", [System.Text.UTF8Encoding]::new($false))
       - name: Keep Legacy installers until every standard platform passes
         uses: actions/upload-artifact@v7
         with:
           name: windows-legacy-${{ needs.quality.outputs.sha }}
           path: ${{ runner.temp }}/legacy-installers/
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 3
+          compression-level: 0
+
+  build-macos:
+    name: Build macOS (arm64)
+    needs: [quality, test-prepare]
+    if: ${{ !cancelled() && ((inputs.mode != 'test' && needs.quality.result == 'success') || (inputs.mode == 'test' && needs.test-prepare.result == 'success')) }}
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      IS_RELEASE: ${{ needs.quality.result == 'success' && 'true' || 'false' }}
+      RELEASE_TAG: ${{ needs.quality.outputs.tag }}
+      RELEASE_SHA: ${{ needs.quality.outputs.sha || needs.test-prepare.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.quality.outputs.version || needs.test-prepare.outputs.version }}
+      RUST_TARGET: aarch64-apple-darwin
+      RUNTIME_PLATFORM: darwin-aarch64
+      ARCH_LABEL: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: ${{ env.RUST_TARGET }}
+      - name: Cache Rust release dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-macos-${{ env.RUST_TARGET }}
+          save-if: ${{ env.IS_RELEASE == 'true' }}
+      - name: Ensure uv is installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+          uv --version
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Download verified release frontend
+        if: env.IS_RELEASE == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.quality.outputs.artifact_id }}
+          run-id: ${{ needs.quality.outputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Download verified test frontend
+        if: env.IS_RELEASE != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: test-frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Verify frontend file hashes and source
+        run: node scripts/release-workflow.mjs verify-frontend
+      - name: Prepare macOS Studio runtime and Director Desk
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python3 -B scripts/prepare-macos-studio-runtime.py \
+            --platform "${RUNTIME_PLATFORM}" \
+            --clean
+      - name: Pack and preflight verify desktop resources
+        shell: bash
+        env:
+          HUANGGUA_TARGET_PLATFORM: ${{ env.RUNTIME_PLATFORM }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          npm run build:mcp-adapter
+          npm run release:pack
+          npm run release:preflight
+      - name: Guard release tag and draft
+        if: env.IS_RELEASE == 'true'
+        run: node scripts/release-workflow.mjs assert-publishable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compile Rust release binary
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target "${RUST_TARGET}" --bins
+      - name: Bundle macOS .app, verify signature, smoke-test startup, and build .dmg
+        id: package
+        shell: bash
+        env:
+          CI: 'true'
+          APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.IS_RELEASE == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.IS_RELEASE == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          HUANGGUA_TARGET_PLATFORM: ${{ env.RUNTIME_PLATFORM }}
+        run: |
+          set -euo pipefail
+          cfg_path="src-tauri/target/tauri-macos-active.config.json"
+          node -e '
+            const fs = require("node:fs");
+            const cfg = JSON.parse(fs.readFileSync("scripts/tauri-release-macos.config.json", "utf8"));
+            if (process.env.IS_RELEASE !== "true") {
+              cfg.bundle = { ...cfg.bundle, createUpdaterArtifacts: false };
+            }
+            fs.writeFileSync(process.argv[1], JSON.stringify(cfg, null, 2));
+          ' "$cfg_path"
+
+          if [[ "$IS_RELEASE" != "true" ]]; then
+            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+
+          node node_modules/@tauri-apps/cli/tauri.js build \
+            --target "${RUST_TARGET}" \
+            --bundles app \
+            --config "$cfg_path"
+
+          bundle_dir="src-tauri/target/${RUST_TARGET}/release/bundle"
+          shopt -s nullglob
+          apps=("$bundle_dir"/macos/*.app)
+          if [[ "${#apps[@]}" -ne 1 ]]; then
+            echo "Expected exactly one .app in ${bundle_dir}/macos, found ${#apps[@]}" >&2
+            exit 1
+          fi
+          app_path="${apps[0]}"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          signature="$(codesign --display --verbose=4 "$app_path" 2>&1)"
+          if ! grep -q '^Signature=adhoc$' <<< "$signature"; then
+            echo "Expected an ad-hoc signature on $app_path" >&2
+            exit 1
+          fi
+
+          smoke_dir="$(mktemp -d "${RUNNER_TEMP}/ai-canvas-macos-smoke.XXXXXX")"
+          ditto "$app_path" "$smoke_dir/$(basename "$app_path")"
+          smoke_app="$smoke_dir/$(basename "$app_path")"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$smoke_app/Contents/Info.plist")"
+          open -a "$smoke_app"
+          started=0
+          for _ in {1..20}; do
+            if pgrep -x "$executable" >/dev/null; then
+              started=1
+              break
+            fi
+            sleep 1
+          done
+          pkill -x "$executable" >/dev/null 2>&1 || true
+          rm -rf "$smoke_dir"
+          if [[ "$started" -ne 1 ]]; then
+            echo "Ad-hoc signed app did not remain running: $executable" >&2
+            exit 1
+          fi
+
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            updates=("$bundle_dir"/macos/*.app.tar.gz)
+            if [[ "${#updates[@]}" -ne 1 ]]; then
+              echo "Expected one signed macOS updater archive" >&2
+              exit 1
+            fi
+            update_dir="${RUNNER_TEMP}/macos-update-parts"
+            python3 -B scripts/build-macos-update.py \
+              --archive "${updates[0]}" --out "$update_dir" --target "${RUNTIME_PLATFORM}"
+            echo "update_dir=${update_dir}" >> "$GITHUB_OUTPUT"
+            dmg_name="HuangGuaAI-${RELEASE_VERSION}-macos-${ARCH_LABEL}.dmg"
+          else
+            short_sha="${RELEASE_SHA:0:7}"
+            dmg_name="HuangGuaAI-${RELEASE_VERSION}-test-${short_sha}-macos-${ARCH_LABEL}.dmg"
+          fi
+
+          dmg_stage="${RUNNER_TEMP}/dmg-stage"
+          out_dir="${RUNNER_TEMP}/macos-release-assets"
+          rm -rf "$dmg_stage" "$out_dir"
+          mkdir -p "$dmg_stage" "$out_dir"
+          ditto "$app_path" "${dmg_stage}/$(basename "$app_path")"
+          ln -s /Applications "${dmg_stage}/Applications"
+
+          dmg_path="${out_dir}/${dmg_name}"
+          hdiutil create \
+            -volname "黄瓜 AI 画布" \
+            -srcfolder "$dmg_stage" \
+            -ov \
+            -format UDZO \
+            "$dmg_path"
+
+          (cd "$out_dir" && shasum -a 256 "$dmg_name" > "${dmg_name}.sha256")
+          ls -lh "$out_dir"
+          echo "out_dir=${out_dir}" >> "$GITHUB_OUTPUT"
+      - name: Upload macOS release DMG artifact
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-release-${{ env.ARCH_LABEL }}-${{ env.RELEASE_SHA }}
+          path: ${{ steps.package.outputs.out_dir }}/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed macOS Gitee update parts
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-gitee-update-${{ env.ARCH_LABEL }}-${{ env.RELEASE_SHA }}
+          path: ${{ steps.package.outputs.update_dir }}/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Upload test macOS DMG artifact
+        if: env.IS_RELEASE != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-macos-${{ env.ARCH_LABEL }}-${{ env.RELEASE_SHA }}
+          path: ${{ steps.package.outputs.out_dir }}/
+          if-no-files-found: error
+          retention-days: 7
           compression-level: 0
 
   finalize-release:
-    name: Publish verified release
-    needs: [quality, publish, publish-windows-legacy]
+    name: Publish GitHub Release
+    needs: [quality, build-windows, build-windows-legacy, build-macos]
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     env:
@@ -301,7 +604,9 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.quality.outputs.tag }}
       RELEASE_SHA: ${{ needs.quality.outputs.sha }}
-      REQUIRE_DRAFT: 'true'
+      RELEASE_VERSION: ${{ needs.quality.outputs.version }}
+      RELEASE_NAME: ${{ needs.quality.outputs.release_name }}
+      RELEASE_BODY: ${{ needs.quality.outputs.release_body }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -310,24 +615,151 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Download verified Legacy installers
+      - name: Download verified Windows installer
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-release-${{ needs.quality.outputs.sha }}
+          path: ${{ runner.temp }}/release-stage
+      - name: Download verified Windows Legacy installer
         uses: actions/download-artifact@v8
         with:
           name: windows-legacy-${{ needs.quality.outputs.sha }}
-          path: ${{ runner.temp }}/legacy-installers
-      - name: Upload Legacy and make release public after every platform passes
+          path: ${{ runner.temp }}/release-stage
+      - name: Download verified macOS DMG installer
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-release-arm64-${{ needs.quality.outputs.sha }}
+          path: ${{ runner.temp }}/release-stage
+      - name: Verify all 7 release assets and publish GitHub Release
         shell: bash
-        env:
-          LEGACY_ARTIFACT_DIRECTORY: ${{ runner.temp }}/legacy-installers
         run: |
           set -euo pipefail
-          node scripts/release-workflow.mjs assert-publishable
-          shopt -s nullglob
-          artifacts=("$LEGACY_ARTIFACT_DIRECTORY"/*.exe "$LEGACY_ARTIFACT_DIRECTORY"/*.msi)
-          if [ "${#artifacts[@]}" -eq 0 ]; then
-            echo 'No verified Legacy installers were downloaded' >&2
+          stage="${RUNNER_TEMP}/release-stage"
+
+          expected=(
+            "HuangGuaAI-${RELEASE_VERSION}-windows-x64-setup.exe"
+            "HuangGuaAI-${RELEASE_VERSION}-windows-x64-setup.exe.sha256"
+            "HuangGuaAI-${RELEASE_VERSION}-windows-x64-setup.exe.sig"
+            "HuangGuaAI-${RELEASE_VERSION}-windows-x64-legacy-setup.exe"
+            "HuangGuaAI-${RELEASE_VERSION}-windows-x64-legacy-setup.exe.sha256"
+            "HuangGuaAI-${RELEASE_VERSION}-macos-arm64.dmg"
+            "HuangGuaAI-${RELEASE_VERSION}-macos-arm64.dmg.sha256"
+          )
+          (
+            cd "$stage"
+            for f in "${expected[@]}"; do
+              if [[ ! -s "$f" ]]; then
+                echo "Missing or empty expected release asset: $f" >&2
+                exit 1
+              fi
+            done
+            sha256sum --check ./*.sha256
+          )
+
+          REQUIRE_DRAFT=false node scripts/release-workflow.mjs assert-publishable
+
+          notes_file="${RUNNER_TEMP}/release-body.md"
+          printf '%s\n' "$RELEASE_BODY" > "$notes_file"
+
+          draft_id="$(gh api "repos/${GH_REPO}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\" and .draft == true) | .id" | head -n 1 || true)"
+          if [[ -z "$draft_id" ]]; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --target "$RELEASE_SHA" \
+              --draft \
+              --title "$RELEASE_NAME" \
+              --notes-file "$notes_file"
+          fi
+
+          REQUIRE_DRAFT=true node scripts/release-workflow.mjs assert-publishable
+          assets=()
+          for f in "${expected[@]}"; do
+            assets+=("${stage}/${f}")
+          done
+          gh release upload "$RELEASE_TAG" --repo "$GH_REPO" "${assets[@]}" --clobber
+          REQUIRE_DRAFT=true node scripts/release-workflow.mjs assert-publishable
+          gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --draft=false
+
+  publish-gitee:
+    name: Publish Gitee update & latest.json
+    needs: [quality, finalize-release]
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_TAG: ${{ needs.quality.outputs.tag }}
+      RELEASE_SHA: ${{ needs.quality.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.quality.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.quality.outputs.sha }}
+      - name: Configure TCP BBR congestion control for cross-border upload
+        shell: bash
+        run: |
+          sudo modprobe tcp_bbr || true
+          if [[ -f /proc/sys/net/ipv4/tcp_available_congestion_control ]] && grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
+            sudo sysctl -w net.ipv4.tcp_congestion_control=bbr || true
+          fi
+      - name: Download signed Windows Gitee update artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-gitee-update-${{ needs.quality.outputs.sha }}
+          path: ${{ runner.temp }}/win-update
+      - name: Download signed macOS Gitee update artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-gitee-update-arm64-${{ needs.quality.outputs.sha }}
+          path: ${{ runner.temp }}/mac-update
+      - name: Upload signed updates to Gitee Release and update latest.json
+        shell: bash
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GITEE_TOKEN:-}" ]]; then
+            echo "Missing GITEE_TOKEN repository secret; run 'npm run release:gitee -- ${RELEASE_TAG}' locally to complete Gitee sync." >&2
             exit 1
           fi
-          gh release upload "$RELEASE_TAG" --repo "$GH_REPO" "${artifacts[@]}" --clobber
-          node scripts/release-workflow.mjs assert-publishable
-          gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --draft=false
+          python3 -u scripts/publish-gitee-update.py \
+            --dir "${RUNNER_TEMP}/win-update" \
+            --macos-dir "${RUNNER_TEMP}/mac-update" \
+            --verify-public-feed
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            {
+              echo "## Gitee 热更新已发布 (${RELEASE_TAG})"
+              echo ""
+              echo "- 在线清单：\`https://gitee.com/xiang834740239/huanggua-aiagent/raw/master/latest.json\`"
+              echo "- 已验证平台：\`windows-x86_64\`、\`darwin-aarch64\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  summarize-test-build:
+    name: Summarize dual-platform test packages
+    needs: [test-prepare, build-windows, build-macos]
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'test'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Write test package download summary
+        shell: bash
+        env:
+          SHA: ${{ needs.test-prepare.outputs.sha }}
+          VER: ${{ needs.test-prepare.outputs.version }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 双端测试包已生成 (\`v${VER}\` @ \`${SHA:0:7}\`)"
+            echo ""
+            echo "未创建正式 GitHub Release，未修改 Gitee \`latest.json\`。"
+            echo ""
+            echo "```bash"
+            echo "gh run download ${RUN_ID} --repo ${REPO} -n test-windows-x64-${SHA} -n test-macos-arm64-${SHA}"
+            echo "```"
+          } >> "$GITHUB_STEP_SUMMARY"
