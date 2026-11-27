@@ -11,7 +11,6 @@ import WorkspaceChrome from './components/studio/WorkspaceChrome';
 import StudioWorkspace from './components/studio/StudioWorkspace';
 import StudioExecutionBridge from './components/studio/StudioExecutionBridge';
 import './styles/huanggua-workspace.css';
-import Titlebar from './components/Titlebar';
 import SessionProjectTabs from './components/SessionProjectTabs';
 import SeriesRail from './components/SeriesRail';
 import Sidebar from './components/Sidebar';
@@ -660,7 +659,6 @@ export default function App() {
         {canvasVisible && <NodeMenu />}
         </div>
         {clientWorkspaceMode === 'drama' && <StudioWorkspace />}
-        <Titlebar />
         <LazyLoadBoundary label="设置面板">
           <Suspense fallback={<LazyLoadFallback label="设置面板" />}>
             {mountSettings && <SettingsPanel />}

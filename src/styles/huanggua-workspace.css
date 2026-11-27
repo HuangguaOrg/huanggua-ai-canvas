@@ -1,9 +1,11 @@
 /* Studio workspace hierarchy with the client's shared appearance tokens. */
 .huanggua-chrome {
+  --chrome-gutter: 18px;
   position: absolute; inset: 0 0 auto; height: 56px; z-index: 180;
-  display: flex; align-items: center; gap: 20px; padding: 0 142px 0 18px;
+  display: flex; align-items: center; gap: 20px; padding: 0 142px 0 var(--chrome-gutter);
   border-bottom: 1px solid var(--theme-border); background: var(--theme-surface);
 }
+.huanggua-chrome:has(> .mac-window-controls) { padding-right: var(--chrome-gutter); }
 .huanggua-chrome .ui-tabs { flex-shrink: 0; }
 .huanggua-studio { position: absolute; inset: 56px 0 0; z-index: 45; }
 .studio-workbench { --studio-effective-sidebar: var(--studio-sidebar-width, 256px); position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
@@ -128,5 +130,5 @@ button.studio-step-pill:hover { background: var(--theme-hover); color: var(--the
   .studio-shot-detail > div { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 }
 @container studio-shot-detail (min-width: 860px) { .studio-shot-detail { grid-template-columns: minmax(360px, 560px) minmax(0, 1fr); } }
-@media (max-width: 1100px) { .huanggua-chrome { gap: 10px; padding-left: 12px; } }
-@media (max-width: 700px) { .huanggua-chrome { padding-right: 110px; gap: 4px; } .huanggua-chrome > div:first-child { display: none; } }
+@media (max-width: 1100px) { .huanggua-chrome { --chrome-gutter: 12px; gap: 10px; } }
+@media (max-width: 700px) { .huanggua-chrome { padding-right: 110px; gap: 4px; } }
