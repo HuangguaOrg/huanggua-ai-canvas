@@ -2,6 +2,7 @@ import { RefreshCw } from 'lucide-react';
 import { useT } from '../../i18n';
 import { useAppStore } from '../../store/useAppStore';
 import { useHuangguaAccountStore } from '../../store/useHuangguaAccountStore';
+import { workspaceError } from '../../services/studioWorkspaceService';
 
 /** Both workspaces refresh the same account-owned model catalog. */
 export default function HuangguaModelRefreshButton({ menuItem = false }: { menuItem?: boolean } = {}) {
@@ -20,7 +21,7 @@ export default function HuangguaModelRefreshButton({ menuItem = false }: { menuI
       app.showToast(t('模型列表更新失败，请在账号窗口查看原因并重试。'), 'error');
       latest.setDialogOpen(true);
     } else if (app.studioModelRefreshError) {
-      app.showToast(t('画布模型已更新，短剧模型刷新失败，请重试。'), 'error');
+      app.showToast(`${t('画布模型已更新。')}${t(workspaceError(app.studioModelRefreshError))}`, 'error');
     } else {
       app.showToast(t('模型列表已更新'), 'success');
     }

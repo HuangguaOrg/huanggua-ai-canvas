@@ -41,7 +41,14 @@ describe('shared model refresh button', () => {
   it('reports a partial studio failure and permits retry', async () => {
     mock.app.studioModelRefreshError = 'studio_connection_lost';
     HuangguaModelRefreshButton().props.onClick();
-    await vi.waitFor(() => expect(mock.app.showToast).toHaveBeenCalledWith('画布模型已更新，短剧模型刷新失败，请重试。', 'error'));
+    await vi.waitFor(() => expect(mock.app.showToast).toHaveBeenCalledWith('画布模型已更新。与短剧执行服务的连接已断开，请恢复连接后重试。', 'error'));
     expect(HuangguaModelRefreshButton().props.disabled).toBe(false);
+  });
+  it('explains a missing text catalog without claiming that login expired', async () => {
+    mock.app.studioModelRefreshError = 'studio_text_models_unavailable';
+    HuangguaModelRefreshButton().props.onClick();
+    await vi.waitFor(() => expect(mock.app.showToast).toHaveBeenCalledWith(
+      '画布模型已更新。账号暂未返回可用的文本模型，短剧 Agent 无法连接。请检查 Agent / text 的模型服务后刷新列表。', 'error'));
+    expect(mock.account.setDialogOpen).not.toHaveBeenCalled();
   });
 });

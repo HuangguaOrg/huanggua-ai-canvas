@@ -99,6 +99,7 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
             return {}
 
         key = lambda kind: f"sk-ad1.{'a' * 64}.{kind}.{'b' * 64}"
+        text_models = ['claude-sonnet-5-5', 'deepseek-v4.1-flash', 'gemini-pro', 'custom-text-alias', 'gpt-6.2-sol']
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / 'huanggua-models.json').write_text(json.dumps({'models': [
@@ -107,12 +108,12 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
             ]}), encoding='utf-8')
             scope = bridge_functions(ROOT=root, PORT=9999, models={}, model_refs={}, local_client=FakeClient, checked=fake_checked)
             await scope['configure_models']({
-                'text': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('text'), 'models': ['codex-auto-review', 'gpt-5.6', 'gpt-6.1-sol']},
+                'text': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('text'), 'models': text_models},
                 'image': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('image'), 'models': ['grsai-gpt-image-2.6']},
                 'video': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('video'), 'models': ['grsai-minimax-h3-768p']},
             })
             self.assertEqual(scope['models'], {
-                'text': ['gpt-5.6', 'gpt-6.1-sol'],
+                'text': text_models,
                 'image': ['grsai-gpt-image-2.6'],
                 'video': ['grsai-minimax-h3-768p'],
             })
@@ -121,7 +122,26 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(any(method == 'POST' and path == 'custom-providers' for method, path, _ in calls))
             text_put = next(payload for method, path, payload in calls if method == 'PUT' and path == 'custom-providers/11')
             self.assertEqual(text_put['api_key'], key('text'))
-            self.assertEqual([m['is_default'] for m in text_put['models']], [True, False])
+            self.assertEqual([m['is_default'] for m in text_put['models']], [True, False, False, False, False])
+            self.assertEqual([m['model_id'] for m in text_put['models']], text_models)
+            self.assertTrue(all(m['endpoint'] == 'anthropic-messages' for m in text_put['models']))
+            self.assertEqual(text_put['base_url'], 'https://huanggua.my')
+            self.assertEqual(scope['model_refs']['text'], {m: f'custom-11/{m}' for m in text_models})
+
+            # An account with no GPT models must still configure the Agent.
+            # Refresh also replaces stale model references instead of retaining them.
+            calls.clear()
+            await scope['configure_models']({
+                'text': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('text'),
+                         'models': ['deepseek-v4.1-flash']},
+            })
+            self.assertEqual(scope['models']['text'], ['deepseek-v4.1-flash'])
+            self.assertEqual(scope['model_refs']['text'], {'deepseek-v4.1-flash': 'custom-11/deepseek-v4.1-flash'})
+            credential = next(p for method, path, p in calls if method == 'PATCH' and path == 'agent/credentials/9')
+            for field in ('model', 'haiku_model', 'sonnet_model', 'opus_model', 'subagent_model'):
+                self.assertEqual(credential[field], 'deepseek-v4.1-flash')
+            defaults = next(p for method, path, p in calls if method == 'PATCH' and path == 'system/config')
+            self.assertEqual(set(defaults.values()), {'custom-11/deepseek-v4.1-flash'})
 
     async def test_configure_models_rejects_legacy_and_mismatched_keys(self):
         class FakeClient:
@@ -139,7 +159,7 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
             (root / 'huanggua-models.json').write_text(json.dumps({'models': []}), encoding='utf-8')
             scope = bridge_functions(ROOT=root, PORT=9999, models={}, model_refs={}, local_client=FakeClient, checked=fake_checked)
             for bad_key in ('sk-legacy-random-token-123456', f"sk-ad1.{'a' * 64}.video.{'b' * 64}"):
-                with self.assertRaisesRegex(ValueError, 'invalid account'):
+                with self.assertRaisesRegex(ValueError, 'studio_account_invalid_response'):
                     await scope['configure_models']({
                         'text': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': bad_key, 'models': ['gpt-5.6']},
                     })
@@ -157,6 +177,7 @@ class AccountModelRefreshTest(unittest.IsolatedAsyncioTestCase):
     async def test_forced_refresh_bypasses_cache_and_failure_invalidates_cache(self):
         services = {'text': {'models': ['gpt-new']}}
         response = Mock()
+        response.status_code = 200
         response.json.return_value = {'success': True, 'data': {'expires_at': 2000, 'services': services}}
         remote = MagicMock()
         remote.__aenter__ = AsyncMock(return_value=remote)
@@ -176,9 +197,55 @@ class AccountModelRefreshTest(unittest.IsolatedAsyncioTestCase):
         remote.get.assert_awaited_once()
         configure.assert_awaited_once_with(services)
         remote.get.side_effect = OSError('offline')
-        with self.assertRaisesRegex(ValueError, 'studio_login_required'):
+        with self.assertRaisesRegex(ValueError, 'studio_account_unavailable'):
             await scope['connect_account'](force=True)
         self.assertEqual(scope['account_checked'], 0)
         remote.get.side_effect = None
         await scope['connect_account']()
         self.assertEqual(remote.get.await_count, 3)
+
+    async def test_account_failures_are_not_all_reported_as_expired_login(self):
+        for status, body, configuration_error, expected in (
+            (401, {}, None, 'studio_login_required'),
+            (403, {}, None, 'studio_account_forbidden'),
+            (200, {'success': True, 'data': {'expires_at': 999}}, None, 'studio_login_required'),
+            (200, {'success': True, 'data': {}}, None, 'studio_account_invalid_response'),
+            (200, {'success': True, 'data': {'expires_at': 2000, 'services': {}}},
+             ValueError('studio_text_models_unavailable'), 'studio_text_models_unavailable'),
+            (200, {'success': True, 'data': {'expires_at': 2000, 'services': {}}},
+             RuntimeError('private internal detail'), 'studio_model_configuration_failed'),
+        ):
+            with self.subTest(expected=expected):
+                response = Mock(status_code=status)
+                response.json.return_value = body
+                remote = MagicMock()
+                remote.__aenter__ = AsyncMock(return_value=remote)
+                remote.__aexit__ = AsyncMock(return_value=False)
+                remote.get = AsyncMock(return_value=response)
+                scope = bridge_functions(
+                    account_lock=asyncio.Lock(), account_checked=0, account_fingerprint='old',
+                    time=SimpleNamespace(monotonic=lambda: 100, time=lambda: 1000),
+                    httpx=SimpleNamespace(AsyncClient=Mock(return_value=remote)), SESSION='fixture',
+                    hashlib=hashlib, models={'text': ['old']}, model_refs={'text': {'old': 'old'}},
+                    secret_values={'old-key'},
+                )
+                scope['configure_models'] = AsyncMock(side_effect=configuration_error)
+                with self.assertRaisesRegex(ValueError, '^' + expected + '$'):
+                    await scope['connect_account'](force=True)
+                self.assertEqual(scope['account_checked'], 0)
+                self.assertEqual(scope['account_fingerprint'], '')
+                self.assertEqual(scope['models'], {})
+                self.assertFalse(scope['secret_values'])
+
+    async def test_missing_text_model_reports_catalog_reason_before_configuring_media(self):
+        for service, expected in (
+            ({'status': 'unavailable', 'models': []}, 'studio_text_models_unavailable'),
+            ({'status': 'unavailable', 'models': [], 'error_code': 'model_catalog_unavailable'},
+             'studio_text_models_unavailable'),
+        ):
+            with self.subTest(expected=expected):
+                client = Mock()
+                scope = bridge_functions(local_client=client)
+                with self.assertRaisesRegex(ValueError, '^' + expected + '$'):
+                    await scope['configure_models']({'text': service})
+                client.assert_not_called()
