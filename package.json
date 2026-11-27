@@ -24,7 +24,12 @@
         "director:update": "node scripts/update-director-desk-release.mjs",
         "release:pack": "python scripts/pack-studio-runtime.py",
         "release:preflight": "node scripts/check-desktop-release.mjs",
-        "release:export": "python scripts/export-local-release.py"
+        "release:export": "python scripts/export-local-release.py",
+        "release:prepare": "node scripts/release-client.mjs prepare",
+        "release:test": "node scripts/release-client.mjs test",
+        "release:ship": "node scripts/release-client.mjs ship",
+        "release:gitee": "node scripts/release-client.mjs gitee",
+        "release:verify": "node scripts/release-client.mjs verify"
     },
     "dependencies": {
         "@crabnebula/tauri-plugin-drag": "^2.1.0",
