@@ -252,7 +252,7 @@ jobs:
           if ! gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" \
               --repo "$GH_REPO" \
-              --target "$GITHUB_SHA" \
+              --verify-tag \
               --draft \
               --title "黄瓜 AI 画布 ${RELEASE_TAG}" \
               --notes-file "$notes_file"
