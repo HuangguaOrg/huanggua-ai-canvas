@@ -49,8 +49,7 @@ function TauriTitlebar() {
     return (
       <div
         data-tauri-drag-region
-        className="mac-window-controls glass-bevel glass-bevel--floating flex shrink-0 select-none items-center gap-1.5 rounded-full border border-canvas-border
-                   bg-canvas-surface/45 px-2 py-1.5 shadow-lg shadow-black/20 backdrop-blur-xl"
+        className="mac-window-controls flex shrink-0 select-none items-center gap-1.5 px-2 py-1.5"
       >
         <MacTrafficLight
           label={t('关闭')}
@@ -148,7 +147,7 @@ function MacTrafficLight({
       scale={1.08}
       tapScale={0.92}
       className={`group flex h-3 w-3 items-center justify-center rounded-full
-                  text-black/60 shadow-inner shadow-white/30 ring-1 ring-black/20
+                  text-black/60 ring-1 ring-inset ring-black/10
                   transition-colors ${className}`}
     >
       <span className="opacity-0 transition-opacity group-hover:opacity-100">
