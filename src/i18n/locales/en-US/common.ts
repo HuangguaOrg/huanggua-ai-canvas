@@ -374,7 +374,6 @@ const common = {
   "设置已保存，但火山方舟账本目录未能同步，原账本已保留；请检查目录权限或同名账本冲突": "Settings were saved, but the Volcengine Ark ledger folder could not be synced. The original ledger was kept. Check folder permissions or conflicting ledger files.",
   "火山方舟账本目录未能同步，原账本已保留；请检查保存根目录或单独设置的账本目录": "The Volcengine Ark ledger folder could not be synced. The original ledger was kept. Check the save root or custom ledger folder.",
   "当前项目保存失败，已取消项目切换": "Could not save the current project. Project switching was cancelled.",
-  "保存期间画布有新变化，已保留当前项目，请稍后再返回启动页": "The canvas changed while saving. The current project was kept open. Return to the start page again later.",
   "已粘贴 {count} 个节点": "Pasted {count} nodes",
   "已粘贴 {count} 个源节点": "Pasted {count} source nodes",
   "{action} {count} 个源节点": "{action} {count} source nodes",

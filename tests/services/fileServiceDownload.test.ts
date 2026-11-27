@@ -741,6 +741,7 @@ describe('project directory error propagation', () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     core.setBaseDataDir(undefined);
     const failure = new Error('forbidden path: C:/private/user/project');
+    mocks.invoke.mockResolvedValueOnce('C:/fixture/projects');
     mocks.exists.mockRejectedValueOnce(failure);
     const log = vi.spyOn(console, 'error');
 
@@ -755,5 +756,16 @@ describe('project directory error propagation', () => {
     mocks.exists.mockRejectedValueOnce(new Error('forbidden path'));
 
     await expect(core.ensureProjectDataDir('project-1')).resolves.toBeNull();
+  });
+
+  it('keeps default-directory preparation failures nullable unless strict persistence is requested', async () => {
+    vi.resetModules();
+    const core = await vi.importActual<typeof import('../../src/services/fs/core')>('../../src/services/fs/core');
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    core.setBaseDataDir(undefined);
+    const failure = new Error('directory unavailable');
+    mocks.invoke.mockRejectedValue(failure);
+    await expect(core.ensureProjectDataDir('project-1')).resolves.toBeNull();
+    await expect(core.ensureProjectDataDir('project-1', { throwOnError: true })).rejects.toBe(failure);
   });
 });
