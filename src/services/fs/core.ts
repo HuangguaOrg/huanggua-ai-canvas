@@ -674,7 +674,7 @@ export async function ensureProjectDataDir(
     if (!dirExists) await mkdir(dirPath, { recursive: true });
     return dirPath;
   } catch (err) {
-    if (options.throwOnError) throw err;
+    if (options.throwOnError || _nativeProjectOwners.has(projectId)) throw err;
     console.error('Failed to create project data dir');
     return null;
   }
