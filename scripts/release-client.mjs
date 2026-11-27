@@ -4,7 +4,7 @@
  * 子命令：
  *   prepare         <version> [--title <summary>] [--notes-file <path>]
  *   test            [--ref <branch_or_sha>] [--watch]
- *   ship            <version> [--resume] [--timeout-minutes <min>]
+ *   ship            <version> [--resume] [--retrigger] [--timeout-minutes <min>]
  *   gitee           <vX.Y.Z> [--run-id <id>]
  *   verify          <vX.Y.Z>
  *   ci-tauri-build  --target <triple> --config <path> [--release]
@@ -326,8 +326,27 @@ async function runShip(positionals, values) {
     execFileSync('git', ['tag', tag, headSha], { cwd: ROOT, stdio: 'inherit' });
     execFileSync('git', ['push', 'origin', `refs/tags/${tag}`], { cwd: ROOT, stdio: 'inherit' });
     console.log(`已推送正式版本标签 ${tag} -> ${headSha}`);
+  } else if (values.retrigger) {
+    let alreadyPublished = false;
+    try {
+      const existingRel = ghJson(['release', 'view', tag, '--repo', repo, '--json', 'isDraft']);
+      alreadyPublished = Boolean(existingRel && !existingRel.isDraft);
+    } catch {
+      alreadyPublished = false;
+    }
+    if (alreadyPublished) {
+      throw new Error(`GitHub Release ${tag} 已公开，禁止重复触发发布工作流`);
+    }
+    execFileSync('gh', [
+      'workflow', 'run', 'release.yml',
+      '--repo', repo,
+      '--ref', 'main',
+      '--field', 'mode=release',
+      '--field', `tag=${tag}`,
+    ], { cwd: ROOT, stdio: 'inherit' });
+    console.log(`已为未公开标签 ${tag} 重新触发默认分支统一发布流水线`);
   } else if (!values.resume) {
-    throw new Error(`远端标签 ${tag} 已存在；如需继续监控已触发的发版，请加 --resume`);
+    throw new Error(`远端标签 ${tag} 已存在；如需监控运行中的任务请加 --resume，如未公开需重跑默认分支工作流请加 --retrigger`);
   } else {
     console.log(`远端标签 ${tag} 已存在，进入续跑监控模式...`);
   }
@@ -335,20 +354,20 @@ async function runShip(positionals, values) {
   const releaseRun = await findRecentDispatchedRun(
     repo,
     'release.yml',
-    values.resume ? Date.now() - 6 * 3600_000 : startedAt,
+    values.resume && !values.retrigger ? Date.now() - 6 * 3600_000 : startedAt,
     (r) => r.event === 'workflow_dispatch' && r.displayTitle.includes(tag),
   );
   console.log(`正在监控统一发布流水线：${releaseRun.url}`);
   const completed = await pollWorkflowRun(repo, releaseRun.databaseId, timeoutMs);
-  if (completed.conclusion !== 'success') {
-    const finalizeOk = (completed.jobs || []).some((j) => j.name === 'Publish GitHub Release' && j.conclusion === 'success');
-    const giteeFailed = (completed.jobs || []).some((j) => j.name.includes('Gitee') && j.conclusion !== 'success');
-    if (finalizeOk && giteeFailed) {
+  const finalizeOk = (completed.jobs || []).some((j) => j.name === 'Publish GitHub Release' && j.conclusion === 'success');
+  const giteeOk = (completed.jobs || []).some((j) => j.name === 'Publish Gitee update & latest.json' && j.conclusion === 'success');
+  if (completed.conclusion !== 'success' || !finalizeOk || !giteeOk) {
+    if (finalizeOk && !giteeOk) {
       throw new Error(
         `GitHub Release 已公开，但云端上传 Gitee 未完成（${completed.url}）。可直接执行本地免编译兜底：npm run release:gitee -- ${tag} --run-id ${completed.databaseId}`,
       );
     }
-    throw new Error(`发布流水线未通过（conclusion=${completed.conclusion}）：${completed.url}`);
+    throw new Error(`发布流水线未完整通过（conclusion=${completed.conclusion}, finalize=${finalizeOk}, gitee=${giteeOk}）：${completed.url}`);
   }
 
   const receipt = await verifyPublicRelease(tag, { ghRepo: repo });
@@ -416,6 +435,7 @@ async function main() {
       repo: { type: 'string' },
       watch: { type: 'boolean', default: false },
       resume: { type: 'boolean', default: false },
+      retrigger: { type: 'boolean', default: false },
       'run-id': { type: 'string' },
       'timeout-minutes': { type: 'string' },
       target: { type: 'string' },
