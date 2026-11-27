@@ -3,7 +3,7 @@
  */
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { useAppStore } from '../store/useAppStore';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import AnimatedButton from './shared/AnimatedButton';
 import { useT } from '../i18n';
 
@@ -11,38 +11,16 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const isMacOS = typeof navigator !== 'undefined'
   && /Macintosh|Mac OS X/.test(navigator.userAgent);
 
-export default function Titlebar() {
-  // Not running in Tauri — render nothing
-  if (!isTauri) return null;
+export default function Titlebar({ side }: { side: 'left' | 'right' }) {
+  if (!isTauri || side !== (isMacOS ? 'left' : 'right')) return null;
 
   return <TauriTitlebar />;
 }
 
 function TauriTitlebar() {
-  const [api, setApi] = useState<typeof import('@tauri-apps/api/window') | null>(null);
-
-  useEffect(() => {
-    import('@tauri-apps/api/window').then(setApi);
-  }, []);
-
-  const getCurrentWindow = api?.getCurrentWindow;
-  if (!getCurrentWindow) return null;
-
-  return <TitlebarInner getCurrentWindow={getCurrentWindow} />;
-}
-
-function TitlebarInner({
-  getCurrentWindow,
-}: {
-  getCurrentWindow: typeof import('@tauri-apps/api/window').getCurrentWindow;
-}) {
   const t = useT();
   const [isWindowExpanded, setIsWindowExpanded] = useState(false);
-  const appWindow = getCurrentWindow();
-  const sidebarFloating = useAppStore((state) => state.config.sidebarFloating) === true
-    && !isWindowExpanded;
-  const projectWorkspaceView = useAppStore((state) => state.projectWorkspaceView);
-  const offsetForSidebar = sidebarFloating && projectWorkspaceView !== 'script';
+  const [appWindow] = useState(getCurrentWindow);
 
   useEffect(() => {
     const check = () => {
@@ -71,37 +49,29 @@ function TitlebarInner({
     return (
       <div
         data-tauri-drag-region
-        className={`fixed top-3 z-[200] flex h-6 items-center select-none ${
-          offsetForSidebar ? 'left-10' : 'left-3'
-        }`}
+        className="mac-window-controls flex shrink-0 select-none items-center gap-1.5 px-2 py-1.5"
       >
-        <div
-          className="glass-bevel glass-bevel--floating flex items-center gap-1.5 rounded-full border border-canvas-border
-                     bg-canvas-surface/45 px-2 py-1.5 shadow-lg shadow-black/20 backdrop-blur-xl"
+        <MacTrafficLight
+          label={t('关闭')}
+          className="bg-[#ff5f57] hover:bg-[#ff7b74]"
+          onClick={() => appWindow.close()}
         >
-          {/* 交通灯用 macOS 系统色，不跟随主题调色板 —— 它是窗口控件而非应用配色 */}
-          <MacTrafficLight
-            label={t('关闭')}
-            className="bg-[#ff5f57] hover:bg-[#ff7b74]"
-            onClick={() => appWindow.close()}
-          >
-            <CloseIcon />
-          </MacTrafficLight>
-          <MacTrafficLight
-            label={t('最小化')}
-            className="bg-[#febc2e] hover:bg-[#ffcb55]"
-            onClick={() => appWindow.minimize()}
-          >
-            <MinimizeIcon />
-          </MacTrafficLight>
-          <MacTrafficLight
-            label={isWindowExpanded ? t('退出全屏') : t('全屏')}
-            className="bg-[#28c840] hover:bg-[#4dd662]"
-            onClick={() => { void toggleWindowExpanded(); }}
-          >
-            {isWindowExpanded ? <RestoreIcon /> : <MaximizeIcon />}
-          </MacTrafficLight>
-        </div>
+          <CloseIcon />
+        </MacTrafficLight>
+        <MacTrafficLight
+          label={t('最小化')}
+          className="bg-[#febc2e] hover:bg-[#ffcb55]"
+          onClick={() => appWindow.minimize()}
+        >
+          <MinimizeIcon />
+        </MacTrafficLight>
+        <MacTrafficLight
+          label={isWindowExpanded ? t('退出全屏') : t('全屏')}
+          className="bg-[#28c840] hover:bg-[#4dd662]"
+          onClick={() => { void toggleWindowExpanded(); }}
+        >
+          {isWindowExpanded ? <RestoreIcon /> : <MaximizeIcon />}
+        </MacTrafficLight>
       </div>
     );
   }
@@ -177,7 +147,7 @@ function MacTrafficLight({
       scale={1.08}
       tapScale={0.92}
       className={`group flex h-3 w-3 items-center justify-center rounded-full
-                  text-black/60 shadow-inner shadow-white/30 ring-1 ring-black/20
+                  text-black/60 ring-1 ring-inset ring-black/10
                   transition-colors ${className}`}
     >
       <span className="opacity-0 transition-opacity group-hover:opacity-100">

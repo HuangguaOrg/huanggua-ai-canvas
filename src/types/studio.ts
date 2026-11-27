@@ -32,11 +32,19 @@ export interface StudioStagingPrecheck {
   blockers: string[];
   warnings: string[];
 }
+export interface StudioVideoSpec {
+  id: string;
+  display_name: string;
+  spec_status: 'available' | 'unknown' | 'legacy';
+  default_resolution?: string | null;
+  seconds_by_resolution?: Record<string, number[]>;
+}
 export interface StudioEpisode {
   id: string; name: string; script: string; agentBrief: string; shots: StudioShot[];
   attachments?: StudioAttachment[]; rewriteAnchor?: string;
   models?: Record<string, string>;
-  submission?: { requestId: string; content: string; models: Record<string, string>; episodeTitle?: string; sourceText?: string; brief?: string; attachments?: StudioAttachment[]; rewriteAnchor?: string };
+  nativeVideoResolution?: string;
+  submission?: { requestId: string; content: string; models: Record<string, string>; nativeVideoResolution?: string | null; episodeTitle?: string; sourceText?: string; brief?: string; attachments?: StudioAttachment[]; rewriteAnchor?: string };
 }
 export interface StudioArtifact { id: string; name: string; kind: 'image' | 'video' | 'audio' | 'text' | 'file'; size: number; url?: string; imported?: boolean; importError?: boolean }
 export interface StudioEntry {

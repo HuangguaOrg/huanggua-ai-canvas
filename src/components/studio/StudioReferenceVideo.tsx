@@ -35,6 +35,10 @@ export default function StudioReferenceVideo({ project, episode }: { project: St
   const units = query.data?.units ?? []; const unit = units.find(u => u.unit_id === selected) ?? units[0];
   const index = unit ? units.indexOf(unit) : -1;
   const capability = query.data?.unit_capabilities?.[unit?.unit_id ?? ''];
+  const spec = useAppStore(s => episode.models?.video ? s.studioVideoSpecs[episode.models.video] : undefined);
+  const size = episode.nativeVideoResolution ?? spec?.default_resolution;
+  const offeredSeconds = spec?.spec_status === 'available' && size
+    ? spec.seconds_by_resolution?.[size] : capability?.allowed_durations;
   const unitRefs = query.data?.unit_references?.[unit?.unit_id ?? ''];
   const artifacts = execution?.artifacts ?? [];
   const media = artifacts.find(a => a.name === unit?.generated_assets?.video_clip);
@@ -87,7 +91,7 @@ export default function StudioReferenceVideo({ project, episode }: { project: St
           </div>}
         </section>
         <section className="space-y-3 rounded-lg border border-canvas-border p-4"><h4 className="text-sm">单元成片预览</h4>{media?.url ? <video className="max-h-96 w-full rounded" src={media.url} controls preload="metadata" /> : <p className="py-12 text-center text-xs text-canvas-text-muted">暂无视频</p>}<div className="flex flex-wrap gap-2"><button className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || unit.needs_replan || unit.pending_authoring || !unit.text.trim()} onClick={() => void preflight(false)}>{media ? '重新生成视频' : '生成视频'}</button><StudioUpload scope={scope} kind="reference_video" name={unit.unit_id} label="上传本地视频作为本单元成片" accept=".mp4,.mov,.m4v,.webm" onComplete={query.refresh} /><StudioVersions scope={scope} category="reference_videos" name={unit.unit_id} artifacts={artifacts} onChange={query.refresh} /></div></section></div>
-        {!!capability?.allowed_durations?.length && <p className="text-xs text-canvas-text-muted">模型时长档位：{capability.allowed_durations.join(' / ')} 秒</p>}
+        {!!offeredSeconds?.length && <p className="text-xs text-canvas-text-muted">模型时长档位：{offeredSeconds.join(' / ')} 秒</p>}
         {!!capability?.unavailable_references?.length && <p className="text-xs">待补参考图：{capability.unavailable_references.map(r => r.name).join('、')}</p>}{!!capability?.unregistered_references?.length && <p className="text-xs">待登记素材：{capability.unregistered_references.join('、')}</p>}{capability?.problem != null && <Feedback value={capability.problem} />}{!!capability?.problems?.length && <Feedback value={capability.problems} />}
       </> : !query.data?.rejected && <p className="py-12 text-center text-sm">暂无视频单元，点击“添加单元”开始。</p>}
       {preview != null && !editing && <div className="space-y-2 rounded border border-canvas-border p-3"><h4 className="text-sm">生成预览与检查</h4><Feedback value={preview} /><button className="ui-btn ui-btn--sm" onClick={() => setPreview(undefined)}>关闭预览</button></div>}</div>

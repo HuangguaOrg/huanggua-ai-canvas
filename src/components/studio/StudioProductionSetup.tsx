@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useT } from '../../i18n';
 import type { StudioEpisode, StudioProject } from '../../types/studio';
 import { useAppStore } from '../../store/useAppStore';
 import { studioWorkspace, uploadStudioLocalFile, workspaceError } from '../../services/studioWorkspaceService';
@@ -53,6 +54,7 @@ interface RemoteProjectSettings {
 }
 
 export default function StudioProductionSetup({ project, episode }: { project: StudioProject; episode: StudioEpisode }) {
+  const t = useT();
   const scope = { projectId: project.id, episodeId: episode.id };
   const query = useWorkspaceQuery<{ project?: RemoteProjectSettings | null }>(scope, 'project');
   const execution = useAppStore(s => s.studioExecutions[`${project.id}/${episode.id}`]);
@@ -240,7 +242,7 @@ export default function StudioProductionSetup({ project, episode }: { project: S
           value={ratioDraft}
           onChange={setRatioDraft}
           disabled={busy}
-          helperText="全剧共用，作为分镜图片、视频及导出成片的默认比例与分辨率。单镜头可单独调整；修改后不会自动重生成已有资源。"
+          helperText={t('成片按这里的尺寸导出。视频素材默认跟随本集模型，单镜头可单独调整画幅。')}
         />
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">

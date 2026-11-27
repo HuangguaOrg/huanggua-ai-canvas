@@ -134,15 +134,39 @@ OVERLAYS = {
 class _Overlay(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, root):
         self.sources = {}
-        for name, (old, new) in OVERLAYS.items():
+        replacements = {name: [pair] for name, pair in OVERLAYS.items()}
+        replacements.update({
+            'lib.backends.huanggua': [
+                ('self._base + "/v2/videos",', 'self._base + video_specs.video_collection(self.model, request.task_id),'),
+                ('base + "/v2/videos/" + quote(job_id, safe="")', 'base + video_specs.video_collection(self.model, request.task_id) + "/" + quote(job_id, safe="")'),
+                ('content_url = job_url + "/content"', 'content_url = video_specs.download_location(job_url, body)'),
+            ],
+            'lib.final_cut.basis': [
+                ('return output_profile_for_aspect_ratio(resolve_video_aspect_ratio(project, video_resource_type_for(script_kind)))',
+                 'return video_specs.export_profile(output_profile_for_aspect_ratio(resolve_video_aspect_ratio(project, video_resource_type_for(script_kind))), project)'),
+            ],
+            'lib.generation.generation_queue': [
+                # Reattaching to an accepted text task compares the caller's own prompt inputs.
+                ('_LEGACY_TEXT_PAYLOAD_KEYS = frozenset({"projects_root"})',
+                 '_LEGACY_TEXT_PAYLOAD_KEYS = frozenset({"projects_root", "desktop_video"})'),
+                ('        requested_facts = _reference_request_facts(task_type, payload)',
+                 '        payload = await video_specs.freeze_task(project_name, task_type, script_file, resource_id, payload)\n'
+                 '        requested_facts = _reference_request_facts(task_type, payload)'),
+            ],
+        })
+        for name, pairs in replacements.items():
             path = root.joinpath(*name.split('.')).with_suffix('.py')
             if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
                 raise ValueError('studio_invalid_engine')
             source = path.read_text(encoding='utf-8')
             future = 'from __future__ import annotations'
-            if source.count(old) != 1 or source.count(future) != 1 or name in sys.modules:
+            if source.count(future) != 1 or name in sys.modules:
                 raise ValueError('studio_media_extension_incompatible')
-            source = source.replace(old, new).replace(future, future + '\nfrom shot_media import shot_ratio')
+            for old, new in pairs:
+                if source.count(old) != 1:
+                    raise ValueError('studio_media_extension_incompatible')
+                source = source.replace(old, new)
+            source = source.replace(future, future + '\nfrom shot_media import shot_ratio\nimport video_specs')
             self.sources[name] = (path, compile(source, str(path), 'exec'))
 
     def find_spec(self, fullname, path=None, target=None):
@@ -320,7 +344,8 @@ async def shot_operation(name, body, client, checked):
         prompt = item.get('image_prompt' if kind == 'image' else 'video_prompt')
         if not prompt:
             raise ValueError('studio_prompt_required')
-        configured_ref = str(project.get('default_image_backend' if kind == 'image' else 'video_backend') or '')
+        configured_ref = (project.get('default_image_backend') if kind == 'image'
+                          else project.get('video_provider_i2v') or project.get('video_backend')) or ''
         fallback_model = configured_ref.split('/', 1)[1] if '/' in configured_ref else configured_ref
         selected_model = (body.get('models') or {}).get(kind) or fallback_model
         project_path = await run_sync_transaction(lambda: pm.get_project_path(name))
@@ -366,6 +391,14 @@ async def shot_operation(name, body, client, checked):
     payload = {'script_file': script_file, 'prompt': prompt}
     if kind == 'video':
         payload['duration_seconds'] = item.get('duration_seconds')
+        import video_specs
+        selected = (body.get('models') or {}).get('video') or body.get('_video_model')
+        if not selected:
+            selected = str(project.get('video_provider_i2v') or project.get('video_backend') or '').partition('/')[2]
+        spec = video_specs.catalog.get(selected)
+        if spec and spec.get('spec_status') == 'available':
+            size = video_specs.resolution(spec, body.get('nativeVideoResolution'))
+            video_specs.require_seconds(spec, size, item.get('duration_seconds'))
     # No request-scoped project ratio mutation: worker and provenance resolve the
     # same durable per-shot override, including Agent-created queue entries.
     return await diagnostic_request(client, 'POST', f'{base}/generate/{task_type}/{segment(target)}', payload)

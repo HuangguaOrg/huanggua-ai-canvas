@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import { pollStudioExecutions, studioRequest } from './studioExecutionService';
 
 export interface StudioScope { projectId: string; episodeId: string }
@@ -64,6 +65,10 @@ export function workspaceError(error: unknown): string {
   if (error === 'studio_prompt_required') return '请先在脚本规划中编写画面提示词。';
   if (error === 'studio_script_required') return '请先确认规划，生成正式脚本。';
   if (error === 'studio_invalid_ratio') return '当前比例不受支持，请重新选择。';
+  if (error === 'studio_video_specs_unavailable') return t('平台暂未提供可用的视频规格。请刷新模型或更换模型，分镜已保留。');
+  if (error === 'studio_video_resolution_conflict') return t('本集锁定的素材分辨率与当前模型不兼容，请在模型设置中选择。');
+  if (error === 'studio_video_duration_conflict') return t('这个镜头的时长已不在当前档位。请调整这个镜头或更换模型。');
+  if (error === 'studio_video_ratio_conflict') return t('当前镜头的画幅与生成计划不一致，请重新检查这个镜头。');
   if (error === 'studio_video_model_incompatible') return '所选视频模型不支持当前制作方式，请在 Agent 模型设置中更换视频模型。';
   if (error === 'studio_model_unavailable') return '所选模型已不可用，请刷新执行服务并重新选择模型。输入内容已保留。';
   if (error === 'studio_login_required') return '登录已失效，请在账号页面重新登录后连接执行服务。';

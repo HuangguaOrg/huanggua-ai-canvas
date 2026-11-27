@@ -5,7 +5,8 @@ vi.mock('../../src/services/studioExecutionService', () => ({ studioError: Strin
 import { studioRequest } from '../../src/services/studioExecutionService';
 import { createStudioExecutionSlice } from '../../src/store/store.studioExecution';
 const request = vi.mocked(studioRequest);
-const latest = { models: { image: ['new'] }, videoModelsByMode: { storyboard: ['frame'], reference_video: ['reference'] } };
+const videoSpecs = { h3: { id: 'h3', display_name: 'H3', spec_status: 'available' as const, default_resolution: '768p', seconds_by_resolution: { '768p': [3, 4] } } };
+const latest = { videoSpecs, models: { image: ['new'] }, videoModelsByMode: { storyboard: ['frame'], reference_video: ['reference'] } };
 const makeStore = () => create<AppState>()((...args) => ({ ...createStudioExecutionSlice(...args) } as AppState));
 beforeEach(() => vi.resetAllMocks());
 describe('studio catalog refresh', () => {
@@ -16,7 +17,7 @@ describe('studio catalog refresh', () => {
     request.mockResolvedValueOnce(latest);
     await store.getState().refreshStudioModels();
     expect(request).toHaveBeenCalledWith('status');
-    expect(store.getState()).toMatchObject({ studioEpoch: 4, studioConnection: 'ready', studioModels: latest.models, studioVideoModelsByMode: latest.videoModelsByMode, studioSubmitting: { running: true }, studioModelsRefreshing: false });
+    expect(store.getState()).toMatchObject({ studioEpoch: 4, studioConnection: 'ready', studioModels: latest.models, studioVideoModelsByMode: latest.videoModelsByMode, studioVideoSpecs: videoSpecs, studioSubmitting: { running: true }, studioModelsRefreshing: false });
     expect(store.getState().studioExecutions).toBe(executions);
   });
   it('preserves the previous list and reports a failure for retry', async () => {
@@ -29,13 +30,13 @@ describe('studio catalog refresh', () => {
     expect(store.getState().studioModels).toEqual(latest.models);
   });
   it('ignores duplicate requests and late results after logout', async () => {
-    const store = makeStore(); store.setState({ studioConnection: 'ready' });
+    const store = makeStore(); store.setState({ studioConnection: 'ready', studioVideoSpecs: videoSpecs });
     let resolve!: (value: typeof latest) => void;
     request.mockReturnValueOnce(new Promise(r => { resolve = r; }));
     const refreshing = store.getState().refreshStudioModels();
     await store.getState().refreshStudioModels(); expect(request).toHaveBeenCalledTimes(1);
     await store.getState().disconnectStudio(); resolve(latest); await refreshing;
-    expect(store.getState()).toMatchObject({ studioConnection: 'idle', studioModels: {}, studioModelsRefreshing: false });
+    expect(store.getState()).toMatchObject({ studioConnection: 'idle', studioModels: {}, studioVideoSpecs: {}, studioModelsRefreshing: false });
   });
   it('waits for an initial connection, then fetches again rather than accepting its older catalog', async () => {
     const store = makeStore(); store.setState({ studioConnection: 'connecting' });

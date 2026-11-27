@@ -599,6 +599,23 @@ async def workspace(name, body, client, checked, service, read_binding, write_bi
         return await diagnostic_request(client, 'POST', f'{base}/episodes/{episode}/ad-script', {k: v for k, v in data.items() if k in {'instructions', 'regenerate', 'overwrite_revision'}})
     if action.startswith('reference_'):
         path = f'{base}/reference-videos/episodes/{episode}'
+        if action in {'reference_batch_preview', 'reference_batch', 'reference_precheck', 'reference_generate'}:
+            import video_specs
+            model = (body.get('models') or {}).get('video') or body.get('_video_model')
+            spec = video_specs.catalog.get(model)
+            if spec and spec.get('spec_status') == 'available':
+                size = video_specs.resolution(spec, body.get('nativeVideoResolution'))
+                allowed_seconds = spec['seconds_by_resolution'][size]
+                units = (await checked(client, 'GET', path + '/units')).get('units', [])
+                many = action in {'reference_batch_preview', 'reference_batch'}
+                ids = data.get('unit_ids') if many else [body.get('id')]
+                affected = [u for u in units if (not ids or u.get('unit_id') in ids)
+                            and not (many and (u.get('generated_assets') or {}).get('video_clip'))
+                            and u.get('duration_seconds') not in allowed_seconds]
+                if affected:
+                    labels = '、'.join(str(u.get('unit_id')) + '（' + str(u.get('duration_seconds')) + ' 秒）' for u in affected)
+                    return {'decision': 'blocked', 'rejected': True, 'diagnostic':
+                            f"请调整 {labels} 的时长，或更换模型。{size} 可选秒数为 {', '.join(map(str, allowed_seconds))}。"}
         routes = {
             'reference_units': ('GET', '/units', None),
             'reference_add': ('POST', '/units', {'prompt', 'duration_seconds', 'note', 'after_unit_id'}),

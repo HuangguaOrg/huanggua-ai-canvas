@@ -21,7 +21,8 @@ def bridge_functions(**values):
                  and node.name in {'compatible_video_models', 'ensure_project', 'run_episode', 'is_account_bound_key', 'configure_models', 'connect_account', 'desktop_operation'}]
     for node in tree.body:
         node.decorator_list = []
-    scope = {'json': json, 're': re, 'Request': object, **values}
+    import video_specs
+    scope = {'json': json, 're': re, 'Request': object, 'video_specs': video_specs, **values}
     exec(compile(tree, str(source), 'exec'), scope)
     return scope
 
@@ -39,6 +40,24 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
             compatible = scope['compatible_video_models']
             self.assertEqual([m['model_id'] for m in compatible('storyboard')], ['frame'])
             self.assertEqual([m['model_id'] for m in compatible('reference_video')], ['reference', 'frame'])
+
+    async def test_new_video_work_never_uses_an_old_default_after_withdrawal(self):
+        scope = bridge_functions(models={'text': ['text']}, model_refs={'text': {'text': 't'}})
+        scope['compatible_video_models'] = lambda mode: []
+        for action in ('reference_generate', 'plan_generate', 'shot_generate'):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'studio_video_model_incompatible'):
+                await scope['ensure_project']('project', {'action': action, 'data': {'kind': 'video'}})
+
+    async def test_refresh_validates_the_mode_default_shown_in_the_picker(self):
+        selected = 'reference-only'
+        scope = bridge_functions(models={'video': ['frame-only', selected]}, model_refs={'video': {}})
+        scope['connect_account'] = AsyncMock()
+        rows = [{'model_id': selected}]
+        # The mode's default was visible at selection time and withdrawn on detail refresh.
+        scope['compatible_video_models'] = Mock(side_effect=[rows, []])
+        with self.assertRaisesRegex(ValueError, 'studio_model_unavailable'):
+            await scope['ensure_project']('project', {'action': 'reference_precheck', 'generationMode': 'reference_video'})
+        scope['connect_account'].assert_awaited_once_with(force=True, selected=selected)
 
     async def test_definite_rejection_does_not_create_pending_or_send(self):
         for error in ('studio_video_model_incompatible', 'studio_model_unavailable', 'studio_style_required'):
@@ -69,6 +88,8 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_removed_model_is_rejected_before_project_changes(self):
         scope = bridge_functions(model_refs={'video': {'frame': 'f'}}, models={'video': ['frame']})
+        scope['compatible_video_models'] = lambda mode: [{'model_id': 'frame'}]
+        scope['connect_account'] = AsyncMock()
         with self.assertRaisesRegex(ValueError, 'studio_model_unavailable'):
             await scope['ensure_project']('project', {'models': {'video': 'removed'}})
 

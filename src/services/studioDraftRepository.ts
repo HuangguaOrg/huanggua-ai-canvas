@@ -21,6 +21,7 @@ function isDocument(value: unknown): value is StudioDraftDocument {
     && Array.isArray(p.episodes) && p.episodes.every(e =>
       typeof e.id === 'string' && typeof e.name === 'string' && typeof e.script === 'string'
       && typeof e.agentBrief === 'string'
+      && (e.nativeVideoResolution === undefined || typeof e.nativeVideoResolution === 'string')
       && (e.models === undefined || (e.models !== null && typeof e.models === 'object'
         && !Array.isArray(e.models) && Object.values(e.models).every(m => typeof m === 'string')))
       && (e.submission === undefined || (e.submission !== null && typeof e.submission === 'object'

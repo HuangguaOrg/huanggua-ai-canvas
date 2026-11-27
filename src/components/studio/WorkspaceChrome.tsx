@@ -3,6 +3,7 @@ import { Clapperboard, Infinity as InfinityIcon, FolderOpen, Library, ListChecks
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
 import AboutDialog from '../AboutDialog';
+import Titlebar from '../Titlebar';
 import Tabs from '../shared/Tabs';
 import ModalOverlay from '../shared/ModalOverlay';
 import HuangguaAccountButton from '../account/HuangguaAccountButton';
@@ -18,6 +19,7 @@ export default function WorkspaceChrome() {
   const [aboutOpen, setAboutOpen] = useState(false);
   return <>
     <header className="huanggua-chrome" data-tauri-drag-region>
+      <Titlebar side="left" />
       <button
         type="button"
         className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1 transition-colors hover:bg-canvas-hover"
@@ -45,6 +47,7 @@ export default function WorkspaceChrome() {
         <HuangguaAccountButton compact />
       </nav>
     </header>
+    <Titlebar side="right" />
     <ModalOverlay isOpen={tasksOpen} onClose={() => setTasksOpen(false)} ariaLabel={t('任务概览')} zIndex={400}
       className="w-[min(560px,calc(100vw-32px))] p-6">
       <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">{t('任务概览')}</h2>

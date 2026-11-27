@@ -17,7 +17,7 @@ export interface StudioSlice {
   deleteStudioProject: (id: string) => Promise<boolean>;
   addStudioEpisode: (name: string) => void;
   selectStudioEpisode: (id: string) => void;
-  editStudioEpisode: (id: string, patch: Partial<Pick<StudioEpisode, 'name' | 'script' | 'agentBrief' | 'shots' | 'models' | 'rewriteAnchor'>>) => void;
+  editStudioEpisode: (id: string, patch: Partial<Pick<StudioEpisode, 'name' | 'script' | 'agentBrief' | 'shots' | 'models' | 'nativeVideoResolution' | 'rewriteAnchor'>>) => void;
   setStudioProjectStyleTemplate: (projectId: string, styleTemplateId: string | null) => void;
   setStudioProjectRatio: (projectId: string, aspectRatio: string, customResolution: string | null) => void;
 }

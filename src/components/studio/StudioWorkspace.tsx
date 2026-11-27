@@ -187,7 +187,7 @@ export default function StudioWorkspace() {
         <div className="mt-4 grid grid-cols-2 gap-3"><label className="text-sm">内容类型<Select aria-label="内容类型" className="mt-2 w-full" value={contentMode} onChange={value => setContentMode(value as 'drama' | 'ad')} options={[{ value: 'drama', label: '短剧' }, { value: 'ad', label: '广告 / 短片' }]} /></label><label className="text-sm">制作方式<Select aria-label="生成方式" className="mt-2 w-full" value={generationMode} onChange={value => setGenerationMode(value as 'storyboard' | 'reference_video')} options={[{ value: 'storyboard', label: '分镜图生视频' }, { value: 'reference_video', label: '参考生视频' }]} /></label></div>
         <div className="mt-4">
           <StudioRatioPicker
-            label="默认画幅 / 分辨率"
+            label={t('画幅 / 成片导出尺寸')}
             ariaLabel="默认画幅"
             value={newProjectRatioDraft}
             onChange={setNewProjectRatioDraft}
