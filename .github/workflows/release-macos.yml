@@ -1,4 +1,4 @@
-name: Transfer verified macOS update artifact
+name: Transfer verified updates to Gitee
 on:
   workflow_dispatch:
     inputs:
@@ -9,25 +9,27 @@ on:
         type: boolean
         default: false
 permissions:
-  contents: write
+  contents: read
   actions: read
 jobs:
   transfer:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
-      - name: Transfer exact verified artifact to existing draft
+      - uses: actions/checkout@v4
+      - name: Download exact signed build artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: HuangguaOrg/huanggua-ai-canvas
         shell: bash
         run: |
           set -euo pipefail
           test "${{ inputs.tag }}" = "v0.11.13"
           gh api repos/HuangguaOrg/huanggua-ai-canvas/actions/runs/45954668264 > run.json
           jq -e '.conclusion == "success" and .head_sha == "e2cc6fdd6349bc48daecb1c2fb600b4ed106011e"' run.json
-          gh api repos/HuangguaOrg/huanggua-ai-canvas/releases/460272653 > release.json
-          jq -e '.target_commitish == "e2cc6fdd6349bc48daecb1c2fb600b4ed106011e" and .tag_name == "v0.11.13"' release.json
-          gh api repos/HuangguaOrg/huanggua-ai-canvas/actions/artifacts/15179212920/zip > macos-gitee-update-transfer.zip
-          echo "9029c0c4176b6859365364bbaeef6becf60c2a1fee8d68c9e0b2c768c6d499d1  macos-gitee-update-transfer.zip" | sha256sum --check
-          gh release upload v0.11.13 macos-gitee-update-transfer.zip --repo "$GH_REPO"
+          mkdir -p payload
+          gh api repos/HuangguaOrg/huanggua-ai-canvas/actions/artifacts/15179212920/zip > payload/mac.zip
+          echo "9029c0c4176b6859365364bbaeef6becf60c2a1fee8d68c9e0b2c768c6d499d1  payload/mac.zip" | sha256sum --check
+      - name: Upload and publicly verify updates without changing feed
+        env:
+          TEMP_GITEE_TOKEN: ${{ secrets.TEMP_GITEE_RELEASE_01113 }}
+        run: python3 -u release-transfer.py

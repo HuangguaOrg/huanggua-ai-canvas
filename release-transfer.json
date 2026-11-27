@@ -1,0 +1,50 @@
+{
+  "repo": "xiang834740239/huanggua-aiagent",
+  "release_id": 1375132,
+  "files": [
+    {
+      "name": "HuangGuaAI-0.11.13-windows-x64-update.exe",
+      "size": 42985941,
+      "sha256": "62d6576c41e059ed5cd1d247fbb5cea27a10cf9bc62f367bb157898889a165b8",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-windows-x64-update.exe"
+    },
+    {
+      "name": "HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part001",
+      "size": 94371840,
+      "sha256": "cdf4730e24fb372cae2a70ca79e0e850404d620ab85884afb864f1d6d37e67cc",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part001"
+    },
+    {
+      "name": "HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part002",
+      "size": 94371840,
+      "sha256": "2adad83a18ba01980f6eb1445e6170ec6952765626482f47428311e03b5f15df",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part002"
+    },
+    {
+      "name": "HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part003",
+      "size": 94371840,
+      "sha256": "705b3e7a2973e9d6f021a8b983f680fba850ecae3556b9939a71ab1f4050cc3c",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part003"
+    },
+    {
+      "name": "HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part004",
+      "size": 79749737,
+      "sha256": "83e1ec0504c994882f6c86ad0868a9268d64a2343ea969a6f6088ef7a6c840b7",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.part004"
+    },
+    {
+      "name": "HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.update.json",
+      "size": 3143,
+      "sha256": "c1008bf67410f012c6555e64cb6773e3eadd818be37b96ffb8e434231bf5ec49",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.update.json"
+    },
+    {
+      "name": "HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.update.json.sig",
+      "size": 452,
+      "sha256": "5920649d3aceb20f9cb4d77939d363e4f59e8f481d0736683ac68f637167d7cc",
+      "url": "https://gitee.com/xiang834740239/huanggua-aiagent/releases/download/v0.11.13/HuangGuaAI-0.11.13-macos-arm64.app.tar.gz.update.json.sig"
+    }
+  ],
+  "mac_hash": "9029c0c4176b6859365364bbaeef6becf60c2a1fee8d68c9e0b2c768c6d499d1",
+  "win_url": "https://github.com/HuangguaOrg/huanggua-ai-canvas/releases/download/v0.11.13/HuangGuaAI-0.11.13-windows-x64-update.exe"
+}
