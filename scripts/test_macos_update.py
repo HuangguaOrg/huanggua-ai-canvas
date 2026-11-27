@@ -143,6 +143,61 @@ class MacUpdateTests(unittest.TestCase):
                 self.assertNotIn("secret-token-xyz", str(ctx.exception))
                 self.assertIn("***", str(ctx.exception))
 
+    def test_prunes_oldest_superseded_release_attachments_while_preserving_live_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            part1 = folder / "part1.bin"
+            part1.write_bytes(b"x" * (270 * 1024 * 1024) if False else b"abc")
+            # Mock stat size logic via fake local files of small real bytes and custom quota_limit_bytes
+            f_already = folder / "already.bin"
+            f_already.write_bytes(b"a" * 100)
+            f_new = folder / "new.bin"
+            f_new.write_bytes(b"b" * 300)
+
+            releases = [
+                {"id": 10, "tag_name": "v0.11.10"},
+                {"id": 11, "tag_name": "v0.11.11"},
+                {"id": 13, "tag_name": "v0.11.13"},
+                {"id": 14, "tag_name": "v0.11.14"},
+            ]
+            attachments = {
+                10: [{"id": 101, "name": "old10.exe", "size": 150}],
+                11: [{"id": 111, "name": "old11.part1", "size": 400}],
+                13: [{"id": 131, "name": "live13.part1", "size": 400}],
+                14: [{"id": 141, "name": "already.bin", "size": 100}],
+            }
+            deleted = []
+
+            def fake_api(method, path, token, payload=None, **kw):
+                if method == "GET" and path.startswith("/repos/o/r/releases?"):
+                    return releases if "page=1" in path else []
+                if method == "GET" and path.endswith("/attach_files"):
+                    rid = int(path.split("/releases/")[1].split("/")[0])
+                    return list(attachments.get(rid, []))
+                if method == "DELETE" and "/attach_files/" in path:
+                    rid = int(path.split("/releases/")[1].split("/")[0])
+                    aid = int(path.rsplit("/", 1)[1])
+                    deleted.append((rid, aid))
+                    attachments[rid] = [a for a in attachments[rid] if a["id"] != aid]
+                    return {}
+                raise AssertionError(f"Unexpected API call: {method} {path}")
+
+            quota_fn = publisher["ensure_gitee_quota_headroom"]
+            with patch.dict(
+                quota_fn.__globals__,
+                {
+                    "gitee_json": fake_api,
+                    "_fetch_current_live_tag": lambda repo, branch: "v0.11.13",
+                },
+            ):
+                # Initial used = 150 + 400 + 400 + 100 = 1050; needed = 300 (new.bin only); limit = 950
+                # Pruning rid=10 (150) -> 900 + 300 = 1200 > 950; pruning rid=11 (400) -> 500 + 300 = 800 <= 950!
+                # rid=13 (live v0.11.13) and rid=14 (target v0.11.14) must remain untouched!
+                quota_fn("o/r", "master", "v0.11.14", [f_already, f_new], "tok", quota_limit_bytes=950)
+                self.assertEqual(deleted, [(10, 101), (11, 111)])
+                self.assertEqual(len(attachments[13]), 1)
+                self.assertEqual(len(attachments[14]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

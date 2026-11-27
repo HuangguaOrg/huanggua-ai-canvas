@@ -27,6 +27,7 @@ DEFAULT_REPO = "xiang834740239/huanggua-aiagent"
 API_BASE = "https://gitee.com/api/v5"
 GITEE_HOST = "gitee.com"
 GITEE_ASSET_LIMIT_BYTES = 100 * 1024 * 1024
+GITEE_REPO_QUOTA_SAFE_BYTES = 950 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 PROGRESS_STEP_BYTES = 8 * 1024 * 1024
 LOCAL_TOKEN_FILE = Path(__file__).resolve().parents[3] / ".secrets/huanggua-desktop/gitee.token"
@@ -234,6 +235,94 @@ def ensure_release(repo: str, tag: str, branch: str, title: str, notes: str, tok
     return release_id
 
 
+def _fetch_current_live_tag(repo: str, branch: str) -> str | None:
+    url = f"https://gitee.com/{repo}/raw/{branch}/latest.json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "HuangGuaAI-GiteePublisher/1.0", "Cache-Control": "no-cache"})
+        with _DIRECT_OPENER.open(req, timeout=20) as resp:
+            feed = json.loads(resp.read().decode("utf-8"))
+        ver = str(feed.get("version") or "").strip()
+        return f"v{ver}" if ver else None
+    except Exception:
+        return None
+
+
+def ensure_gitee_quota_headroom(
+    repo: str,
+    branch: str,
+    target_tag: str,
+    needed_files: list[Path],
+    token: str,
+    *,
+    quota_limit_bytes: int = GITEE_REPO_QUOTA_SAFE_BYTES,
+) -> None:
+    """Keep Gitee total Release attachment usage below its 1 GB repository quota.
+
+    Gitee enforces a 1 GB cumulative attachment quota across all Releases in a
+    repository. Old superseded hot-update packages are never fetched by clients
+    once ``latest.json`` advances, while full historical installers remain
+    permanently hosted on GitHub Releases. Preserves both ``target_tag`` and the
+    currently live ``latest.json`` tag during upload so active updaters never see
+    missing files.
+    """
+    releases: list[dict] = []
+    for page in range(1, 6):
+        batch = gitee_json("GET", f"/repos/{repo}/releases?per_page=100&page={page}&direction=asc", token) or []
+        if not isinstance(batch, list) or not batch:
+            break
+        releases.extend(r for r in batch if isinstance(r, dict) and isinstance(r.get("id"), int))
+        if len(batch) < 100:
+            break
+    releases.sort(key=lambda r: int(r["id"]))
+
+    by_release: list[tuple[int, str, list[dict]]] = []
+    target_existing_names: set[str] = set()
+    used_bytes = 0
+    for rel in releases:
+        rid = int(rel["id"])
+        rtag = str(rel.get("tag_name") or "")
+        files = gitee_json("GET", f"/repos/{repo}/releases/{rid}/attach_files", token) or []
+        valid_files = [f for f in files if isinstance(f, dict) and isinstance(f.get("id"), int)]
+        for f in valid_files:
+            used_bytes += int(f.get("size") or 0)
+            if rtag == target_tag and isinstance(f.get("name"), str):
+                target_existing_names.add(f["name"])
+        by_release.append((rid, rtag, valid_files))
+
+    needed_bytes = sum(p.stat().st_size for p in needed_files if p.name not in target_existing_names)
+    print(
+        f"Gitee quota check: used={used_bytes / (1024 * 1024):.1f} MiB, "
+        f"needed={needed_bytes / (1024 * 1024):.1f} MiB, "
+        f"safe_limit={quota_limit_bytes / (1024 * 1024):.1f} MiB",
+        flush=True,
+    )
+    if used_bytes + needed_bytes <= quota_limit_bytes:
+        return
+
+    live_tag = _fetch_current_live_tag(repo, branch)
+    protected_sets = [{target_tag, live_tag} - {None}, {target_tag}]
+    for protected in protected_sets:
+        if used_bytes + needed_bytes <= quota_limit_bytes:
+            break
+        for rid, rtag, valid_files in by_release:
+            if rtag in protected or not valid_files:
+                continue
+            for att in list(valid_files):
+                if used_bytes + needed_bytes <= quota_limit_bytes:
+                    break
+                aid = int(att["id"])
+                asize = int(att.get("size") or 0)
+                aname = str(att.get("name") or aid)
+                gitee_json("DELETE", f"/repos/{repo}/releases/{rid}/attach_files/{aid}", token)
+                valid_files.remove(att)
+                used_bytes = max(0, used_bytes - asize)
+                print(
+                    f"PRUNED_OLD_ATTACHMENT {rtag}/{aname} ({asize / (1024 * 1024):.1f} MiB) "
+                    f"-> used={used_bytes / (1024 * 1024):.1f} MiB",
+                    flush=True,
+                )
+
+
 def macos_update_files(folder: Path, version: str, repo: str):
     """Validate local signed-descriptor relationships before uploading any Mac file."""
     if repo != DEFAULT_REPO or len(version) > 48 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
@@ -277,10 +366,13 @@ def macos_update_files(folder: Path, version: str, repo: str):
     return feed["platforms"], files
 
 
-def upload_macos_updates(folder: Path, version: str, repo: str, release_id: int, token: str):
+def upload_macos_updates(folder: Path, version: str, repo: str, release_id: int, token: str, *, branch: str = "master"):
     platforms, files = macos_update_files(folder, version, repo)
     existing = gitee_json("GET", f"/repos/{repo}/releases/{release_id}/attach_files", token) or []
     names = {item.get("name") for item in existing if isinstance(item, dict)}
+    missing = [p for p in files if p.name not in names]
+    if missing:
+        ensure_gitee_quota_headroom(repo, branch, f"v{version}", missing, token)
 
     def upload(path: Path):
         expected = f"https://gitee.com/{repo}/releases/download/v{version}/{path.name}"
@@ -386,6 +478,7 @@ def publish(
                 _delete_attachment_by_name(repo, release_id, payload.name, token)
                 has_existing_win = False
         if not has_existing_win:
+            ensure_gitee_quota_headroom(repo, branch, tag, [payload], token)
             uploaded = upload_release_attachment(repo, release_id, payload, token)
             download_url = uploaded.get("browser_download_url")
             if isinstance(download_url, str) and download_url.startswith("https://"):
@@ -398,7 +491,7 @@ def publish(
     if macos_dir is not None:
         if release_id is None:
             release_id = ensure_release(repo, tag, branch, f"黄瓜 AI 画布 {tag}", str(feed.get("notes") or ""), token)
-        feed.setdefault("platforms", {}).update(upload_macos_updates(macos_dir, version, repo, release_id, token))
+        feed.setdefault("platforms", {}).update(upload_macos_updates(macos_dir, version, repo, release_id, token, branch=branch))
         manifest_path.write_text(json.dumps(feed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     upsert_repo_file(
