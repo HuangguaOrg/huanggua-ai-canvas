@@ -84,8 +84,6 @@ const project = {
   '当前旧项目格式暂不支持删除最后一集，已保留整部剧': 'The current legacy project format cannot delete the last episode; the entire series has been kept',
   '替代项目加载失败，已阻止空画布覆盖原数据': 'Loading the replacement project failed; an empty canvas was prevented from overwriting the original data',
   '项目加载失败，已保留当前画布并阻止覆盖保存': 'Loading the project failed; the current canvas is kept and overwriting saves are blocked',
-  '项目尚未成功加载，暂时无法返回启动页': 'The project has not loaded successfully, so returning to the start page is unavailable for now',
-  '返回启动页失败，已保留当前画布，请重试': 'Returning to the start page failed; the current canvas is kept. Please try again',
   '项目尚未成功加载，已阻止覆盖保存': 'The project has not loaded successfully, so overwriting saves are blocked',
   '项目已保存': 'Project saved',
   '项目加载失败，已阻止空画布覆盖原数据': 'Loading the project failed; an empty canvas was prevented from overwriting the original data',

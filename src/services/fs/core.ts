@@ -666,16 +666,16 @@ export async function ensureProjectDataDir(
   options: { throwOnError?: boolean } = {},
 ): Promise<string | null> {
   if (!isTauriEnv()) return null;
-  const dirPath = await getProjectDataDir(projectId);
-  if (!dirPath) return null;
-  if (_nativeProjectOwners.has(projectId)) return dirPath;
   try {
+    const dirPath = await getProjectDataDir(projectId);
+    if (!dirPath) return null;
+    if (_nativeProjectOwners.has(projectId)) return dirPath;
     const dirExists = await exists(dirPath);
     if (!dirExists) await mkdir(dirPath, { recursive: true });
     return dirPath;
   } catch (err) {
     if (options.throwOnError) throw err;
-    console.error('Failed to create project data dir:', dirPath, err);
+    console.error('Failed to create project data dir');
     return null;
   }
 }
