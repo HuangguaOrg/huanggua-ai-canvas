@@ -29,6 +29,14 @@ jobs:
           mkdir -p payload
           gh api repos/HuangguaOrg/huanggua-ai-canvas/actions/artifacts/15179212920/zip > payload/mac.zip
           echo "9029c0c4176b6859365364bbaeef6becf60c2a1fee8d68c9e0b2c768c6d499d1  payload/mac.zip" | sha256sum --check
+      - name: Configure ephemeral runner upload transport
+        shell: bash
+        run: |
+          sudo modprobe tcp_bbr || true
+          cat /proc/sys/net/ipv4/tcp_available_congestion_control
+          if grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
+            sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+          fi
       - name: Upload and publicly verify updates without changing feed
         env:
           TEMP_GITEE_TOKEN: ${{ secrets.TEMP_GITEE_RELEASE_01113 }}
