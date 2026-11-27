@@ -1,3 +1,4 @@
+import { useAppStore } from '../../store/useAppStore';
 import type { StudioStagingPrecheck } from '../../types/studio';
 
 function formatBytes(bytes: number): string {
@@ -7,9 +8,10 @@ function formatBytes(bytes: number): string {
 }
 
 export default function StudioStagingNotice({ precheck }: { precheck: StudioStagingPrecheck }) {
+  const displayName = useAppStore(s => s.studioVideoSpecs[precheck.model]?.display_name ?? precheck.model);
   return <div className="space-y-3 rounded-lg border border-canvas-border bg-canvas-card p-3 text-xs">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <strong className="text-canvas-text">目标规格 · {precheck.model}</strong>
+      <strong className="text-canvas-text">目标规格 · {displayName}</strong>
       <span className="text-canvas-text-secondary">
         画幅 {precheck.targetRatio} · 档位 {precheck.targetResolution}
         {precheck.targetPixelSize ? ` (${precheck.targetPixelSize})` : ''}

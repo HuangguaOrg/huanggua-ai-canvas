@@ -7,7 +7,7 @@ export function studioRequest<T>(operation: string, payload: Record<string, unkn
   const project = useAppStore.getState().studioDraft.projects.find(p => p.id === payload.projectId);
   const episode = project?.episodes.find(e => e.id === payload.episodeId);
   const needsSource = operation === 'workspace' && ['initialize', 'blank_script', 'source_save', 'plan_generate', 'review_confirm', 'prompts_generate'].includes(String(payload.action));
-  return invoke<T>('studio_request', { operation, payload: { ...(episode ? { title: project!.name, models: episode.models ?? {}, contentMode: project!.contentMode ?? 'drama', generationMode: project!.generationMode ?? 'storyboard', ...(project!.styleTemplateId ? { styleTemplateId: project!.styleTemplateId } : {}), ...(project!.aspectRatio ? { aspectRatio: project!.aspectRatio } : {}), ...(project!.customResolution ? { customResolution: project!.customResolution } : {}), episodeIds: project!.episodes.map(e => e.id), episodeTitle: episode.name, ...(needsSource ? { sourceText: episode.script } : {}) } : {}), ...payload } });
+  return invoke<T>('studio_request', { operation, payload: { ...(episode ? { title: project!.name, models: episode.models ?? {}, nativeVideoResolution: episode.nativeVideoResolution ?? null, contentMode: project!.contentMode ?? 'drama', generationMode: project!.generationMode ?? 'storyboard', ...(project!.styleTemplateId ? { styleTemplateId: project!.styleTemplateId } : {}), ...(project!.aspectRatio ? { aspectRatio: project!.aspectRatio } : {}), ...(project!.customResolution ? { customResolution: project!.customResolution } : {}), episodeIds: project!.episodes.map(e => e.id), episodeTitle: episode.name, ...(needsSource ? { sourceText: episode.script } : {}) } : {}), ...payload } });
 }
 export function studioError(error: unknown): string {
   return typeof error === 'string' && /^studio_[a-z_]+$/.test(error) ? error : 'studio_execution_failed';
@@ -69,7 +69,7 @@ export async function submitStudio(projectId: string, episodeId: string, selecte
   const episode = project?.episodes.find(e => e.id === episodeId);
   if (!project || !episode) throw new Error('studio_invalid_project');
   const submission = retry ? episode.submission : {
-    requestId: crypto.randomUUID(), models: selectedModels, episodeTitle: episode.name, sourceText: episode.script, brief: episode.agentBrief, attachments: episode.attachments ?? [], rewriteAnchor: episode.rewriteAnchor,
+    requestId: crypto.randomUUID(), models: selectedModels, nativeVideoResolution: episode.nativeVideoResolution ?? null, episodeTitle: episode.name, sourceText: episode.script, brief: episode.agentBrief, attachments: episode.attachments ?? [], rewriteAnchor: episode.rewriteAnchor,
     content: [
       `这是黄瓜 AI 客户端的短剧：${project.name}，当前分集：${episode.name}。同剧各集共享角色、场景和道具，先复用正式资产。使用短剧工作区的正式工作流与工具完成下面的制作要求，生成文件保存到当前项目的标准产物目录，不访问其他项目。`,
       '如果制作要求只要求文字、规划或分镜，则只执行相应阶段，不擅自生成付费图片或视频。实际媒体生成只使用本项目配置的黄瓜 AI 模型。需要用户选择时使用 AskUserQuestion。',

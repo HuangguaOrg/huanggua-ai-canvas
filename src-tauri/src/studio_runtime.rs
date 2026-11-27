@@ -345,6 +345,7 @@ fn start(app: &tauri::AppHandle) -> Result<Connection, String> {
     std::fs::create_dir_all(&data).map_err(|_| "studio_storage_unavailable")?;
     let script = data.join("desktop_bridge.py");
     for (name, embedded) in [
+        ("video_specs.py", include_str!("../../runtime/studio/video_specs.py")),
         ("shot_media.py", include_str!("../../runtime/studio/shot_media.py")),
         ("media_staging.py", include_str!("../../runtime/studio/media_staging.py")),
         ("creative_profile.py", include_str!("../../runtime/studio/creative_profile.py")),

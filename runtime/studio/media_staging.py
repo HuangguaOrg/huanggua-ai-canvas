@@ -77,6 +77,11 @@ def _preset_models(root: Path) -> list[dict]:
 def model_media_spec(root: Path, category: str, model_id: str) -> dict:
     models = _preset_models(root)
     entry = next((m for m in models if m.get("model_id") == model_id), None) or {}
+    if category == "video":
+        import video_specs
+        active = video_specs.catalog.get(model_id)
+        if active and active.get("spec_status") == "available":
+            entry = video_specs.provider_rows(models, [model_id], {model_id: active})[0]
     overrides = entry.get("capability_overrides") or {}
     resolution = entry.get("resolution") or ("1K" if category == "image" else "720p")
     if category == "image":
@@ -536,7 +541,17 @@ async def build_shot_precheck(
 
     planned_duration = item.get("duration_seconds") if kind == "video" else None
     request_duration = planned_duration
-    if kind == "video" and isinstance(planned_duration, int) and spec["durations"]:
+    import video_specs
+    published = video_specs.catalog.get(selected_model) if kind == "video" else None
+    if published and published.get("spec_status") == "available":
+        ref = str(project.get("video_provider_i2v") or project.get("video_backend") or "")
+        size = video_specs.resolution(published, project.get("model_settings", {}).get(ref, {}).get("resolution"))
+        spec["resolution"] = size
+        seconds = published["seconds_by_resolution"][size]
+        if planned_duration not in seconds:
+            blockers.append(f"镜头 {shot_id} 的 {planned_duration} 秒无法生成。请调整这一个镜头为 {', '.join(map(str, seconds))} 秒之一，或更换模型。")
+            request_duration = None
+    elif kind == "video" and isinstance(planned_duration, int) and spec["durations"]:
         allowed_durs = sorted(int(d) for d in spec["durations"])
         if planned_duration not in allowed_durs:
             higher = [d for d in allowed_durs if d >= planned_duration]
@@ -566,7 +581,11 @@ async def build_shot_precheck(
 
 async def augment_unit_precheck(root: Path, project_path: Path, project: dict, unit_id: str | None, selected_model: str, base_result: dict) -> dict:
     """Attach local unit reference image/video spec checks to reference-video precheck replies."""
+    from lib.artifacts.video_visual_provenance import resolve_video_aspect_ratio
     spec = model_media_spec(root, "video", selected_model)
+    ref = str(project.get("video_provider_r2v") or project.get("video_backend") or "")
+    if selected_model == ref.partition("/")[2]:
+        spec["resolution"] = project.get("model_settings", {}).get(ref, {}).get("resolution") or spec["resolution"]
     target_ids = [unit_id] if unit_id else list((project.get(UNIT_REFS_FIELD) or {}).keys())
     inspected = []
     blockers: list[str] = []
@@ -602,7 +621,7 @@ async def augment_unit_precheck(root: Path, project_path: Path, project: dict, u
     merged["stagingSpec"] = {
         "model": selected_model,
         "targetResolution": spec["resolution"],
-        "targetRatio": project.get("aspect_ratio", "9:16"),
+        "targetRatio": resolve_video_aspect_ratio(project, "reference_videos"),
         "stagingHost": "https://huanggua.my",
         "ttlHours": 48,
         "references": inspected,
@@ -794,6 +813,8 @@ def install_huanggua_staging(root: Path) -> None:
         task_ctx = CURRENT_TASK.get()
         project_name = request.project_name or (task_ctx.get("project_name") if task_ctx else None)
         resource_id = str(task_ctx["resource_id"]) if task_ctx and task_ctx.get("resource_id") else None
+        import video_specs
+        await video_specs.validate_wire(self, request, ((task_ctx or {}).get("payload") or {}).get("desktop_video"))
         original_paths = [Path(p) for p in (request.reference_images or [])]
         original_paths.extend(Path(p) for p in (request.start_image, request.end_image) if p)
         _request_reference_warnings(project_name, resource_id or '视频', original_paths)
@@ -885,8 +906,9 @@ def install_huanggua_staging(root: Path) -> None:
                     if vid_urls:
                         body["videos"] = list(vid_urls)
                         body["video_mode"] = "generate"
-                elif self.model.startswith("grsai-minimax-h3-") and not effective_req.end_image:
-                    # Minimax H3 requires both frames in frame mode; single frame uses images[].
+                elif not effective_req.end_image and (video_specs.catalog.get(self.model, {}).get("spec_status") == "available"
+                                                       or self.model.startswith("grsai-minimax-h3-")):
+                    # Describe a single reference without declaring a two-frame transition.
                     body["images"] = [img_urls[0]]
                 else:
                     body["first_frame"] = img_urls[0]

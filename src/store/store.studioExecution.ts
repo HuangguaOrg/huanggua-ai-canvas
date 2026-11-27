@@ -1,9 +1,16 @@
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { StudioAttachment, StudioEpisode, StudioExecution } from '../types/studio';
+import type { StudioAttachment, StudioEpisode, StudioExecution, StudioVideoSpec } from '../types/studio';
 import { studioError, studioRequest, submitStudio, pollStudioExecutions } from '../services/studioExecutionService';
 
+interface StudioCatalogStatus {
+  models: Record<string, string[]>;
+  videoModelsByMode?: StudioExecutionSlice['studioVideoModelsByMode'];
+  videoSpecs?: Record<string, StudioVideoSpec>;
+}
+
 export interface StudioExecutionSlice {
+  studioVideoSpecs: Record<string, StudioVideoSpec>;
   studioConnection: 'idle' | 'connecting' | 'ready' | 'error';
   studioEpoch: number;
   studioConnectionError: string | null;
@@ -27,7 +34,7 @@ export interface StudioExecutionSlice {
   disconnectStudio: () => Promise<void>;
 }
 export const createStudioExecutionSlice: StateCreator<AppState, [], [], StudioExecutionSlice> = (set, get, store) => ({
-  studioConnection: 'idle', studioEpoch: 0, studioConnectionError: null, studioModels: {}, studioVideoModelsByMode: {}, studioExecutions: {}, studioSubmitting: {}, studioHistoryLimits: {},
+  studioConnection: 'idle', studioEpoch: 0, studioConnectionError: null, studioModels: {}, studioVideoModelsByMode: {}, studioVideoSpecs: {}, studioExecutions: {}, studioSubmitting: {}, studioHistoryLimits: {},
   studioModelsRefreshing: false, studioModelRefreshError: null,
   loadMoreStudioHistory: key => { set(s => ({ studioHistoryLimits: { ...s.studioHistoryLimits, [key]: Math.min(1000, (s.studioHistoryLimits[key] ?? 100) + 100) } })); void pollStudioExecutions(); },
   connectStudio: async () => {
@@ -36,9 +43,9 @@ export const createStudioExecutionSlice: StateCreator<AppState, [], [], StudioEx
     set({ studioEpoch: epoch });
     set({ studioConnection: 'connecting', studioConnectionError: null, studioModelsRefreshing: false, studioModelRefreshError: null });
     try {
-      const result = await studioRequest<{ models: Record<string, string[]>; videoModelsByMode?: StudioExecutionSlice['studioVideoModelsByMode'] }>('status');
+      const result = await studioRequest<StudioCatalogStatus>('status');
       if (get().studioEpoch !== epoch) return;
-      set({ studioConnection: 'ready', studioModels: result.models, studioVideoModelsByMode: result.videoModelsByMode ?? {} });
+      set({ studioConnection: 'ready', studioModels: result.models, studioVideoModelsByMode: result.videoModelsByMode ?? {}, studioVideoSpecs: result.videoSpecs ?? {} });
       await pollStudioExecutions();
     } catch (error) { if (get().studioEpoch === epoch) set({ studioConnection: 'error', studioConnectionError: studioError(error) }); }
   },
@@ -62,9 +69,9 @@ export const createStudioExecutionSlice: StateCreator<AppState, [], [], StudioEx
     const epoch = get().studioEpoch;
     set({ studioModelsRefreshing: true, studioModelRefreshError: null });
     try {
-      const result = await studioRequest<{ models: Record<string, string[]>; videoModelsByMode?: StudioExecutionSlice['studioVideoModelsByMode'] }>('status');
+      const result = await studioRequest<StudioCatalogStatus>('status');
       if (get().studioEpoch !== epoch) return;
-      set({ studioModels: result.models, studioVideoModelsByMode: result.videoModelsByMode ?? {} });
+      set({ studioModels: result.models, studioVideoModelsByMode: result.videoModelsByMode ?? {}, studioVideoSpecs: result.videoSpecs ?? {} });
     } catch (error) {
       if (get().studioEpoch === epoch) set({ studioModelRefreshError: studioError(error) });
     } finally {
@@ -72,7 +79,7 @@ export const createStudioExecutionSlice: StateCreator<AppState, [], [], StudioEx
     }
   },
   disconnectStudio: async () => {
-    set({ studioModelsRefreshing: false, studioModelRefreshError: null, studioConnection: 'idle', studioEpoch: get().studioEpoch + 1, studioModels: {}, studioVideoModelsByMode: {}, studioExecutions: {}, studioSubmitting: {} });
+    set({ studioModelsRefreshing: false, studioModelRefreshError: null, studioConnection: 'idle', studioEpoch: get().studioEpoch + 1, studioModels: {}, studioVideoModelsByMode: {}, studioVideoSpecs: {}, studioExecutions: {}, studioSubmitting: {} });
     try { await studioRequest('shutdown'); } catch { /* unavailable on browser preview */ }
   },
   updateStudioExecution: (key, execution) => set(s => ({ studioExecutions: { ...s.studioExecutions, [key]: execution } })),

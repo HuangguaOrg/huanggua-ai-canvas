@@ -44,6 +44,7 @@ os.environ.update({
     "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
 })
+import video_specs
 from shot_media import install_ratio_support, install_frame_ratios
 from media_staging import install_huanggua_staging, wrap_task_executor
 from owned_services import install_owned_services, upstream_route
@@ -53,6 +54,7 @@ install_render_paths()
 install_download_paths()
 install_frame_ratios()
 install_huanggua_staging(ROOT)
+video_specs.install_task_selection()
 
 import httpx
 import uvicorn
@@ -140,7 +142,7 @@ async def checked(client, method, path, payload=None):
         raise ValueError("studio_engine_rejected")
     return response.json() if response.content else {}
 
-async def connect_account(*, force=False):
+async def connect_account(*, force=False, selected=None):
     global account_checked, account_fingerprint, models, model_refs
     async with account_lock:
         if not force and time.monotonic() - account_checked < 40:
@@ -166,17 +168,31 @@ async def connect_account(*, force=False):
             services = account["services"]
             if not isinstance(services, dict):
                 raise ValueError("studio_account_invalid_response")
+            video = services.get("video") or {}
+            entries = {}
+            if video.get("status") == "connected":
+                allowed = video.get("models")
+                if (video.get("base_url") != video_specs.ORIGIN or not is_account_bound_key("video", video.get("api_key"))
+                        or not isinstance(allowed, list) or len(allowed) > 5000
+                        or any(not isinstance(m, str) or not 0 < len(m) <= 300 for m in allowed)):
+                    raise ValueError("studio_account_invalid_response")
+                async with httpx.AsyncClient(timeout=12, trust_env=False) as remote:
+                    entries = await video_specs.fetch(remote, video, selected)
+                video_specs.describe_legacy(entries, json.loads((ROOT / "huanggua-models.json").read_text(encoding="utf-8"))["models"])
+                services = {**services, "video": {**video, "catalog": entries}}
             fingerprint = hashlib.sha256(json.dumps(services, sort_keys=True).encode()).hexdigest()
             failure = "studio_model_configuration_failed"
             if fingerprint != account_fingerprint:
                 await configure_models(services)
                 account_fingerprint = fingerprint
+            video_specs.catalog = entries
             failure = "studio_execution_failed"
             await app.state.generation_worker.start_authorized()
             account_checked = time.monotonic()
         except Exception as exc:
             account_checked = 0
             secret_values.clear()
+            video_specs.catalog = {}
             models, model_refs = {}, {}
             account_fingerprint = ""
             # Only fixed, nonsecret codes cross the native boundary. Network and
@@ -223,8 +239,14 @@ async def configure_models(services):
                          for i, m in enumerate(allowed)]
             else:
                 endpoint = "huanggua-images" if category == "image" else "huanggua-video"
-                items = [dict(m) for m in preset if m["model_id"] in allowed and m["endpoint"] == endpoint]
+                if category == "video" and "catalog" in service:
+                    items = video_specs.provider_rows(preset, allowed, service["catalog"])
+                else:
+                    items = [dict(m) for m in preset if m["model_id"] in allowed and m["endpoint"] == endpoint]
             if not items:
+                # Accepted video receipts can still need this device-bound credential after withdrawal.
+                if category == 'video' and any(p['display_name'] == '黄瓜客户端 · video' for p in providers):
+                    store_secret(None, service['api_key'], None)
                 continue
             if not any(m.get("is_default") for m in items):
                 items[0]["is_default"] = True
@@ -364,10 +386,16 @@ async def desktop_operation(operation: str, request: Request):
     try:
         if operation == "status":
             await connect_account(force=True)
-            return {"ready": True, "models": models, "videoModelsByMode": {
+            return {"ready": True, "models": models, "videoSpecs": video_specs.catalog, "videoModelsByMode": {
                 mode: [m['model_id'] for m in compatible_video_models(mode)]
                 for mode in ('storyboard', 'reference_video')
             }}
+        if operation == 'workspace' and body.get('action') == 'video_spec':
+            selected = body.get('id')
+            if not isinstance(selected, str) or not 0 < len(selected) <= 300:
+                raise ValueError('studio_invalid_request')
+            await connect_account(force=True, selected=selected)
+            return {'spec': video_specs.catalog.get(selected)}
         if operation == 'workspace' and body.get('action') in {'legacy_preview', 'legacy_merge'}:
             from legacy_merge import merge_workspace, inventory
             from contextlib import AsyncExitStack
@@ -429,7 +457,7 @@ async def desktop_operation(operation: str, request: Request):
                     return {"ok": True}
                 if body.get("action") in {"plan_generate", "prompts_generate", "timeline_render", "timeline_draft", 'queue_resend', 'queue_now', 'ad_generate', 'reference_generate', 'reference_batch', 'reference_precheck', 'reference_batch_preview', 'shot_precheck', 'shot_generate', 'shot_recover'}:
                     await connect_account()
-                    if body.get('action') in {'plan_generate', 'prompts_generate', 'ad_generate', 'reference_generate', 'reference_batch', 'reference_precheck', 'reference_batch_preview', 'shot_precheck', 'shot_generate', 'shot_recover'}:
+                    if body.get('action') in {'plan_generate', 'prompts_generate', 'ad_generate', 'reference_generate', 'reference_batch', 'reference_precheck', 'reference_batch_preview', 'shot_precheck', 'shot_generate'}:
                         await ensure_project(name, body)
                 async with local_client() as client:
                     return await workspace(name, body, client, checked, get_assistant_service(),
@@ -557,7 +585,7 @@ async def run_episode(name, body):
     except ValueError as exc:
         # Only a request that never reached the engine can be safely released.
         # An earlier attempt with this key may already have been accepted.
-        if str(exc) in {'studio_video_model_incompatible', 'studio_model_unavailable', 'studio_style_required'} and not binding.get('pending'):
+        if str(exc) in {'studio_video_model_incompatible', 'studio_model_unavailable', 'studio_style_required', 'studio_video_specs_unavailable', 'studio_video_resolution_conflict'} and not binding.get('pending'):
             return {'status': 'rejected', 'error': str(exc), 'requestId': client_key}
         raise
     from conversation_api import describe_local_attachments, load_images
@@ -568,6 +596,8 @@ async def run_episode(name, body):
                "本地客户端已提供 original-story Skill 与 write-original-story 子智能体。若短剧用户要求从创意写故事/剧本，"
                "先使用该 Skill 创作并通过 edit_source_text 登记当前集原文，再以 generate_script_plan 拆分镜；"
                "episode_source_missing 不表示不能原创。已有故事、规划或正式脚本请读取后接续，不覆盖或重复创建。\n\n") + local_media_note + content
+    if body.get('_video_plan'):
+        content = body['_video_plan'] + "\n\n" + content
     binding["pending"] = client_key
     write_binding(binding_key, binding)
     if body.get('rewriteAnchor'):
@@ -582,23 +612,48 @@ async def run_episode(name, body):
 
 def compatible_video_models(mode):
     preset = json.loads((ROOT / 'huanggua-models.json').read_text(encoding='utf-8'))['models']
-    return [m for m in preset if m['model_id'] in model_refs.get('video', {}) and (
+    if video_specs.catalog:
+        preset = video_specs.provider_rows(preset, list(video_specs.catalog), video_specs.catalog)
+    rows = [m for m in preset if m['model_id'] in model_refs.get('video', {}) and (
         m.get('capability_overrides', {}).get('max_reference_images', 0) > 0
         if mode == 'reference_video' else m.get('capability_overrides', {}).get('first_frame'))]
+    return sorted(rows, key=lambda row: not row.get('is_default', False))
 
 
 async def ensure_project(name, body):
     selection = body.get("models", {})
-    if any(value and value not in model_refs.get(kind, {}) for kind, value in selection.items()):
+    mode = body.get('generationMode', 'storyboard')
+    action = body.get('action')
+    needs_video = action != 'initialize' and not (
+        action in {'shot_precheck', 'shot_generate'} and (body.get('data') or {}).get('kind') == 'image')
+    compatible = compatible_video_models(mode)
+    requested_video = selection.get('video') or (compatible[0]['model_id'] if compatible else None)
+    if requested_video and needs_video:
+        await connect_account(force=True, selected=requested_video)
+        compatible = compatible_video_models(mode)
+    spec = video_specs.catalog.get(requested_video)
+    chosen = next((m for m in compatible if m['model_id'] == requested_video), None)
+    if needs_video and not chosen:
+        if spec and spec.get('spec_status') == 'unknown':
+            raise ValueError('studio_video_specs_unavailable')
+        if requested_video and requested_video not in model_refs.get('video', {}):
+            raise ValueError('studio_model_unavailable')
+        raise ValueError('studio_video_model_incompatible')
+    lock = body.get('nativeVideoResolution')
+    size = None
+    if chosen and spec and spec.get('spec_status') == 'available' and (needs_video or not lock or lock in spec['seconds_by_resolution']):
+        size = video_specs.resolution(spec, lock)
+        seconds = spec['seconds_by_resolution'][size]
+        body['_video_model'] = requested_video
+        body['_video_plan'] = f"本集视频使用 {requested_video}，素材分辨率 {size}。请按剧情逐镜选择时长，可用秒数为 {seconds}。"
+    elif chosen and spec and spec.get('spec_status') == 'legacy':
+        if lock and lock not in spec.get('seconds_by_resolution', {}) and needs_video:
+            raise ValueError('studio_video_resolution_conflict')
+        size = lock if lock in spec.get('seconds_by_resolution', {}) else spec.get('default_resolution')
+    if any(value and kind != 'video' and value not in model_refs.get(kind, {}) for kind, value in selection.items()):
         raise ValueError('studio_model_unavailable')
-    selected_refs = {kind: model_refs[kind][selection.get(kind) or models[kind][0]] for kind in models}
-    if 'video' in models:
-        preset = json.loads((ROOT / 'huanggua-models.json').read_text(encoding='utf-8'))['models']
-        compatible = compatible_video_models(body.get('generationMode', 'storyboard'))
-        requested = selection.get('video')
-        chosen = next((m for m in compatible if m['model_id'] == requested), None) if requested else next((m for m in compatible if m.get('is_default')), compatible[0] if compatible else None)
-        if not chosen:
-            raise ValueError('studio_video_model_incompatible')
+    selected_refs = {kind: model_refs[kind][selection.get(kind) or models[kind][0]] for kind in models if kind != 'video'}
+    if chosen:
         selected_refs['video'] = model_refs['video'][chosen['model_id']]
     config = {"default_text_backend":selected_refs["text"], "text_backend_simple":selected_refs["text"], "text_backend_complex":selected_refs["text"]}
     if "image" in selected_refs:
@@ -606,7 +661,7 @@ async def ensure_project(name, body):
     if "video" in selected_refs:
         config.update(video_backend=selected_refs["video"], video_provider_i2v=selected_refs["video"], video_provider_r2v=selected_refs["video"])
         if body.get('generationMode') == 'reference_video' and not chosen.get('capability_overrides', {}).get('first_frame'):
-            fallback = next((m for m in preset if m['model_id'] in model_refs['video'] and m.get('capability_overrides', {}).get('first_frame')), None)
+            fallback = next(iter(compatible_video_models('storyboard')), None)
             if fallback:
                 config['video_provider_i2v'] = model_refs['video'][fallback['model_id']]
     style_tpl = body.get('styleTemplateId') if isinstance(body.get('styleTemplateId'), str) and body.get('styleTemplateId') else None
@@ -643,6 +698,21 @@ async def ensure_project(name, body):
             await checked(client, "PATCH", f"projects/{name}", patch_body)
         from project_scope import ensure_episode
         await ensure_episode(body, client, checked)
+        if chosen and (size or (spec and spec.get('spec_status') == 'legacy')):
+            from lib.infra.async_thread import run_sync_transaction
+            from lib.project.project_manager import get_project_manager
+            pm = get_project_manager()
+            ref = selected_refs['video']
+            def save_video_selection(project):
+                entries = project.setdefault('desktop_episode_video', {})
+                if not size:
+                    entries.pop(str(body['_episode']), None)
+                    return
+                project.setdefault('model_settings', {}).setdefault(ref, {})['resolution'] = size
+                entries[str(body['_episode'])] = {
+                    'ref': ref, 'resolution': size, 'managed': spec['spec_status'] == 'available',
+                }
+            await run_sync_transaction(lambda: pm.update_project(name, save_video_selection))
     if body.get("action") != "initialize":
         from lib.project.project_manager import get_project_manager
         from lib.infra.async_thread import run_sync_transaction

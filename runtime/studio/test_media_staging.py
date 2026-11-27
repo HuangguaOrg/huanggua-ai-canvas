@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import httpx
 from PIL import Image
 
@@ -208,6 +209,24 @@ class MediaStagingBackendTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any('missing.png' in warning for warning in missing['warnings']))
             self.assertTrue(any('missing.mp4' in warning for warning in missing['warnings']))
             self.assertEqual(len(missing['references']), 1)
+
+            import video_specs
+            public = 'new-video-model'
+            ref = 'custom-1/' + public
+            tiered = video_specs.entry({'id': public, 'spec_status': 'available', 'default_resolution': '768p',
+                                        'seconds_by_resolution': {'768p': [3], '1080p': [6]}})
+            with patch.dict(video_specs.catalog, {public: tiered}):
+                locked = await build_shot_precheck(
+                    root=engine_root, project_path=proj_dir,
+                    project={**project, 'video_provider_i2v': ref, 'model_settings': {ref: {'resolution': '1080p'}}},
+                    item={**item, 'duration_seconds': 6}, shot_id='E1S01', kind='video',
+                    target_ratio='9:16', selected_model=public)
+                self.assertEqual((locked['targetResolution'], locked['requestDuration']), ('1080p', 6))
+                from media_staging import augment_unit_precheck
+                ref_preview = await augment_unit_precheck(
+                    engine_root, proj_dir, {'aspect_ratio': {'videos': '16:9', 'reference_videos': '9:16'}},
+                    '1U1', public, {})
+                self.assertEqual(ref_preview['stagingSpec']['targetRatio'], '9:16')
 
             img_check = await build_shot_precheck(
                 root=engine_root, project_path=proj_dir, project={**project, 'style_image': sb_rel}, item=item,
