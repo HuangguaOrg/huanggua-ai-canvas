@@ -5,7 +5,7 @@
  *   prepare         <version> [--title <summary>] [--notes-file <path>]
  *   test            [--ref <branch_or_sha>] [--watch]
  *   ship            <version> [--resume] [--retrigger] [--timeout-minutes <min>]
- *   gitee           <vX.Y.Z> [--run-id <id>]
+ *   gitee           <vX.Y.Z> [--run-id <id>] [--local]
  *   verify          <vX.Y.Z>
  *   ci-tauri-build  --target <triple> --config <path> [--release]
  *   ci-win-sign-hash --src <exe> --dest <exe> [--sign]
@@ -249,6 +249,35 @@ export async function verifyPublicRelease(tagInput, { ghRepo = DEFAULT_GH_REPO, 
   };
 }
 
+async function runCloudGiteeSync(tagInput, values) {
+  const repo = values.repo || DEFAULT_GH_REPO;
+  const tag = normalizeTag(tagInput);
+  const timeoutMs = Number(values['timeout-minutes'] || 45) * 60_000;
+  const startedAt = Date.now();
+  const ghArgs = [
+    'workflow', 'run', 'release.yml',
+    '--repo', repo,
+    '--ref', 'main',
+    '--field', 'mode=gitee',
+    '--field', `tag=${tag}`,
+  ];
+  if (values['run-id']) {
+    ghArgs.push('--field', `source_run_id=${values['run-id']}`);
+  }
+  execFileSync('gh', ghArgs, { cwd: ROOT, stdio: 'inherit' });
+  const dispatched = await findRecentDispatchedRun(
+    repo,
+    'release.yml',
+    startedAt,
+    (r) => r.event === 'workflow_dispatch' && r.displayTitle.includes(`(${tag})`) && r.displayTitle.includes('Gitee'),
+  );
+  console.log(`正在监控云端 Gitee 热更同步工作流：${dispatched.url}`);
+  const completed = await pollWorkflowRun(repo, dispatched.databaseId, timeoutMs);
+  if (completed.conclusion !== 'success') {
+    throw new Error(`云端同步 Gitee 失败（conclusion=${completed.conclusion}）：${dispatched.url}`);
+  }
+}
+
 function runLocalGiteeFallback(tagInput, values) {
   const repo = values.repo || DEFAULT_GH_REPO;
   const tag = normalizeTag(tagInput);
@@ -436,6 +465,7 @@ async function main() {
       watch: { type: 'boolean', default: false },
       resume: { type: 'boolean', default: false },
       retrigger: { type: 'boolean', default: false },
+      local: { type: 'boolean', default: false },
       'run-id': { type: 'string' },
       'timeout-minutes': { type: 'string' },
       target: { type: 'string' },
@@ -455,7 +485,11 @@ async function main() {
   } else if (subcommand === 'ship') {
     await runShip(rest, values);
   } else if (subcommand === 'gitee') {
-    runLocalGiteeFallback(rest[0], values);
+    if (values.local) {
+      runLocalGiteeFallback(rest[0], values);
+    } else {
+      await runCloudGiteeSync(rest[0], values);
+    }
     const receipt = await verifyPublicRelease(rest[0], { ghRepo: values.repo || DEFAULT_GH_REPO });
     console.log(JSON.stringify(receipt, null, 2));
   } else if (subcommand === 'verify') {

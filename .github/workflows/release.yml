@@ -3,6 +3,7 @@ run-name: >-
   ${{
     github.event_name == 'push' && format('调度 {0}', github.ref_name)
     || (inputs.mode == 'test' && format('双端测试包 ({0})', inputs.target_ref || github.ref_name))
+    || (inputs.mode == 'gitee' && format('同步 Gitee 热更 ({0})', inputs.tag))
     || format('发布 {0}（Windows + macOS + Gitee）', inputs.tag)
   }}
 
@@ -13,15 +14,16 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 构建模式：release（正式双端发布+Gitee热更）或 test（双端测试包，不发Release不改Gitee）
+        description: 构建模式：release（双端正式发版+Gitee）、test（双端测试包）、gitee（仅补推Gitee热更）
         required: false
         default: release
         type: choice
         options:
           - release
           - test
+          - gitee
       tag:
-        description: 已推送的正式版本标签 vX.Y.Z（mode=release 时必填）
+        description: 已推送的正式版本标签 vX.Y.Z（mode=release/gitee 时必填）
         required: false
         default: ''
         type: string
@@ -30,12 +32,17 @@ on:
         required: false
         default: ''
         type: string
+      source_run_id:
+        description: 已有构建工作流 Run ID（mode=gitee 时可选，默认自动匹配该标签产物）
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'push' && github.ref_name || (inputs.mode == 'test' && format('test-{0}', inputs.target_ref || github.ref_name) || inputs.tag) }}
+  group: release-${{ github.event_name == 'push' && github.ref_name || (inputs.mode == 'test' && format('test-{0}', inputs.target_ref || github.ref_name) || (inputs.mode == 'gitee' && format('gitee-{0}', inputs.tag) || inputs.tag)) }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'test' }}
 
 jobs:
@@ -64,7 +71,7 @@ jobs:
 
   quality:
     name: Quality gate
-    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'test'
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'release' || inputs.mode == '')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -153,7 +160,7 @@ jobs:
   build-windows:
     name: Build Windows x64
     needs: [quality, test-prepare]
-    if: ${{ !cancelled() && ((inputs.mode != 'test' && needs.quality.result == 'success') || (inputs.mode == 'test' && needs.test-prepare.result == 'success')) }}
+    if: ${{ !cancelled() && (((inputs.mode == 'release' || inputs.mode == '') && needs.quality.result == 'success') || (inputs.mode == 'test' && needs.test-prepare.result == 'success')) }}
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -292,7 +299,7 @@ jobs:
       ${{
         !cancelled()
         && github.event_name == 'workflow_dispatch'
-        && inputs.mode != 'test'
+        && (inputs.mode == 'release' || inputs.mode == '')
         && needs.quality.result == 'success'
       }}
     runs-on: windows-latest
@@ -379,7 +386,7 @@ jobs:
   build-macos:
     name: Build macOS (arm64)
     needs: [quality, test-prepare]
-    if: ${{ !cancelled() && ((inputs.mode != 'test' && needs.quality.result == 'success') || (inputs.mode == 'test' && needs.test-prepare.result == 'success')) }}
+    if: ${{ !cancelled() && (((inputs.mode == 'release' || inputs.mode == '') && needs.quality.result == 'success') || (inputs.mode == 'test' && needs.test-prepare.result == 'success')) }}
     runs-on: macos-latest
     timeout-minutes: 60
     permissions:
@@ -604,7 +611,7 @@ jobs:
       ${{
         !cancelled()
         && github.event_name == 'workflow_dispatch'
-        && inputs.mode != 'test'
+        && (inputs.mode == 'release' || inputs.mode == '')
         && needs.quality.result == 'success'
         && needs.build-windows.result == 'success'
         && needs.build-windows-legacy.result == 'success'
@@ -700,7 +707,7 @@ jobs:
       ${{
         !cancelled()
         && github.event_name == 'workflow_dispatch'
-        && inputs.mode != 'test'
+        && (inputs.mode == 'release' || inputs.mode == '')
         && needs.quality.result == 'success'
         && needs.finalize-release.result == 'success'
       }}
@@ -716,7 +723,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.quality.outputs.sha }}
+          ref: ${{ github.event.repository.default_branch }}
       - name: Configure TCP BBR congestion control for cross-border upload
         shell: bash
         run: |
@@ -791,3 +798,83 @@ jobs:
             echo "gh run download ${RUN_ID} --repo ${REPO} -n test-windows-x64-${SHA} -n test-macos-arm64-${SHA}"
             echo "```"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  sync-gitee:
+    name: Sync Gitee update from existing build
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'gitee'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_RUN_ID_INPUT: ${{ inputs.source_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Configure TCP BBR congestion control for cross-border upload
+        shell: bash
+        run: |
+          sudo modprobe tcp_bbr || true
+          if [[ -f /proc/sys/net/ipv4/tcp_available_congestion_control ]] && grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
+            sudo sysctl -w net.ipv4.tcp_congestion_control=bbr || true
+          fi
+      - name: Resolve published tag SHA and locate build artifacts
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Expected stable vX.Y.Z tag, got '$RELEASE_TAG'" >&2
+            exit 1
+          fi
+          is_draft="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" != "false" ]]; then
+            echo "GitHub Release $RELEASE_TAG is not public yet" >&2
+            exit 1
+          fi
+          sha="$(gh api "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)"
+          run_id="$SOURCE_RUN_ID_INPUT"
+          if [[ -z "$run_id" ]]; then
+            run_id="$(python3 -c '
+          import json, os, subprocess
+          repo = os.environ["GH_REPO"]
+          sha = os.environ["SHA"]
+          runs = json.loads(subprocess.check_output(["gh", "run", "list", "--repo", repo, "--workflow", "release.yml", "--limit", "20", "--json", "databaseId,event"]))
+          for r in runs:
+              if r.get("event") != "workflow_dispatch":
+                  continue
+              rid = r["databaseId"]
+              arts = json.loads(subprocess.check_output(["gh", "api", f"repos/{repo}/actions/runs/{rid}/artifacts"]))
+              names = {a["name"] for a in arts.get("artifacts", []) if not a.get("expired")}
+              if {f"windows-gitee-update-{sha}", f"macos-gitee-update-arm64-{sha}"} <= names:
+                  print(rid)
+                  break
+          ' SHA="$sha")"
+          fi
+          if [[ -z "$run_id" ]]; then
+            echo "Could not find unexpired Gitee update artifacts for ${RELEASE_TAG} (${sha})" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          gh run download "$run_id" --repo "$GH_REPO" \
+            -n "windows-gitee-update-${sha}" \
+            -D "${RUNNER_TEMP}/win-update"
+          gh run download "$run_id" --repo "$GH_REPO" \
+            -n "macos-gitee-update-arm64-${sha}" \
+            -D "${RUNNER_TEMP}/mac-update"
+      - name: Upload signed updates to Gitee Release and update latest.json
+        shell: bash
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/publish-gitee-update.py \
+            --dir "${RUNNER_TEMP}/win-update" \
+            --macos-dir "${RUNNER_TEMP}/mac-update" \
+            --verify-public-feed
