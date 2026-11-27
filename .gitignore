@@ -16,6 +16,10 @@ dist-ssr
 site/app
 
 .agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/release-client/
+!.agents/skills/release-client/**
 .codebuddy/
 .codegraph/
 .codebuddy/skills/*
