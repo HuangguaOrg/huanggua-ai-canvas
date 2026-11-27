@@ -7,7 +7,7 @@
     },
     "productName": "黄瓜 AI 画布",
     "mainBinaryName": "HuangGuaAI",
-    "version": "0.11.13",
+    "version": "0.11.14",
     "identifier": "com.huanggua.canvas",
     "plugins": {
         "shell": {
