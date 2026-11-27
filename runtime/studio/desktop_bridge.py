@@ -76,13 +76,14 @@ from server.app import app
 import server.app as engine_app
 from account_worker import AccountBoundGenerationWorker
 from server.auth import create_token, verify_token
-from server.routers.huanggua_agent import router as model_bridge
+from text_gateway import router as model_bridge, install_text_gateway
 from server.routers.assistant import get_assistant_service
 from lib.infra.data_root_layout import DataRootLayout
 
 app.title = "HuangGuaAI Studio"
 app.description = "黄瓜 AI 短剧工作区"
 app.include_router(model_bridge, prefix="/huanggua-agent")
+install_text_gateway()
 engine_app.create_generation_worker = lambda: AccountBoundGenerationWorker(
     executor=wrap_task_executor(engine_app.execute_generation_task), resume_executor=engine_app.execute_resume_video_task)
 account_lock = asyncio.Lock()
@@ -144,27 +145,48 @@ async def connect_account(*, force=False):
     async with account_lock:
         if not force and time.monotonic() - account_checked < 40:
             return
+        failure = "studio_account_unavailable"
         try:
             async with httpx.AsyncClient(timeout=20, trust_env=False) as remote:
                 response = await remote.get("https://huanggua.my/api/arcreel/account", headers={"Authorization": "Bearer " + SESSION})
+                if response.status_code == 401:
+                    raise ValueError("studio_login_required")
+                if response.status_code == 403:
+                    raise ValueError("studio_account_forbidden")
                 response.raise_for_status()
+                failure = "studio_account_invalid_response"
                 envelope = response.json()
+            if envelope.get("success") is not True:
+                if envelope.get("error") == "invalid_session":
+                    raise ValueError("studio_login_required")
+                raise ValueError("studio_account_unavailable")
             account = envelope["data"]
-            if envelope.get("success") is not True or account["expires_at"] <= time.time():
-                raise ValueError("expired")
+            if account["expires_at"] <= time.time():
+                raise ValueError("studio_login_required")
             services = account["services"]
+            if not isinstance(services, dict):
+                raise ValueError("studio_account_invalid_response")
             fingerprint = hashlib.sha256(json.dumps(services, sort_keys=True).encode()).hexdigest()
+            failure = "studio_model_configuration_failed"
             if fingerprint != account_fingerprint:
                 await configure_models(services)
                 account_fingerprint = fingerprint
+            failure = "studio_execution_failed"
             await app.state.generation_worker.start_authorized()
             account_checked = time.monotonic()
-        except Exception:
+        except Exception as exc:
             account_checked = 0
             secret_values.clear()
             models, model_refs = {}, {}
             account_fingerprint = ""
-            raise ValueError("studio_login_required") from None
+            # Only fixed, nonsecret codes cross the native boundary. Network and
+            # configuration errors do not imply that the login has expired.
+            if isinstance(exc, ValueError) and str(exc) in {
+                "studio_login_required", "studio_account_forbidden", "studio_account_unavailable",
+                "studio_account_invalid_response", "studio_text_models_unavailable",
+            }:
+                failure = str(exc)
+            raise ValueError(failure) from None
 
 def is_account_bound_key(category, value):
     if category not in ("text", "image", "video") or not isinstance(value, str):
@@ -174,6 +196,11 @@ def is_account_bound_key(category, value):
 
 async def configure_models(services):
     global models, model_refs
+    text_service = services.get("text", {})
+    if not isinstance(text_service, dict):
+        raise ValueError("studio_account_invalid_response")
+    if text_service.get("status") != "connected" or not text_service.get("models"):
+        raise ValueError("studio_text_models_unavailable")
     preset = json.loads((ROOT / "huanggua-models.json").read_text(encoding="utf-8"))["models"]
     available, refs = {}, {}
     async with local_client() as client:
@@ -184,15 +211,16 @@ async def configure_models(services):
             if service.get("status") != "connected":
                 continue
             if service.get("base_url") != "https://huanggua.my" or not is_account_bound_key(category, service.get("api_key", "")):
-                raise ValueError("invalid account")
+                raise ValueError("studio_account_invalid_response")
             allowed = service["models"]
             if not isinstance(allowed, list) or len(allowed) > 5000 or any(not isinstance(m,str) or len(m)>300 for m in allowed):
-                raise ValueError("invalid models")
+                raise ValueError("studio_account_invalid_response")
             if category == "text":
-                text_models = [m for m in allowed if m.startswith("gpt-") and not any(x in m for x in ("image", "audio", "realtime"))]
-                items = [{"model_id": m, "display_name": m, "endpoint": "openai-responses", "is_default": i == 0,
+                # The text group is authoritative; Messages is shared across
+                # Huanggua text models, including models without Responses support.
+                items = [{"model_id": m, "display_name": m, "endpoint": "anthropic-messages", "is_default": i == 0,
                           "capability_overrides": {"image_input": True, "structured_output": True}}
-                         for i, m in enumerate(text_models)]
+                         for i, m in enumerate(allowed)]
             else:
                 endpoint = "huanggua-images" if category == "image" else "huanggua-video"
                 items = [dict(m) for m in preset if m["model_id"] in allowed and m["endpoint"] == endpoint]
@@ -202,7 +230,7 @@ async def configure_models(services):
                 items[0]["is_default"] = True
             name = "黄瓜客户端 · " + category
             old = next((p for p in providers if p["display_name"] == name), None)
-            body = {"display_name": name, "base_url": "https://huanggua.my/v1" if category == "text" else "https://huanggua.my",
+            body = {"display_name": name, "base_url": "https://huanggua.my",
                     "api_key": service["api_key"], "models": items, "image_max_workers": 1, "video_max_workers": 1}
             provider = await checked(client, "PUT" if old else "POST", f"custom-providers/{old['id']}" if old else "custom-providers",
                                      body if old else {**body, "discovery_format": "openai"})
@@ -227,7 +255,7 @@ async def configure_models(services):
             else:
                 defaults.update(default_video_backend=ref, default_video_backend_i2v=ref, default_video_backend_r2v=ref)
         if "text" not in refs:
-            raise ValueError("no supported text model")
+            raise ValueError("studio_text_models_unavailable")
         await checked(client, "PATCH", "system/config", defaults)
     models, model_refs = available, refs
 

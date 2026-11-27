@@ -67,6 +67,11 @@ export function workspaceError(error: unknown): string {
   if (error === 'studio_video_model_incompatible') return '所选视频模型不支持当前制作方式，请在 Agent 模型设置中更换视频模型。';
   if (error === 'studio_model_unavailable') return '所选模型已不可用，请刷新执行服务并重新选择模型。输入内容已保留。';
   if (error === 'studio_login_required') return '登录已失效，请在账号页面重新登录后连接执行服务。';
+  if (error === 'studio_account_unavailable') return '暂时无法获取账号模型，请检查网络或稍后刷新模型列表。';
+  if (error === 'studio_account_forbidden') return '当前账号暂时无法访问模型服务，请检查账号的服务权限。';
+  if (error === 'studio_account_invalid_response') return '账号模型数据异常，请刷新模型列表；若仍失败，请联系平台处理。';
+  if (error === 'studio_text_models_unavailable') return '账号暂未返回可用的文本模型，短剧 Agent 无法连接。请检查 Agent / text 的模型服务后刷新列表。';
+  if (error === 'studio_model_configuration_failed') return '短剧模型配置失败，请重新连接执行服务后刷新模型列表。';
   if (error === 'studio_save_failed') return '本地草稿保存失败，请先重试保存。';
   if (error === 'studio_merge_blocked') return '合并条件已变化，请重新检查冲突，等待旧项目任务完成。';
   if (error === 'studio_merge_invalid_script') return '旧项目存在结构异常的脚本，已保留原项目，请修复后重新合并。';
@@ -84,5 +89,6 @@ export function workspaceError(error: unknown): string {
   if (error === 'studio_runtime_not_packaged' || error === 'studio_runtime_damaged') return '短剧运行环境缺失或校验失败，请重新运行黄瓜 AI 完整安装包修复。';
   if (error === 'studio_runtime_disk_full') return '磁盘空间不足，短剧运行环境约需 1 GB 可用空间，请清理后重试。';
   if (error === 'studio_runtime_prepare_failed') return '短剧运行环境准备失败，请重启应用后重试。';
+  if (error === 'studio_runtime_not_installed') return '本地开发环境缺少短剧运行时，请准备运行环境后重新连接。';
   return '操作失败，请检查连接后重试。';
 }

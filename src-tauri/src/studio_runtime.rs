@@ -355,6 +355,7 @@ fn start(app: &tauri::AppHandle) -> Result<Connection, String> {
         ("legacy_merge.py", include_str!("../../runtime/studio/legacy_merge.py")),
         ("conversation_api.py", include_str!("../../runtime/studio/conversation_api.py")),
         ("desktop_bridge.py", include_str!("../../runtime/studio/desktop_bridge.py")),
+        ("text_gateway.py", include_str!("../../runtime/studio/text_gateway.py")),
         ("windows_compat.py", include_str!("../../runtime/studio/windows_compat.py")),
         ("account_worker.py", include_str!("../../runtime/studio/account_worker.py")),
         ("owned_services.py", include_str!("../../runtime/studio/owned_services.py")),
