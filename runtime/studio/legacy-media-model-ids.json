@@ -1,0 +1,19 @@
+{
+  "grsai-agnes-video-2.5-720p": "hg-video-agnes-2.5",
+  "grsai-agnes-video-2.5-1080p": "hg-video-agnes-2.5",
+  "grsai-agnes-video-2.5-2k": "hg-video-agnes-2.5",
+  "grsai-minimax-h3-480p": "hg-video-minimax-h3",
+  "grsai-minimax-h3-768p": "hg-video-minimax-h3",
+  "grsai-minimax-h3-1080p": "hg-video-minimax-h3",
+  "catcode-Minimax H3-768p": "hg-video-minimax-h3",
+  "catcode-Minimax H3": "hg-video-minimax-h3",
+  "grsai-wan-3.0-480p": "hg-video-wan-3.0",
+  "grsai-wan-3.0-720p": "hg-video-wan-3.0",
+  "grsai-wan-3.0-1080p": "hg-video-wan-3.0",
+  "grsai-nano-banana-2": "hg-image-nano-banana-2",
+  "catcode-image-Nano Banana2": "hg-image-nano-banana-2",
+  "grsai-nano-banana-2.1": "hg-image-nano-banana-2.1",
+  "catcode-image-Nano Banana2.1": "hg-image-nano-banana-2.1",
+  "grsai-nano-banana-pro": "hg-image-nano-banana-pro",
+  "catcode-image-Nano Banana Pro": "hg-image-nano-banana-pro"
+}

@@ -13,7 +13,6 @@ const studio: Record<string, string> = {
   "{model} 支持 {sizes}。本集已锁定原生 {lock}。": "{model} supports {sizes}. This episode is locked to native {lock}.",
   "本集改用 {size}": "Use {size} for this episode",
   "保留 {size}，换模型": "Keep {size} and choose another model",
-  "文本与图片模型": "Text and image models",
   "画幅 / 成片导出尺寸": "Aspect ratio / export dimensions",
   "成片按这里的尺寸导出。视频素材默认跟随本集模型，单镜头可单独调整画幅。": "The final video uses these export dimensions. Clips use the episode model’s resolution by default. You can change each shot’s aspect ratio.",
   "平台暂未提供可用的视频规格。请刷新模型或更换模型，分镜已保留。": "Video specifications are unavailable. Refresh the model list or choose another model. Your storyboard is saved.",

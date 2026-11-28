@@ -21,6 +21,7 @@ import type { StudioAttachment, StudioEpisode, StudioProject, StudioQuestion } f
 import Select from '../shared/Select';
 import HuangguaModelRefreshButton from '../account/HuangguaModelRefreshButton';
 import StudioVideoModelPicker from './StudioVideoModelPicker';
+import { selectStudioModel } from '../../services/studioModelSelection';
 import StudioSessions, { StudioSessionHeaderActions } from './StudioSessions';
 import StudioAttachments, { type AttachmentHandle } from './StudioAttachments';
 import StudioMessageQueue from './StudioMessageQueue';
@@ -67,6 +68,7 @@ export default function StudioAgentPanel({
       models: s.studioModels,
       videoModels: s.studioVideoModelsByMode,
       videoSpecs: s.studioVideoSpecs,
+      refreshModels: s.refreshStudioModels,
       historyLimit: s.studioHistoryLimits[`${project.id}/${episode.id}`] ?? 100,
       execution: s.studioExecutions[`${project.id}/${episode.id}`],
       submitting: s.studioSubmitting[`${project.id}/${episode.id}`],
@@ -79,7 +81,6 @@ export default function StudioAgentPanel({
 
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
-  const [otherModelsOpen, setOtherModelsOpen] = useState(false);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [rewriteBusy, setRewriteBusy] = useState(false);
   const [rewriteError, setRewriteError] = useState('');
@@ -139,17 +140,16 @@ export default function StudioAgentPanel({
     }
   };
 
-  const available = { ...state.models, video: state.videoModels[project.generationMode ?? 'storyboard'] ?? [] };
-  const selected = Object.fromEntries(
-    Object.entries(available)
-      .filter(([kind, models]) => models.length || (kind === 'video' && episode.models?.video))
-      .map(([kind, models]) => [
-        kind,
-        episode.models?.[kind] && (kind === 'video' || models.includes(episode.models[kind])) ? episode.models[kind] : models[0],
-      ]),
-  );
-
-  const hasVideoSpecs = Object.values(state.videoSpecs).some(spec => spec.spec_status !== 'legacy');
+  const available = {
+    video: state.videoModels[project.generationMode ?? 'storyboard'] ?? [],
+    image: state.models.image ?? [],
+    text: state.models.text ?? [],
+  };
+  const selected: Record<string, string> = {};
+  for (const [kind, ids] of Object.entries(available)) {
+    const id = selectStudioModel(episode.models?.[kind], ids);
+    if (id) selected[kind] = id;
+  }
   const running = state.execution?.status === 'running' || Boolean(state.submitting);
   const tasks = state.execution?.tasks ?? [];
   const activeTasks = tasks.filter(task => ['queued', 'running'].includes(task.status));
@@ -610,7 +610,7 @@ export default function StudioAgentPanel({
                 onClick={() => setModelsOpen(!modelsOpen)}
               >
                 <SlidersHorizontal size={12} className="shrink-0" />
-                <span className="max-w-32 truncate text-[11px]">{(hasVideoSpecs ? state.videoSpecs[selected.video]?.display_name : selected.text) || t('模型设置')}</span>
+                <span className="max-w-32 truncate text-[11px]">{state.videoSpecs[selected.video]?.display_name || selected.video || selected.text || t('模型设置')}</span>
                 <ChevronDown size={11} className="shrink-0" />
               </button>
             </div>
@@ -645,23 +645,24 @@ export default function StudioAgentPanel({
         {modelsOpen && (
           <div
             id="studio-model-options"
-            className="ui-scroll mt-2 max-h-52 space-y-2 overflow-y-auto rounded-lg border border-canvas-border bg-canvas-card/40 p-2.5"
+            className="ui-scroll mt-2 max-h-[min(50vh,24rem)] space-y-2 overflow-y-auto rounded-lg border border-canvas-border bg-canvas-card/40 p-2.5"
           >
             <HuangguaModelRefreshButton />
-            <StudioVideoModelPicker key={episode.id} scope={{ projectId: project.id, episodeId: episode.id }}
+            <StudioVideoModelPicker key={episode.id + '/' + (project.generationMode ?? 'storyboard')} scope={{ projectId: project.id, episodeId: episode.id }}
                 ids={available.video} specs={state.videoSpecs} value={selected.video ?? ''} lock={episode.nativeVideoResolution}
-                disabled={running} onChange={(id, lock) => state.edit(episode.id, { models: { ...selected, video: id }, nativeVideoResolution: lock })} />
-            {hasVideoSpecs && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={otherModelsOpen}
-              onClick={() => setOtherModelsOpen(!otherModelsOpen)}>{t('文本与图片模型')}</button>}
-            {(!hasVideoSpecs || otherModelsOpen) && Object.entries(available).filter(([kind]) => kind !== 'video').map(([kind, models]) => (
+                disabled={running} refreshModels={state.refreshModels}
+                onChange={(id, lock) => state.edit(episode.id, { models: { video: id }, nativeVideoResolution: lock })} />
+            {(['image', 'text'] as const).map(kind => (
               <label key={kind} className="block text-[11px] text-canvas-text-muted">
-                {t(kind === 'text' ? '文本模型' : kind === 'image' ? '图片模型' : '视频模型')}
+                {t(kind === 'text' ? '文本模型' : '图片模型')}
                 <Select
                   className="mt-1 w-full"
-                  disabled={running}
+                  aria-label={t(kind === 'text' ? '文本模型' : '图片模型')}
+                  placeholder={t('暂无可用模型')}
+                  disabled={running || !available[kind].length}
                   value={selected[kind] ?? ''}
-                  options={models.map(value => ({ value, label: value }))}
-                  onChange={value => state.edit(episode.id, { models: { ...selected, [kind]: value } })}
+                  options={available[kind].map(value => ({ value, label: value }))}
+                  onChange={value => state.edit(episode.id, { models: { [kind]: value } })}
                 />
               </label>
             ))}

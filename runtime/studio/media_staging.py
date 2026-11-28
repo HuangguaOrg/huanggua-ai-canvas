@@ -635,7 +635,7 @@ async def augment_unit_precheck(root: Path, project_path: Path, project: dict, u
     return merged
 
 
-def install_huanggua_staging(root: Path) -> None:
+def install_huanggua_staging(root: Path, allowed_models) -> None:
     """Install URL staging for HuangguaImageBackend and video+image reference staging for HuangguaVideoBackend."""
     import base64
     from urllib.parse import urljoin
@@ -659,6 +659,9 @@ def install_huanggua_staging(root: Path) -> None:
         return
 
     async def staged_image_generate(self: HuangguaImageBackend, request):
+        journal = await asyncio.to_thread(read_submission, request.task_id)
+        if journal is None and self.model not in allowed_models('image'):
+            raise ValueError('studio_model_unavailable')
         spec = model_media_spec(root, "image", self.model)
         limit = await self.reference_image_limit()
         refs = list(request.reference_images or [])
@@ -695,7 +698,6 @@ def install_huanggua_staging(root: Path) -> None:
             "quality": "auto",
             "response_format": "url",
         }
-        journal = await asyncio.to_thread(read_submission, request.task_id)
         async with self.client() as client:
             if journal is not None:
                 body = await self.submissions.resume(
@@ -805,6 +807,8 @@ def install_huanggua_staging(root: Path) -> None:
         )
 
     async def staged_video_payload(self: HuangguaVideoBackend, request):
+        if self.model not in allowed_models('video'):
+            raise ValueError('studio_model_unavailable')
         if request.reference_audio_files:
             raise ValueError("Reference audio uploads are not implemented by this Huanggua channel")
         spec = model_media_spec(root, "video", self.model)

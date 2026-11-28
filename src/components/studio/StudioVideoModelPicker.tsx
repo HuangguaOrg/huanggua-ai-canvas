@@ -11,14 +11,15 @@ interface Props {
   value: string;
   lock?: string;
   disabled: boolean;
+  refreshModels: () => Promise<void>;
   onChange: (id: string, lock?: string) => void;
 }
 
-export default function StudioVideoModelPicker({ scope, ids, specs, value, lock, disabled, onChange }: Props) {
+export default function StudioVideoModelPicker({ scope, ids, specs, value, lock, disabled, refreshModels, onChange }: Props) {
   const t = useT();
   const [lookup, setLookup] = useState<{
     catalog: Props['specs'];
-    detail?: StudioVideoSpec | null;
+    detail?: StudioVideoSpec;
     pending?: StudioVideoSpec;
     busy?: boolean;
     error?: string;
@@ -36,14 +37,12 @@ export default function StudioVideoModelPicker({ scope, ids, specs, value, lock,
     if (pending) dialog.current?.showModal();
   }, [pending]);
 
-  const spec = detail === null || detail?.id === value ? detail : specs[value];
+  const spec = detail?.id === value ? detail : specs[value];
   const tiers = spec?.seconds_by_resolution ?? {};
   const effective = lock || spec?.default_resolution;
-  const missing = value && !ids.includes(value) && specs[value]?.spec_status !== 'unknown';
-  const choices = [...new Set([...ids, ...Object.keys(specs).filter(id => specs[id].spec_status === 'unknown')])];
-  const options = choices.filter(id => !compatibleOnly || !lock || Boolean(specs[id]?.seconds_by_resolution?.[lock]))
+  const lockConflict = Boolean(lock && spec && !(lock in tiers));
+  const options = ids.filter(id => !compatibleOnly || !lock || Boolean(specs[id]?.seconds_by_resolution?.[lock]))
     .map(id => ({ value: id, label: specs[id]?.display_name || id }));
-  if (value && !options.some(option => option.value === value)) options.unshift({ value, label: specs[value]?.display_name ?? value });
 
   const choose = async (id: string) => {
     const ticket = ++sequence.current.id;
@@ -52,7 +51,10 @@ export default function StudioVideoModelPicker({ scope, ids, specs, value, lock,
       const result = await studioWorkspace<{ spec: StudioVideoSpec | null }>(scope, 'video_spec', { id });
       if (ticket !== sequence.current.id) return;
       const next = result.spec;
-      if (lock && next?.default_resolution && next.seconds_by_resolution && !(lock in next.seconds_by_resolution)) {
+      if (!next || next.spec_status === 'unknown') {
+        setLookup({ catalog: specs, error: t('此模型暂无可用规格，请刷新模型或更换模型。分镜已保留。') });
+        void refreshModels();
+      } else if (lock && next.default_resolution && next.seconds_by_resolution && !(lock in next.seconds_by_resolution)) {
         setLookup({ catalog: specs, pending: next });
       } else {
         onChange(id, lock);
@@ -63,17 +65,18 @@ export default function StudioVideoModelPicker({ scope, ids, specs, value, lock,
       if (ticket === sequence.current.id) setLookup({ catalog: specs, error: workspaceError(err) });
     }
   };
-  const unavailable = missing || detail === null || spec?.spec_status === 'unknown';
+  const unavailable = !value || !ids.includes(value) || spec?.spec_status === 'unknown';
   return <div className="space-y-1.5 text-[11px] text-canvas-text-muted">
     <label className="block">{t('视频模型')}
-      <Select aria-label={t('视频模型')} className="mt-1 w-full" options={options} value={value} disabled={disabled || busy}
+      <Select aria-label={t('视频模型')} className="mt-1 w-full" options={options} value={value} disabled={disabled || busy || !options.length} placeholder={t('暂无可用模型')}
         onChange={id => void choose(id)} />
     </label>
-    <p role="status" aria-live="polite">{busy ? t('正在核对模型规格…') : error || (unavailable
+    <p role="status" aria-live="polite">{busy ? t('正在核对模型规格…') : error || (!value ? '' : unavailable
       ? t('此模型暂无可用规格，请刷新模型或更换模型。分镜已保留。')
+      : lockConflict ? t('本集锁定的素材分辨率与当前模型不兼容，请在模型设置中选择。')
       : effective ? t('本集使用 {size}', { size: effective }) : '')}</p>
     {compatibleOnly && <button className="ui-btn ui-btn--sm" onClick={() => setFilteredCatalog(undefined)}>{t('显示全部模型')}</button>}
-    {!unavailable && effective && Object.keys(tiers).length > 0 && <details>
+    {!unavailable && (lock || (effective && Object.keys(tiers).length > 0)) && <details>
       <summary className="cursor-pointer">{lock ? t('素材分辨率 · 已锁定') : t('素材分辨率 · 跟随模型')}</summary>
       <Select aria-label={t('本集素材分辨率')} className="mt-1 w-full" value={lock ?? ''} disabled={disabled || busy}
         options={[{ value: '', label: t('跟随模型（推荐）') }, ...Object.keys(tiers).map(size => ({ value: size, label: t('锁定 {size}', { size }) }))]}

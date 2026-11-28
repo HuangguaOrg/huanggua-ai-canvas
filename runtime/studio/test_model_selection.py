@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 
 def bridge_functions(**values):
@@ -18,11 +18,13 @@ def bridge_functions(**values):
     source = Path(__file__).with_name('desktop_bridge.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
     tree.body = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                 and node.name in {'compatible_video_models', 'ensure_project', 'run_episode', 'is_account_bound_key', 'configure_models', 'connect_account', 'desktop_operation'}]
+                 and node.name in {'available_model', 'compatible_video_models', 'ensure_project', 'run_episode', 'is_account_bound_key', 'configure_models', 'connect_account', 'desktop_operation'}]
     for node in tree.body:
         node.decorator_list = []
     import video_specs
-    scope = {'json': json, 're': re, 'Request': object, 'video_specs': video_specs, **values}
+    aliases = json.loads(source.with_name('legacy-media-model-ids.json').read_text(encoding='utf-8'))
+    scope = {'json': json, 're': re, 'asyncio': asyncio, 'Request': object, 'video_specs': video_specs,
+             'legacy_media_ids': aliases, **values}
     exec(compile(tree, str(source), 'exec'), scope)
     return scope
 
@@ -86,12 +88,66 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply['status'], 'accepted')
         scope['ensure_project'].assert_not_called()
 
-    async def test_removed_model_is_rejected_before_project_changes(self):
-        scope = bridge_functions(model_refs={'video': {'frame': 'f'}}, models={'video': ['frame']})
-        scope['compatible_video_models'] = lambda mode: [{'model_id': 'frame'}]
-        scope['connect_account'] = AsyncMock()
-        with self.assertRaisesRegex(ValueError, 'studio_model_unavailable'):
-            await scope['ensure_project']('project', {'models': {'video': 'removed'}})
+    async def test_saved_media_models_do_not_block_or_reroute_an_accepted_chat(self):
+        old = 'grsai-agnes-video-2.5-720p'
+        public = 'hg-video-agnes-2.5'
+        old_image = 'grsai-nano-banana-2.1'
+        public_image = 'hg-image-nano-banana-2.1'
+        cases = [
+            (['other', public], ['image', public_image], None, public, public_image),
+            ([old], [old_image], None, old, old_image),
+            (['other'], ['image'], None, 'other', 'image'),
+            ([], [], None, None, None),
+            ([public], [], '480p', None, None),
+        ]
+        for videos, images, lock, want_video, want_image in cases:
+            with self.subTest(videos=videos, images=images, lock=lock):
+                project = {'style': '电影', 'episodes': [{'episode': 1}], 'generated_assets': {'video': 'existing.mp4'}}
+                pm = SimpleNamespace(load_project=lambda _: project, update_project=lambda _, fn: fn(project))
+                modules = {
+                    'project_scope': SimpleNamespace(ensure_episode=AsyncMock()),
+                    'conversation_api': SimpleNamespace(load_images=lambda *_: [], describe_local_attachments=lambda *_: ''),
+                    'lib.project.project_manager': SimpleNamespace(get_project_manager=lambda: pm),
+                    'lib.infra.async_thread': SimpleNamespace(run_sync_transaction=AsyncMock(side_effect=lambda fn: fn())),
+                }
+                client = MagicMock()
+                client.__aenter__.return_value.get = AsyncMock(return_value=Mock(status_code=200, is_success=True, json=lambda: {'project': project}))
+                service = SimpleNamespace(send_or_create=AsyncMock(return_value={'session_id': 'chat'}))
+                bindings = {}
+                models = {'text': ['text'], 'image': images, 'video': videos}
+                scope = bridge_functions(
+                    models=models, model_refs={k: {v: 'provider/'+v for v in ids} for k, ids in models.items()},
+                    local_client=lambda: client, checked=AsyncMock(), DATA=None,
+                    read_binding=lambda key: bindings.get(key, {}), write_binding=bindings.__setitem__, get_assistant_service=lambda: service,
+                )
+                scope['connect_account'] = AsyncMock()
+                scope['compatible_video_models'] = lambda mode: [{'model_id': v} for v in videos]
+                specs = {v: {'spec_status':'available','default_resolution':'720p','seconds_by_resolution':{'720p':[5]}} for v in videos}
+                body = {'models': {'video': old, 'image': old_image}, 'nativeVideoResolution':lock, '_binding':'b',
+                        '_episode':1, 'requestId':'12345678-1234-1234-1234-123456789012', 'content':'只聊剧情'}
+                with patch.dict('sys.modules', modules), patch.object(scope['video_specs'], 'catalog', specs):
+                    reply = await scope['run_episode']('project', body)
+                    self.assertEqual(reply['status'], 'accepted')
+                    self.assertEqual(body['models'].get('video'), want_video)
+                    self.assertEqual(body['models'].get('image'), want_image)
+                    self.assertEqual(body['models']['text'], 'text')
+                    self.assertEqual(project['generated_assets'], {'video':'existing.mp4'})
+                    self.assertEqual(project['episodes'], [{'episode': 1}])
+                    if not want_video:
+                        self.assertIn('unavailable', project['desktop_episode_video']['1'])
+                    await scope['run_episode']('project', body)
+                    service.send_or_create.assert_awaited_once()
+                    scope['connect_account'].assert_not_awaited()
+
+    async def test_new_media_submission_does_not_switch_a_reviewed_model_after_withdrawal(self):
+        current = {'image': ['hg-image-nano-banana-2'], 'video': ['hg-video-agnes-2.5'], 'text': ['text']}
+        scope = bridge_functions(models=current, model_refs={kind: {m: m for m in ids} for kind, ids in current.items()})
+        scope['compatible_video_models'] = lambda mode: [{'model_id': current['video'][0]}]
+        scope['local_client'] = Mock()
+        for kind, old in [('image', 'grsai-nano-banana-2'), ('video', 'grsai-agnes-video-2.5-720p')]:
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'studio_model_unavailable'):
+                await scope['ensure_project']('project', {'action': 'shot_generate', 'data': {'kind': kind}, 'models': {kind: old}})
+        scope['local_client'].assert_not_called()
 
     async def test_configure_models_binds_three_fixed_account_keys_and_updates_in_place(self):
         calls = []
@@ -128,17 +184,23 @@ class ModelSelectionTest(unittest.IsolatedAsyncioTestCase):
                 {'model_id': 'grsai-minimax-h3-768p', 'display_name': 'vid', 'endpoint': 'huanggua-video', 'is_default': True},
             ]}), encoding='utf-8')
             scope = bridge_functions(ROOT=root, PORT=9999, models={}, model_refs={}, local_client=FakeClient, checked=fake_checked)
+            public_images = ['hg-image-nano-banana-2', 'hg-image-nano-banana-2.1', 'hg-image-nano-banana-pro', 'new-account-image']
             await scope['configure_models']({
                 'text': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('text'), 'models': text_models},
-                'image': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('image'), 'models': ['grsai-gpt-image-2.6']},
+                'image': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('image'), 'models': [*public_images, 'grsai-gpt-image-2.6']},
                 'video': {'status': 'connected', 'base_url': 'https://huanggua.my', 'api_key': key('video'), 'models': ['grsai-minimax-h3-768p']},
             })
             self.assertEqual(scope['models'], {
                 'text': text_models,
-                'image': ['grsai-gpt-image-2.6'],
+                'image': [*public_images, 'grsai-gpt-image-2.6'],
                 'video': ['grsai-minimax-h3-768p'],
             })
             put_paths = [path for method, path, _ in calls if method == 'PUT']
+            image_put = next(p for method, path, p in calls if method == 'PUT' and path == 'custom-providers/12')
+            self.assertEqual(image_put['api_key'], key('image'))
+            self.assertEqual([m['model_id'] for m in image_put['models']], [*public_images, 'grsai-gpt-image-2.6'])
+            self.assertTrue(all(m['endpoint'] == 'huanggua-images' for m in image_put['models']))
+            self.assertEqual(image_put['models'][-1]['display_name'], 'img')
             self.assertEqual(put_paths, ['custom-providers/11', 'custom-providers/12', 'custom-providers/13'])
             self.assertFalse(any(method == 'POST' and path == 'custom-providers' for method, path, _ in calls))
             text_put = next(payload for method, path, payload in calls if method == 'PUT' and path == 'custom-providers/11')

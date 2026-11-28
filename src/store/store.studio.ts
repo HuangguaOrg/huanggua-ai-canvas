@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { StudioDraftDocument, StudioEpisode, StudioStage } from '../types/studio';
 import { readStudioDrafts, writeStudioDrafts } from '../services/studioDraftRepository';
+import { reconcileStudioDraftModels } from '../services/studioModelSelection';
 import { studioWorkspace } from '../services/studioWorkspaceService';
 
 export interface StudioSlice {
@@ -35,7 +36,14 @@ export const createStudioSlice: StateCreator<AppState, [], [], StudioSlice> = (s
     loadStudio: async () => {
       if (get().studioLoad === 'loading' || get().studioLoad === 'ready') return;
       set({ studioLoad: 'loading' });
-      try { set({ studioDraft: await readStudioDrafts(), studioLoad: 'ready' }); }
+      try {
+        const saved = await readStudioDrafts();
+        const state = get();
+        const studioDraft = state.studioConnection === 'ready'
+          ? reconcileStudioDraftModels(saved, state.studioModels, state.studioVideoModelsByMode) : saved;
+        set({ studioDraft, studioLoad: 'ready' });
+        if (studioDraft !== saved) await get().saveStudio();
+      }
       catch { set({ studioLoad: 'error' }); }
     },
     saveStudio: async () => {
@@ -132,7 +140,9 @@ export const createStudioSlice: StateCreator<AppState, [], [], StudioSlice> = (s
     editStudioEpisode: (id, patch) => {
       const d = get().studioDraft;
       change({ ...d, projects: d.projects.map(p => p.id === d.projectId
-        ? { ...p, updatedAt: Date.now(), episodes: p.episodes.map(e => e.id === id ? { ...e, ...patch } : e) } : p) });
+        ? { ...p, updatedAt: Date.now(), episodes: p.episodes.map(e => e.id === id
+          ? { ...e, ...patch, ...(patch.models ? { models: { ...e.models, ...patch.models } } : {}) }
+          : e) } : p) });
     },
   };
 };
