@@ -134,6 +134,11 @@ async def freeze_task(project_name, task_type, script_file, resource_id, payload
         episode_number = next((e.get('episode') for e in project.get('episodes', []) if script
                                and (e.get('script_file') or '').removeprefix('scripts/') == script), None)
     spec = project.get('desktop_episode_video', {}).get(str(episode_number))
+    if spec and 'unavailable' in spec:
+        reason = spec['unavailable']
+        if reason not in ('studio_video_model_incompatible', 'studio_video_specs_unavailable', 'studio_video_resolution_conflict'):
+            reason = 'studio_model_unavailable'
+        raise ValueError(reason)
     if not spec or not spec.get('managed'):
         return payload
     frozen = dict(spec)

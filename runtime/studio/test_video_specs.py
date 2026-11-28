@@ -60,11 +60,12 @@ class VideoCatalogTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(paths,[('GET','/v1/models/new/public')]*2)
 
     async def test_planning_and_video_queue_keep_the_accepted_episode_choice(self):
-        manager = SimpleNamespace(load_project=lambda name: {
+        project = {
             'episodes': [{'episode': 2, 'script_file': 'scripts/episode_2.json'}],
             'aspect_ratio': '9:16',
             'desktop_episode_video': {'2': {'managed': True, 'ref': 'custom-3/public', 'resolution': '768p'}},
-        })
+        }
+        manager = SimpleNamespace(load_project=lambda name: project)
         modules = {'lib.project.project_manager': SimpleNamespace(get_project_manager=lambda: manager),
                    'lib.artifacts.video_visual_provenance': SimpleNamespace(resolve_video_aspect_ratio=lambda *args: '9:16')}
         with patch.dict('sys.modules', modules):
@@ -73,6 +74,12 @@ class VideoCatalogTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('ratio', plan['desktop_video'])
             video = await specs.freeze_task('project', 'reference_video', 'episode_2.json', '2U1', {})
             self.assertEqual(video['desktop_video'], {**plan['desktop_video'], 'ratio': '9:16'})
+            project['desktop_episode_video']['2'] = {'unavailable': 'studio_video_resolution_conflict'}
+            with self.assertRaisesRegex(ValueError, 'studio_video_resolution_conflict'):
+                await specs.freeze_task('project', 'reference_video', 'episode_2.json', '2U2', {})
+            with self.assertRaisesRegex(ValueError, 'studio_video_resolution_conflict'):
+                await specs.freeze_task('project', 'text_reference_script_plan', None, 'episode-2', {'episode': 2})
+            self.assertEqual(video['desktop_video']['ref'], 'custom-3/public')
             untouched = await specs.freeze_task('project', 'text_drama_script_plan', None, 'episode-3', {'episode': 3})
             self.assertEqual(untouched, {'episode': 3})
 

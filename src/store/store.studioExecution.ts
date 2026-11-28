@@ -1,12 +1,25 @@
-import type { StateCreator } from 'zustand';
+import type { StateCreator, StoreApi } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { StudioAttachment, StudioEpisode, StudioExecution, StudioVideoSpec } from '../types/studio';
 import { studioError, studioRequest, submitStudio, pollStudioExecutions } from '../services/studioExecutionService';
+import { reconcileStudioDraftModels } from '../services/studioModelSelection';
 
 interface StudioCatalogStatus {
   models: Record<string, string[]>;
   videoModelsByMode?: StudioExecutionSlice['studioVideoModelsByMode'];
   videoSpecs?: Record<string, StudioVideoSpec>;
+}
+
+function applyStudioCatalog(store: StoreApi<AppState>, result: StudioCatalogStatus) {
+  const state = store.getState();
+  const byMode = result.videoModelsByMode ?? {};
+  const draft = state.studioLoad === 'ready'
+    ? reconcileStudioDraftModels(state.studioDraft, result.models, byMode) : state.studioDraft;
+  store.setState({
+    studioConnection: 'ready', studioModels: result.models, studioVideoModelsByMode: byMode,
+    studioVideoSpecs: result.videoSpecs ?? {}, ...(draft !== state.studioDraft ? { studioDraft: draft } : {}),
+  });
+  if (draft !== state.studioDraft) void store.getState().saveStudio();
 }
 
 export interface StudioExecutionSlice {
@@ -45,7 +58,7 @@ export const createStudioExecutionSlice: StateCreator<AppState, [], [], StudioEx
     try {
       const result = await studioRequest<StudioCatalogStatus>('status');
       if (get().studioEpoch !== epoch) return;
-      set({ studioConnection: 'ready', studioModels: result.models, studioVideoModelsByMode: result.videoModelsByMode ?? {}, studioVideoSpecs: result.videoSpecs ?? {} });
+      applyStudioCatalog(store, result);
       await pollStudioExecutions();
     } catch (error) { if (get().studioEpoch === epoch) set({ studioConnection: 'error', studioConnectionError: studioError(error) }); }
   },
@@ -71,7 +84,7 @@ export const createStudioExecutionSlice: StateCreator<AppState, [], [], StudioEx
     try {
       const result = await studioRequest<StudioCatalogStatus>('status');
       if (get().studioEpoch !== epoch) return;
-      set({ studioModels: result.models, studioVideoModelsByMode: result.videoModelsByMode ?? {}, studioVideoSpecs: result.videoSpecs ?? {} });
+      applyStudioCatalog(store, result);
     } catch (error) {
       if (get().studioEpoch === epoch) set({ studioModelRefreshError: studioError(error) });
     } finally {

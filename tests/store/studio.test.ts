@@ -13,6 +13,29 @@ const makeStore = () => create<TestState>()((...args) => ({
 }));
 beforeEach(() => { vi.restoreAllMocks(); vi.mocked(studioWorkspace).mockReset().mockResolvedValue({ ok: true }); vi.stubGlobal('indexedDB', new IDBFactory()); });
 describe('local short drama authoring drafts', () => {
+  it('repairs and persists an old preference when the account catalog is ready before the draft loads', async () => {
+    const store = makeStore();
+    await store.getState().loadStudio();
+    const { episodeId } = store.getState().createStudioProject('旧分集')!;
+    store.getState().editStudioEpisode(episodeId, { models: { image: 'existing-image' } });
+    store.getState().editStudioEpisode(episodeId, {
+      models: { video: 'grsai-agnes-video-2.5-720p' },
+      shots: [{ id: 'shot-1', title: '开场', description: '远景', duration: 4 }],
+    });
+    await store.getState().saveStudio();
+    const reopened = create<AppState>()((...args) => ({
+      ...createStudioSlice(...args), studioConnection: 'ready',
+      studioModels: { text: ['text'], image: ['existing-image'] },
+      studioVideoModelsByMode: { storyboard: ['other', 'hg-video-agnes-2.5'] },
+    } as AppState));
+    await reopened.getState().loadStudio();
+    const draft = await repository.readStudioDrafts();
+    expect(draft.projects[0].episodes[0]).toEqual({
+      ...store.getState().studioDraft.projects[0].episodes[0],
+      models: { image: 'existing-image', video: 'hg-video-agnes-2.5' },
+    });
+    expect(reopened.getState().studioDraft).toEqual(draft);
+  });
   it('deletes only the chosen project, preserves the selected episode and persists across reopen', async () => {
     const store = makeStore(); await store.getState().loadStudio();
     const removed = store.getState().createStudioProject('删除此项目')!;

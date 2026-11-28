@@ -53,7 +53,8 @@ install_ratio_support(ROOT)
 install_render_paths()
 install_download_paths()
 install_frame_ratios()
-install_huanggua_staging(ROOT)
+model_refs: dict[str, dict[str, str]] = {}
+install_huanggua_staging(ROOT, lambda kind: model_refs.get(kind, {}))
 video_specs.install_task_selection()
 
 import httpx
@@ -92,7 +93,8 @@ account_lock = asyncio.Lock()
 account_checked = 0.0
 account_fingerprint = ""
 models: dict[str, list[str]] = {}
-model_refs: dict[str, dict[str, str]] = {}
+# Historical saved preferences only. Account grants determine the selectable models.
+legacy_media_ids = json.loads(Path(__file__).with_name("legacy-media-model-ids.json").read_text(encoding="utf-8"))
 artifact_paths: dict[tuple[str, str], Path] = {}
 artifact_pages: dict[str, tuple[str, list[dict]]] = {}
 file_hashes: dict[str, tuple[int, int, str]] = {}
@@ -229,7 +231,7 @@ async def configure_models(services):
             if service.get("base_url") != "https://huanggua.my" or not is_account_bound_key(category, service.get("api_key", "")):
                 raise ValueError("studio_account_invalid_response")
             allowed = service["models"]
-            if not isinstance(allowed, list) or len(allowed) > 5000 or any(not isinstance(m,str) or len(m)>300 for m in allowed):
+            if not isinstance(allowed, list) or len(allowed) > 5000 or any(not isinstance(m,str) or not 0 < len(m) <= 300 for m in allowed):
                 raise ValueError("studio_account_invalid_response")
             if category == "text":
                 # The text group is authoritative; Messages is shared across
@@ -237,15 +239,18 @@ async def configure_models(services):
                 items = [{"model_id": m, "display_name": m, "endpoint": "anthropic-messages", "is_default": i == 0,
                           "capability_overrides": {"image_input": True, "structured_output": True}}
                          for i, m in enumerate(allowed)]
+            elif category == "image":
+                presets = {m["model_id"]: m for m in preset if m["endpoint"] == "huanggua-images"}
+                items = [dict(presets[m]) if m in presets else {
+                    "model_id": m, "display_name": m, "endpoint": "huanggua-images",
+                } for m in dict.fromkeys(allowed)]
+            elif "catalog" in service:
+                items = video_specs.provider_rows(preset, allowed, service["catalog"])
             else:
-                endpoint = "huanggua-images" if category == "image" else "huanggua-video"
-                if category == "video" and "catalog" in service:
-                    items = video_specs.provider_rows(preset, allowed, service["catalog"])
-                else:
-                    items = [dict(m) for m in preset if m["model_id"] in allowed and m["endpoint"] == endpoint]
+                items = [dict(m) for m in preset if m["model_id"] in allowed and m["endpoint"] == "huanggua-video"]
             if not items:
-                # Accepted video receipts can still need this device-bound credential after withdrawal.
-                if category == 'video' and any(p['display_name'] == '黄瓜客户端 · video' for p in providers):
+                # Existing receipts still need the category credential after withdrawal.
+                if category in {'image', 'video'} and any(p['display_name'] == '黄瓜客户端 · ' + category for p in providers):
                     store_secret(None, service['api_key'], None)
                 continue
             if not any(m.get("is_default") for m in items):
@@ -620,41 +625,67 @@ def compatible_video_models(mode):
     return sorted(rows, key=lambda row: not row.get('is_default', False))
 
 
+def available_model(saved, allowed):
+    if saved in allowed:
+        return saved
+    successor = legacy_media_ids.get(saved)
+    return successor if successor in allowed else next(iter(allowed), None)
+
+
 async def ensure_project(name, body):
     selection = body.get("models", {})
+    if not isinstance(selection, dict) or any(
+        selection.get(kind) is not None and not isinstance(selection[kind], str) for kind in ('text', 'image', 'video')
+    ):
+        raise ValueError('studio_invalid_request')
     mode = body.get('generationMode', 'storyboard')
     action = body.get('action')
-    needs_video = action != 'initialize' and not (
-        action in {'shot_precheck', 'shot_generate'} and (body.get('data') or {}).get('kind') == 'image')
+    shot = action in {'shot_precheck', 'shot_generate'}
+    image_shot = shot and (body.get('data') or {}).get('kind') == 'image'
+    needs_video = (shot and not image_shot) or action in {
+        'plan_generate', 'reference_precheck', 'reference_generate', 'reference_batch_preview', 'reference_batch',
+    }
     compatible = compatible_video_models(mode)
-    requested_video = selection.get('video') or (compatible[0]['model_id'] if compatible else None)
+    requested_video = available_model(selection.get('video'), [m['model_id'] for m in compatible])
+    sending_video = needs_video and action in {'shot_generate', 'reference_generate', 'reference_batch'}
+    if sending_video and selection.get('video') and selection['video'] != requested_video:
+        # The submitted model must still match the one the user just reviewed.
+        raise ValueError('studio_model_unavailable')
     if requested_video and needs_video:
         await connect_account(force=True, selected=requested_video)
         compatible = compatible_video_models(mode)
-    spec = video_specs.catalog.get(requested_video)
+    spec = video_specs.catalog.get(requested_video or selection.get('video'))
     chosen = next((m for m in compatible if m['model_id'] == requested_video), None)
-    if needs_video and not chosen:
-        if spec and spec.get('spec_status') == 'unknown':
-            raise ValueError('studio_video_specs_unavailable')
-        if requested_video and requested_video not in model_refs.get('video', {}):
-            raise ValueError('studio_model_unavailable')
-        raise ValueError('studio_video_model_incompatible')
     lock = body.get('nativeVideoResolution')
+    video_error = None
+    if not chosen:
+        if spec and spec.get('spec_status') == 'unknown':
+            video_error = 'studio_video_specs_unavailable'
+        elif requested_video and requested_video not in model_refs.get('video', {}):
+            video_error = 'studio_model_unavailable'
+        else:
+            video_error = 'studio_video_model_incompatible'
+    elif lock and spec and lock not in spec.get('seconds_by_resolution', {}):
+        video_error = 'studio_video_resolution_conflict'
+    if needs_video and video_error:
+        raise ValueError(video_error)
     size = None
-    if chosen and spec and spec.get('spec_status') == 'available' and (needs_video or not lock or lock in spec['seconds_by_resolution']):
+    if chosen and not video_error and spec and spec.get('spec_status') == 'available':
         size = video_specs.resolution(spec, lock)
         seconds = spec['seconds_by_resolution'][size]
         body['_video_model'] = requested_video
         body['_video_plan'] = f"本集视频使用 {requested_video}，素材分辨率 {size}。请按剧情逐镜选择时长，可用秒数为 {seconds}。"
-    elif chosen and spec and spec.get('spec_status') == 'legacy':
-        if lock and lock not in spec.get('seconds_by_resolution', {}) and needs_video:
-            raise ValueError('studio_video_resolution_conflict')
-        size = lock if lock in spec.get('seconds_by_resolution', {}) else spec.get('default_resolution')
-    if any(value and kind != 'video' and value not in model_refs.get(kind, {}) for kind, value in selection.items()):
+    elif chosen and not video_error and spec and spec.get('spec_status') == 'legacy':
+        size = lock or spec.get('default_resolution')
+    resolved = {kind: available_model(selection.get(kind), ids) for kind, ids in models.items() if kind != 'video' and ids}
+    if image_shot and ('image' not in resolved or (
+        action == 'shot_generate' and selection.get('image') and selection['image'] != resolved['image']
+    )):
         raise ValueError('studio_model_unavailable')
-    selected_refs = {kind: model_refs[kind][selection.get(kind) or models[kind][0]] for kind in models if kind != 'video'}
-    if chosen:
-        selected_refs['video'] = model_refs['video'][chosen['model_id']]
+    if chosen and not video_error:
+        resolved['video'] = chosen['model_id']
+    body['models'] = resolved
+    selected_refs = {kind: model_refs[kind][value] for kind, value in resolved.items()}
     config = {"default_text_backend":selected_refs["text"], "text_backend_simple":selected_refs["text"], "text_backend_complex":selected_refs["text"]}
     if "image" in selected_refs:
         config.update(default_image_backend=selected_refs["image"], image_provider_t2i=selected_refs["image"], image_provider_i2i=selected_refs["image"])
@@ -698,16 +729,20 @@ async def ensure_project(name, body):
             await checked(client, "PATCH", f"projects/{name}", patch_body)
         from project_scope import ensure_episode
         await ensure_episode(body, client, checked)
-        if chosen and (size or (spec and spec.get('spec_status') == 'legacy')):
+        if video_error or (chosen and (size or (spec and spec.get('spec_status') == 'legacy'))):
             from lib.infra.async_thread import run_sync_transaction
             from lib.project.project_manager import get_project_manager
             pm = get_project_manager()
-            ref = selected_refs['video']
             def save_video_selection(project):
                 entries = project.setdefault('desktop_episode_video', {})
+                if video_error:
+                    # Chat is available; any *new* video task from the Agent must stop before submission.
+                    entries[str(body['_episode'])] = {'unavailable': video_error}
+                    return
                 if not size:
                     entries.pop(str(body['_episode']), None)
                     return
+                ref = selected_refs['video']
                 project.setdefault('model_settings', {}).setdefault(ref, {})['resolution'] = size
                 entries[str(body['_episode'])] = {
                     'ref': ref, 'resolution': size, 'managed': spec['spec_status'] == 'available',

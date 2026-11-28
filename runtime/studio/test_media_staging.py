@@ -132,7 +132,10 @@ class MediaStagingBackendTest(unittest.IsolatedAsyncioTestCase):
         from lib.infra.app_data_dir import reset_for_tests as reset_app_data_dir
         from lib.project.project_manager import ProjectManager, reset_project_manager_for_tests
 
-        install_huanggua_staging(engine_root)
+        public_images = ['hg-image-nano-banana-2', 'hg-image-nano-banana-2.1', 'hg-image-nano-banana-pro']
+        grants = {'image': {*public_images, 'grsai-nano-banana-2-2k-cl'},
+                  'video': {'catcode-Seedance-2.0-官转', 'grsai-minimax-h3-768p'}}
+        install_huanggua_staging(engine_root, grants.__getitem__)
 
         prev_data_dir = os.environ.get('ARCREEL_DATA_DIR')
 
@@ -285,6 +288,21 @@ class MediaStagingBackendTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(gen_calls), 1)
             self.assertEqual(gen_calls[0][2]['resolution'], '2K')
             self.assertEqual(gen_calls[0][2]['images'], [f'https://huanggua.my/api/studio/media/45/{"a" * 48}.png'])
+
+            for index, model in enumerate(public_images):
+                merged = HuangguaImageBackend(api_key='sk-test-image', base_url='https://huanggua.my',
+                                              model=model, transport=transport)
+                req = ImageGenerationRequest(prompt='test', output_path=tmp_root / f'merged-{index}.png', aspect_ratio='1:1')
+                result = await merged.generate(req)
+                self.assertTrue(result.image_path.is_file())
+                self.assertEqual(requests_seen[-1][1], '/v1/images/generations')
+                self.assertEqual(requests_seen[-1][2]['model'], model)
+                self.assertEqual(requests_seen[-1][2]['resolution'], '1K')
+            seen = len(requests_seen)
+            grants['image'].remove(public_images[-1])
+            with self.assertRaisesRegex(ValueError, 'studio_model_unavailable'):
+                await merged.generate(req)
+            self.assertEqual(len(requests_seen), seen)
 
             vid_backend = HuangguaVideoBackend(
                 api_key='sk-test-video',
